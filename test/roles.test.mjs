@@ -45,7 +45,7 @@ test('zh chain order: cordis.zh > zh-fm > zh-prose > pkg.description > md-fm > m
   assert.equal(zh, 'zh 正文行。')
 })
 
-test('en chain: pkg.description before README.md prose; zh as last fallback', async () => {
+test('pkg.description used when README.md absent; zh prose last', async () => {
   const { en } = await resolveDescription({ description: 'pkg-desc' }, { dir: 'p', read: files({}) })
   assert.equal(en, 'pkg-desc')
   const r = await resolveDescription({}, { dir: 'p', read: files({ 'p/README.zh.md': '中文正文\n' }) })
@@ -71,4 +71,39 @@ test('en chain: README.md without front-matter or meaningful prose falls back to
 test('all empty -> null', async () => {
   const { zh, en } = await resolveDescription({}, { dir: 'p', read: files({}) })
   assert.equal(zh, null); assert.equal(en, null)
+})
+
+// One all-slots fixture (cordis manifest zh/en, README.zh FM/prose, README.md FM/prose,
+// pkg.description — seven distinct values); each row drops slots so every adjacent pair
+// of both chains is exercised: zh = mz > zf > zp > pd > mf > mp, en = me > mf > mp > pd > zf > zp.
+test('both chains pinned slot-by-slot: all-slots fixture, every adjacent pair exercised', async () => {
+  const V = { mz: 'cordis-zh', me: 'cordis-en', zf: 'zh-fm', zp: 'zh-prose', mf: 'md-fm', mp: 'md-prose', pd: 'pkg-desc' }
+  const build = async (drop) => {
+    const has = (s) => !drop.includes(s)
+    const manifest = { description: has('pd') ? V.pd : undefined }
+    if (has('mz') || has('me')) {
+      manifest['@deepseek-ai/cordis'] = { description: { zh: has('mz') ? V.mz : undefined, en: has('me') ? V.me : undefined } }
+    }
+    const readme = (fm, prose) => {
+      if (!has(fm) && !has(prose)) return null
+      return (has(fm) ? `---\ndescription: ${V[fm]}\n---\n` : '') + '# T\n' + (has(prose) ? `\n${V[prose]}\n` : '')
+    }
+    return resolveDescription(manifest, { dir: 'p', read: files({ 'p/README.zh.md': readme('zf', 'zp'), 'p/README.md': readme('mf', 'mp') }) })
+  }
+  const table = [
+    [[],                             { zh: V.mz, en: V.me }],
+    [['mz'],                         { zh: V.zf, en: V.me }],
+    [['mz', 'zf'],                   { zh: V.zp, en: V.me }],
+    [['mz', 'zf', 'zp'],             { zh: V.pd, en: V.me }],
+    [['mz', 'zf', 'zp', 'pd'],       { zh: V.mf, en: V.me }],
+    [['mz', 'zf', 'zp', 'pd', 'mf'], { zh: V.mp, en: V.me }],
+    [['me'],                         { zh: V.mz, en: V.mf }],
+    [['me', 'mf'],                   { zh: V.mz, en: V.mp }],
+    [['me', 'mf', 'mp'],             { zh: V.mz, en: V.pd }],
+    [['me', 'mf', 'mp', 'pd'],       { zh: V.mz, en: V.zf }],
+    [['me', 'mf', 'mp', 'pd', 'zf'], { zh: V.mz, en: V.zp }],
+  ]
+  for (const [drop, want] of table) {
+    assert.deepEqual(await build(drop), want, `drop ${JSON.stringify(drop)}`)
+  }
 })

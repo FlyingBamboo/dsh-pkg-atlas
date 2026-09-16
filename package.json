@@ -14,8 +14,7 @@
     "@deepseek-ai/dsh-host-webserver": "^0.1.5-rc.1"
   },
   "peerDependenciesMeta": {
-    "@deepseek-ai/dsh-host-webserver": { "optional": true },
-    "@deepseek-ai/cordis": { "optional": true }
+    "@deepseek-ai/dsh-host-webserver": { "optional": true }
   },
   "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
 }

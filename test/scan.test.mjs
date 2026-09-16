@@ -28,7 +28,7 @@ test('universe: referenced-only for non-official; hoisted and @types excluded', 
 
 test('broken junction dir becomes broken pseudo-node + warning', () => {
   const broken = graph.nodes.filter((n) => n.kind === 'broken')
-  assert.deepEqual(broken.map((n) => n.id), ['broken:pkg-broken'])
+  assert.deepEqual(broken.map((n) => n.id), ['broken:@deepseek-ai/pkg-broken'])
   assert.ok(graph.warnings.some((x) => x.type === 'unreadable' && x.path.includes('pkg-broken')))
 })
 
@@ -71,5 +71,5 @@ test('resolveDshHome precedence with injected env', () => {
     process.env.DSH_HOME = 'D:/env-home'
     assert.equal(resolveDshHome(), 'D:\\env-home')
     assert.equal(resolveDshHome('D:/explicit'), 'D:\\explicit')
-  } finally { process.env.DSH_HOME = saved }
+  } finally { if (saved === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = saved }
 })

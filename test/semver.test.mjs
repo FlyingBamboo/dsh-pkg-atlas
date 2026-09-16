@@ -1,0 +1,31 @@
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { compareVersions, maxSatisfying } from '../lib/semver.js'
+
+test('compareVersions core + prerelease-aware', () => {
+  assert.equal(compareVersions('1.2.3', '1.2.3'), 0)
+  assert.ok(compareVersions('1.10.0', '1.9.9') > 0)
+  assert.ok(compareVersions('0.1.5-rc.1', '0.1.5') < 0)
+  assert.ok(compareVersions('0.1.5-rc.2', '0.1.5-rc.1') > 0)
+})
+
+test('exact string hit wins (rc ecosystem)', () => {
+  assert.deepEqual(maxSatisfying(['0.1.5-rc.1', '0.1.4'], '^0.1.5-rc.1'),
+    { version: '0.1.5-rc.1', satisfied: true })
+})
+
+test('caret tilde gte range star', () => {
+  const v = ['0.9.0', '1.0.0', '1.4.0', '2.0.0']
+  assert.deepEqual(maxSatisfying(v, '^1.0.0'), { version: '1.4.0', satisfied: true })
+  assert.deepEqual(maxSatisfying(v, '~1.0.0'), { version: '1.0.0', satisfied: true })
+  assert.deepEqual(maxSatisfying(v, '>=1.4.0'), { version: '2.0.0', satisfied: true })
+  assert.deepEqual(maxSatisfying(v, '*'), { version: '2.0.0', satisfied: true })
+  assert.deepEqual(maxSatisfying(v, ''), { version: '2.0.0', satisfied: true })
+  assert.deepEqual(maxSatisfying(v, '^3.0.0'), { version: '2.0.0', satisfied: false })
+  assert.equal(maxSatisfying([], '^1.0.0'), null)
+})
+
+test('caret 0.x semantics and or-ranges', () => {
+  assert.deepEqual(maxSatisfying(['0.2.9', '0.3.0'], '^0.2.9'), { version: '0.2.9', satisfied: true })
+  assert.deepEqual(maxSatisfying(['1.0.0', '3.1.0'], '^1.0.0 || ^3.0.0'), { version: '3.1.0', satisfied: true })
+})

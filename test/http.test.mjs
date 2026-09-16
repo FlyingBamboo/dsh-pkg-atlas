@@ -85,7 +85,14 @@ test('unknown route 404 JSON; POST 405 with Allow', async () => {
   let res = await fetch(`${base}${PREFIX}/nope`)
   assert.equal(res.status, 404); assert.equal((await res.json()).error, 'not-found')
   res = await fetch(`${base}${PREFIX}/api/graph`, { method: 'POST' })
-  assert.equal(res.status, 405); assert.equal(res.headers.get('allow'), 'GET')
+  assert.equal(res.status, 405); assert.equal(res.headers.get('allow'), 'GET, HEAD')
+})
+
+test('HEAD / is served like GET: 200, content-length, empty body (R18)', async () => {
+  const res = await fetch(`${base}${PREFIX}/`, { method: 'HEAD' })
+  assert.equal(res.status, 200)
+  assert.ok(res.headers.get('content-length'), 'HEAD must carry content-length')
+  assert.equal(await res.text(), '')
 })
 
 test('outside prefix is not ours: 404 (no cross-route interference)', async () => {

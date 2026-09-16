@@ -1,0 +1,4 @@
+# dsh-pkg-atlas mount row: inserted after profile bundles by dsh's bundle layer.
+- insert:
+    - id: dsh-pkg-atlas
+      name: dsh-pkg-atlas

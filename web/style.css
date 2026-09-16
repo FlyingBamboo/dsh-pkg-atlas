@@ -1,1 +1,29 @@
-/* placeholder */
+:root { color-scheme: light dark; }
+* { box-sizing: border-box; }
+body { margin: 0; font: 13px/1.5 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; }
+header { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 8px 12px; border-bottom: 1px solid #8884; position: sticky; top: 0; background: light-dark(#f7f8fa, #12161b); z-index: 3; }
+header h1 { font-size: 15px; margin: 0; }
+header .grow { flex: 1; }
+header label { white-space: nowrap; }
+input[type=search] { width: 220px; padding: 4px 8px; }
+button { padding: 3px 10px; }
+#warning-bar { padding: 4px 12px; background: light-dark(#fff3cd, #3d3417); border-bottom: 1px solid #8884; }
+.warnhead { cursor: pointer; }
+.warnlist { max-height: 180px; overflow: auto; font-size: 12px; opacity: .85; }
+#error-bar { padding: 8px 12px; background: light-dark(#ffe2e2, #4a1f1f); }
+main { display: flex; height: calc(100vh - 46px); }
+#graph { flex: 1; min-width: 0; }
+#table-fallback { flex: 1; overflow: auto; padding: 12px; }
+#table-fallback table { border-collapse: collapse; width: 100%; }
+#table-fallback td, #table-fallback th { border: 1px solid #8884; padding: 3px 8px; text-align: left; }
+#details { width: 340px; overflow: auto; padding: 12px; border-left: 1px solid #8884; background: light-dark(#fbfcfd, #10141a); }
+#details h2 { font-size: 14px; margin: 0 0 4px; overflow-wrap: anywhere; }
+#details .sub, #details .path { font-size: 11px; opacity: .7; overflow-wrap: anywhere; }
+#details .desc { margin: 8px 0; }
+#details .kv { margin: 4px 0; font-size: 12px; }
+#details .kv span:first-child { font-weight: 600; margin-right: 6px; }
+#details pre.readme { max-height: 40vh; overflow: auto; font-size: 11px; background: #8882; padding: 8px; white-space: pre-wrap; }
+#details .btns { margin-top: 10px; display: flex; gap: 8px; }
+#search-results { position: absolute; top: 44px; left: 320px; max-height: 50vh; overflow: auto; background: light-dark(#fff, #171c22); border: 1px solid #8886; z-index: 5; width: 460px; }
+#search-results .hit { display: block; width: 100%; text-align: left; border: 0; border-bottom: 1px solid #8883; background: transparent; padding: 6px 10px; cursor: pointer; }
+#meta { font-size: 11px; opacity: .65; }

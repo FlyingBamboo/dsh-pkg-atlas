@@ -127,7 +127,7 @@
     var text = dark ? '#dbe2ea' : '#22272e', bg = dark ? '#12161b' : '#f7f8fa'
     return [
       { selector: 'core', style: { background: bg } },
-      { selector: 'node.g', style: { 'label': 'data(label)', 'font-size': 12, color: text, 'background-color': dark ? '#243140' : '#dde7f3', 'border-color': '#4b7bb5', 'border-width': 1, width: 'data(count)', height: 34, 'text-valign': 'center', 'text-wrap': 'ellipsis' } },
+      { selector: 'node.g', style: { 'label': 'data(label)', 'font-size': 12, color: text, 'background-color': dark ? '#243140' : '#dde7f3', 'border-color': '#4b7bb5', 'border-width': 1, width: function (ele) { var c = ele.data('count') || 1; return Math.min(60 + Math.round(Math.sqrt(c) * 26), 180) }, height: 34, 'text-valign': 'center', 'text-wrap': 'ellipsis' } },
       { selector: 'node.g.k-plugin', style: { 'background-color': dark ? '#3a2f4d' : '#e9defa' } },
       { selector: 'node.g.k-vendor', style: { 'background-color': dark ? '#2f4040' : '#ddf0ef' } },
       { selector: 'node.g.k-broken', style: { 'background-color': '#7a2630', 'border-color': '#e05252' } },

@@ -118,6 +118,24 @@ test('mountedBy dedupes across multiple mount paths of one profile', () => {
   assert.deepEqual(graph.nodes.find((n) => n.id === '@deepseek-ai/extra@1.0.0').mountedBy, ['web'])
 })
 
+test('mount seed edge honors profile declared range; unsatisfied when nothing satisfies (§6.5 / R17)', () => {
+  // profiles/web 声明 patched-plugin ^9.0.0，装机只有 0.1.0：maxSatisfying 挂最高版 + satisfied:false
+  const e = graph.edges.find((x) => x.from === 'profile:web' && x.kind === 'mount' && x.to === 'patched-plugin@0.1.0')
+  assert.ok(e, 'profile:web -> patched-plugin@0.1.0 mount 边应存在')
+  assert.equal(e.unsatisfied, true)
+})
+
+test('bundle patch escaping the package dir is refused and warned (Windows lexical guard)', () => {
+  // escaper 的 dsh.bundle.patch = '../escape.yml'：resolve 落在 @deepseek-ai/ 层，
+  // 守卫拒绝（parse-fail 越界）且不读文件，故不得产生任何 mount 展开边
+  const esc = graph.edges.filter((x) => x.from === '@deepseek-ai/escaper@1.0.0' && x.kind === 'mount')
+  assert.deepEqual(esc.map((x) => x.to), [])
+  const w = graph.warnings.find((x) => x.type === 'parse-fail' && x.path.includes('escaper'))
+  assert.ok(w, '应有 parse-fail warning 指向 escaper')
+  assert.match(w.message, /路径越出包目录/)
+  assert.ok(w.message.includes('../escape.yml'))
+})
+
 test('plugin own patch members are NOT expanded (v1 boundary)', () => {
   assert.ok(!graph.edges.some((x) => x.from === 'plugin-x@1.0.0' && x.kind === 'mount'))
 })

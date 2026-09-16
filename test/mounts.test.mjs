@@ -19,3 +19,13 @@ test('quoted and bare name lines extracted, comments and configs ignored', () =>
 test('duplicates collapse keeping first position', () => {
   assert.deepEqual(extractPatchNames("name: 'a'\nname: a\n"), ['a'])
 })
+
+test('trailing inline comment tolerated (CRLF too), full-line comments still excluded', () => {
+  const text = [
+    "    - id: b1",
+    "      name: '@a/b'  # enable later",
+    "      name: '@bare-e' # tight",
+    "# name: '@c/d'",
+  ].join('\r\n')
+  assert.deepEqual(extractPatchNames(text), ['@a/b', '@bare-e'])
+})

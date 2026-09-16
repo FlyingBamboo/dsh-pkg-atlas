@@ -29,3 +29,18 @@ test('caret 0.x semantics and or-ranges', () => {
   assert.deepEqual(maxSatisfying(['0.2.9', '0.3.0'], '^0.2.9'), { version: '0.2.9', satisfied: true })
   assert.deepEqual(maxSatisfying(['1.0.0', '3.1.0'], '^1.0.0 || ^3.0.0'), { version: '3.1.0', satisfied: true })
 })
+
+test('or-range returns highest satisfier across ALL alternatives', () => {
+  assert.deepEqual(maxSatisfying(['1.4.0', '3.1.0'], '^3.0.0 || ^1.0.0'),
+    { version: '3.1.0', satisfied: true })
+})
+
+test('or-range with no satisfier still falls back to attach-highest', () => {
+  assert.deepEqual(maxSatisfying(['1.0.0', '2.0.0'], '^5.0.0 || ^9.0.0'),
+    { version: '2.0.0', satisfied: false })
+})
+
+test('intentional divergence: caret on 0.x base is rc-tolerant for DSH rc ecosystem', () => {
+  assert.deepEqual(maxSatisfying(['0.1.5', '0.1.6-rc.1'], '^0.1.5'),
+    { version: '0.1.6-rc.1', satisfied: true })
+})

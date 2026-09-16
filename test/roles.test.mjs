@@ -52,6 +52,22 @@ test('en chain: pkg.description before README.md prose; zh as last fallback', as
   assert.equal(r.en, '中文正文')
 })
 
+test('en chain: README.md front-matter beats pkg.description (spec §6.4: README.md before package.json)', async () => {
+  const { en } = await resolveDescription(
+    { description: 'pkg-desc' },
+    { dir: 'p', read: files({ 'p/README.md': '---\ndescription: md-fm\n---\n# T\n' }) },
+  )
+  assert.equal(en, 'md-fm')
+})
+
+test('en chain: README.md without front-matter or meaningful prose falls back to pkg.description', async () => {
+  const { en } = await resolveDescription(
+    { description: 'pkg-desc' },
+    { dir: 'p', read: files({ 'p/README.md': '---\nname: p\n---\n\n# Title\n\n[![ci](badge)](url)\n' }) },
+  )
+  assert.equal(en, 'pkg-desc')
+})
+
 test('all empty -> null', async () => {
   const { zh, en } = await resolveDescription({}, { dir: 'p', read: files({}) })
   assert.equal(zh, null); assert.equal(en, null)

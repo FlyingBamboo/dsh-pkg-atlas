@@ -81,15 +81,16 @@
       if (!item) { item = { s: s, d: d, kind: edge.kind, count: 0 }; agg.set(key, item) }
       item.count++
     }
-    // keep highest-rank aggregated edge per (s,d) pair for display simplicity
-    var best = new Map()
+    // one edge per (s,d): class/kind = dominant rank, label count = TOTAL across all kinds (M-7)
+    var best = new Map(), pairTotal = new Map()
     agg.forEach(function (v) {
       var k2 = v.s + '|' + v.d
+      pairTotal.set(k2, (pairTotal.get(k2) || 0) + v.count)
       var cur = best.get(k2)
       if (!cur || rank(v.kind) > rank(cur.kind)) best.set(k2, v)
     })
-    best.forEach(function (v) {
-      els.push({ group: 'edges', classes: 'e e-' + v.kind, data: { source: v.s, target: v.d, count: v.count } })
+    best.forEach(function (v, k2) {
+      els.push({ group: 'edges', classes: 'e e-' + v.kind, data: { source: v.s, target: v.d, count: pairTotal.get(k2) } })
     })
     return els
   }
@@ -133,7 +134,8 @@
       { selector: 'node.g.k-plugin', style: { 'background-color': dark ? '#3a2f4d' : '#e9defa' } },
       { selector: 'node.g.k-vendor', style: { 'background-color': dark ? '#2f4040' : '#ddf0ef' } },
       { selector: 'node.g.k-broken', style: { 'background-color': '#7a2630', 'border-color': '#e05252' } },
-      { selector: 'node.g.k-profiles, node.g.k-profile', style: { 'background-color': dark ? '#403624' : '#f7ecd7' } },
+      { selector: 'node.g.k-profile', style: { 'background-color': dark ? '#403624' : '#f7ecd7' } },
+      { selector: 'node.g.k-ungrouped', style: { 'background-color': dark ? '#3a3a3a' : '#e8e8e8' } },
       { selector: 'node.p', style: { 'label': 'data(label)', 'font-size': 9, color: text, width: 18, height: 18, 'background-color': '#6a8caf', 'text-valign': 'bottom', 'text-margin-y': 3 } },
       { selector: 'node.p.s-official', style: { 'background-color': '#4c7fb8' } },
       { selector: 'node.p.s-third-party', style: { 'background-color': '#9a6ac2' } },
@@ -144,7 +146,7 @@
       { selector: 'edge.e-mount', style: { width: 2.5, 'line-color': '#3f9d6d', 'target-arrow-color': '#3f9d6d' } },
       { selector: 'edge.e-peer', style: { 'line-style': 'dotted' } },
       { selector: 'edge.e-peer-optional', style: { 'line-style': 'dashed', 'line-opacity': 0.5 } },
-      { selector: '.dim', style: { opacity: 0.12 } },
+      { selector: '.dim', style: { opacity: 0.15 } },
       { selector: '.in-focus', style: { 'border-width': 2, 'border-color': '#ffd166' } },
     ]
   }
@@ -154,6 +156,7 @@
     state.cy.elements().removeClass('dim in-focus')
     if (!state.focus) return
     var keep = focusNeighbors(state.focus.id, Number(document.getElementById('focus-depth').value))
+    var inFocus = new Set()
     state.cy.nodes().forEach(function (el) {
       var id = el.data('id')
       var inSet = keep.has(id)
@@ -161,7 +164,13 @@
         var c = containerMembers(el.data('gid'))
         inSet = c.some(function (m) { return keep.has(m.id) })
       }
-      if (inSet) el.addClass('in-focus'); else el.addClass('dim')
+      if (inSet) { inFocus.add(id); el.addClass('in-focus') } else el.addClass('dim')
+    })
+    // P1#7: edges dim too — an edge stays in-focus only if BOTH endpoints pass the
+    // same containment rule as nodes above (endpoints are container/package ids).
+    state.cy.edges().forEach(function (el) {
+      if (inFocus.has(el.data('source')) && inFocus.has(el.data('target'))) el.addClass('in-focus')
+      else el.addClass('dim')
     })
   }
   function containerMembers(gid) {

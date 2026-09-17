@@ -74,6 +74,7 @@ broken junction 目录，可与 `Get-ChildItem $env:USERPROFILE\.dsh\profiles\no
   「消费服务」仅在有值时显示。
 - 第三方插件自身 bundle 成员不递归展开（只展开官方包 patch）。
 - 缓存 = 60s TTL + 手动「重扫」；外部安装/卸载后最长 60s 视图陈旧。
+- 图布局在每次筛选/展开后重算（cose 重排），位置不保留。
 - 浏览器降级表格模式（cytoscape 加载失败时）为一次性：恢复需刷新页面。
 - DSH Desktop profile 未验证（CLI 拒绝 boot desktop）。
 - 数据源为 DSH_HOME 已安装内容；不含任何线上目录，无遥测，GET-only。
@@ -87,3 +88,5 @@ broken junction 目录，可与 `Get-ChildItem $env:USERPROFILE\.dsh\profiles\no
 - 响应不回显内部错误文本（500 → `{error:'internal-error'}`）；所有响应
   `X-Content-Type-Options: nosniff`；页面 CSP 限定 `default-src 'self'`。
 - 图数据中的路径一律相对化为 `$DSH_HOME/...`，不泄露绝对路径。
+- 若启用 DSH 远程访问（tailscale/配对等），本页面与 `/api/graph` 的包清单一并
+  暴露给可达者，请视为知情选择。

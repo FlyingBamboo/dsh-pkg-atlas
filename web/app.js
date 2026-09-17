@@ -116,6 +116,7 @@
       state.cy.fit(undefined, 24)
       applyFocusClasses()
     } catch (err) {
+      console.warn('atlas graph render failed, using table fallback', err)
       state.tableMode = true
       document.getElementById('graph').hidden = true
       document.getElementById('table-fallback').hidden = false
@@ -131,7 +132,7 @@
       { selector: 'node.g.k-plugin', style: { 'background-color': dark ? '#3a2f4d' : '#e9defa' } },
       { selector: 'node.g.k-vendor', style: { 'background-color': dark ? '#2f4040' : '#ddf0ef' } },
       { selector: 'node.g.k-broken', style: { 'background-color': '#7a2630', 'border-color': '#e05252' } },
-      { selector: 'node.g.k-profiles', style: { 'background-color': dark ? '#403624' : '#f7ecd7' } },
+      { selector: 'node.g.k-profiles, node.g.k-profile', style: { 'background-color': dark ? '#403624' : '#f7ecd7' } },
       { selector: 'node.p', style: { 'label': 'data(label)', 'font-size': 9, color: text, width: 18, height: 18, 'background-color': '#6a8caf', 'text-valign': 'bottom', 'text-margin-y': 3 } },
       { selector: 'node.p.s-official', style: { 'background-color': '#4c7fb8' } },
       { selector: 'node.p.s-third-party', style: { 'background-color': '#9a6ac2' } },
@@ -299,6 +300,7 @@
     input.addEventListener('input', function () {
       clearTimeout(timer)
       timer = setTimeout(function () {
+        if (!state.graph) return
         var q = input.value.trim().toLowerCase()
         box.textContent = ''; box.hidden = true
         if (!q) return

@@ -124,6 +124,17 @@ test('HEAD /api/graph: 200 JSON headers, empty body, getGraph NOT called (P1#6)'
   }
 })
 
+test('HEAD on unknown /api/* mirrors GET: 404, not a blanket 200 (RFC 9110 truthfulness)', async () => {
+  const srv = createServer((req, res) => createRequestHandler({ getGraph: async () => ({ nodes: [] }), assets })(req, res))
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r))
+  try {
+    const res = await fetch(`http://127.0.0.1:${srv.address().port}${PREFIX}/api/nope`, { method: 'HEAD' })
+    assert.equal(res.status, 404) // unknown api path: HEAD must agree with GET
+  } finally {
+    await new Promise((r) => srv.close(r))
+  }
+})
+
 test('internal error: 500 body is opaque, logger receives the real error (I-5/T-1)', async () => {
   const seen = []
   const err = new Error('secret /abs/path E:\\x')

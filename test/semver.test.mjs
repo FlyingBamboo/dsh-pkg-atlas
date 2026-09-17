@@ -44,3 +44,17 @@ test('intentional divergence: caret on 0.x base is rc-tolerant for DSH rc ecosys
   assert.deepEqual(maxSatisfying(['0.1.5', '0.1.6-rc.1'], '^0.1.5'),
     { version: '0.1.6-rc.1', satisfied: true })
 })
+
+test('opaque descriptor ranges (github:/link:/workspace:/URL) attach max as satisfied (R23)', () => {
+  assert.deepEqual(maxSatisfying(['1.6.0'], 'github:bradegithub/dsh-plugins-marketplace'),
+    { version: '1.6.0', satisfied: true })
+  assert.deepEqual(maxSatisfying(['1.0.0', '2.0.0'], 'workspace:*'),
+    { version: '2.0.0', satisfied: true })
+  assert.deepEqual(maxSatisfying(['1.2.3'], 'git+ssh://git@example.com/x.git'),
+    { version: '1.2.3', satisfied: true })
+  assert.deepEqual(maxSatisfying(['1.0.0'], 'https://example.com/x.tgz'),
+    { version: '1.0.0', satisfied: true })
+  // genuine semver violation still flags unsatisfied
+  assert.deepEqual(maxSatisfying(['1.6.0'], '^2.0.0'),
+    { version: '1.6.0', satisfied: false })
+})

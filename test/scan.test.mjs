@@ -274,12 +274,17 @@ function goldenReplanted(text, home) {
   const golden = JSON.parse(text)
   const probe = golden.nodes.find((n) => typeof n._dir === 'string' && typeof n.path === 'string')
   assert.ok(probe, 'golden 必须含带 _dir 的探针节点')
+  assert.ok(probe.path.startsWith('$DSH_HOME'), `probe.path 必须以 $DSH_HOME 标签开头（tail 切片推导的前提）: ${probe.path}`)
   const tail = probe.path.slice('$DSH_HOME'.length)
   const root = probe._dir.slice(0, probe._dir.length - tail.length)
   assert.ok(isAbsolute(root), `golden home 根必须是绝对路径: ${root}`)
   const esc = (v) => JSON.stringify(v).slice(1, -1)
+  // 强「真的命中」：原文里 root 只以各 _dir 节点值的前缀出现（展示路径全是 $DSH_HOME 标签），
+  // 替换次数必须恰等于带 _dir 的节点数——少了是 root 反推没命中，多了是误伤别的字段。
+  const dirNodes = golden.nodes.filter((x) => typeof x._dir === 'string').length
+  const hits = text.split(esc(root)).length - 1
+  assert.equal(hits, dirNodes, `root 替换次数必须等于带 _dir 节点数 ${dirNodes}，实测 ${hits}`)
   const replanted = JSON.parse(text.split(esc(root)).join(esc(home)))
-  assert.ok(JSON.stringify(replanted).includes(esc(home)), 're-root 必须真的命中（root 反推错了？）')
   return replanted
 }
 
@@ -343,10 +348,14 @@ test('V2 进度：phase 恰一次全序推进、scanned 单调不减、total 恒
       assert.ok(e.scanned >= 0 && e.total >= e.scanned, `计数越界: ${JSON.stringify(e)}`)
     }
     assert.deepEqual(phaseRuns(events), PHASES, 'listing→manifests→assembling→done 各恰一次')
-    // 宇宙 = 全部 package + broken 节点（profile 虚拟节点不来自目录作业）
-    const n = g.nodes.filter((x) => x.kind !== 'profile').length
-    assert.ok(n > 0)
-    assert.ok(events.every((e) => e.total === n), `total 必须恒为目录宇宙数 ${n}`)
+    // 宇宙 = manifests 事件数（每扫到一个目录恰一事件）。候选目录塌缩到同一节点 id
+    // 是合法的（R15：pnpm 把同一包链进多层，last-wins；broken 同 ref 去重），非 profile
+    // 节点数可以小于宇宙，绝不能在此断言相等——合法 R15 fixture 会把等值断言打挂。
+    const n = events.filter((e) => e.phase === 'manifests').length
+    const nonProfile = g.nodes.filter((x) => x.kind !== 'profile').length
+    assert.ok(nonProfile > 0)
+    assert.ok(events.every((e) => e.total === n), `total 必须恒等于 manifests 事件数（实扫目录宇宙数）${n}`)
+    assert.ok(nonProfile <= n, `非 profile 节点数不得超过目录宇宙数 ${n}，实测 ${nonProfile}`)
     for (let i = 1; i < events.length; i += 1) {
       assert.ok(events[i].scanned >= events[i - 1].scanned, `scanned 回退: ${JSON.stringify(events[i - 1])} → ${JSON.stringify(events[i])}`)
     }
@@ -400,7 +409,10 @@ test('V2 scanner.status()：idle → scanning（并发 get 共享单次扫描）
     assert.ok(st.finishedAt >= st.startedAt)
     assert.ok(st.total > 0)
     assert.equal(st.scanned, st.total, 'ready 必须计满')
-    assert.equal(st.total, a.nodes.filter((x) => x.kind !== 'profile').length)
+    // total 是目录宇宙数而非节点数：多层同包目录 last-wins 塌缩成单节点（R15）时
+    // 节点数 < 宇宙是合法的，只能钉 ≤（宇宙===manifests 事件数由进度测试钉）。
+    assert.ok(a.nodes.filter((x) => x.kind !== 'profile').length <= st.total,
+      `非 profile 节点数不得超过宇宙数 ${st.total}`)
   } finally {
     await rm(h, { recursive: true, force: true })
   }

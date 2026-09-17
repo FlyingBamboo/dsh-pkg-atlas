@@ -249,12 +249,10 @@ test('@types scope excluded even when profile-referenced: no node, no warning (M
 
 // ==================== Task V2：并行化 + 进度状态机 + category 契约增量 ====================
 //
-// 裁决 R30：`state:'failed'` 没有测试。scan() 不存在可注入的失败面——所有读路径走
-// readJsonSafe/readTextSafe 吞异常，profiles 根不可读只出 root-unreadable warning（I-3/R25），
-// 故 failed 只能靠给 scan 开测试后门来「造」，得不偿失。覆盖方式 = 源码审查：
-// createScanner 的 rejection 分支置 state:'failed' + error:'scan-failed'（只有码，
-// 无堆栈/路径——X- 泄漏纪律）后**继续 throw**（v1 throw 语义不变）；下一次 get()/get(true)
-// 重置 error 回 scanning→ready（spec §5「failed 可重试回 ready」）。
+// 裁决 R30（V3 已废止）：原裁决称 scan() 不存在可注入的失败面、failed 无测试只能源码审查。
+// 前提是假的：非字符串 dshHome 会让 scan() 首行的 path.join 同步抛 TypeError——failed 真实
+// 可达，见文末 V3 测试钉（rejects + state:'failed' + error 只有码）。rejection 分支置
+// failed 后继续 throw（v1 throw 语义不变）、下一次 get() 复位重试，这两条语义不变。
 
 const GOLDEN_URL = new URL('./golden/scan-fixture.json', import.meta.url)
 const PHASES = ['listing', 'manifests', 'assembling', 'done']
@@ -491,6 +489,98 @@ test('V2 顶层 categories 是本次扫描自有副本：跨 scan 与 lib/catego
     g1.categories.length = 0
     assert.deepEqual((await scan({ dshHome: h })).categories.map((c) => c.id), CATEGORY_IDS, '下一次扫描不受污染')
     assert.equal(CATEGORIES[0].id, 'kernel', 'lib/categories.js 的模块常量不得被外部改动波及')
+  } finally {
+    await rm(h, { recursive: true, force: true })
+  }
+})
+
+// ==================== Task V3：scan 层承接项（token 防串扰 + failed 可达性） ====================
+
+/** 测试专用：纯 @deepseek-ai 包目录宇宙（official 整体入场，无需 profile）。
+ *  小 fixture 下重叠两扫描近同步推进、共享 status 的写入几乎永不相同值——串扰症状
+ *  （ready + 半程计数）只有宇宙够大、扫描间产生真实漂移后才可被宏观任务采样观测到。 */
+async function buildDirUniverse(root, n) {
+  const nm = join(root, 'profiles/node_modules/@deepseek-ai')
+  for (let i = 0; i < n; i += 1) {
+    const id = `pkg-${String(i).padStart(3, '0')}`
+    await mkdir(join(nm, id), { recursive: true })
+    await writeFile(join(nm, id, 'package.json'), JSON.stringify({ name: `@deepseek-ai/${id}`, version: '1.0.0' }), 'utf8')
+  }
+}
+
+test('V3 failed 可达：非字符串 dshHome → scan 同步抛 → rejects + state:failed（error 只有码，无路径/栈）', async () => {
+  // V2 复审承接项 2（R30 废止）：path.join(42,'profiles') 在 scan() 体内第一行同步抛
+  // TypeError——async 吞进 rejection，是 scan 唯一天然失败面（其余读路径都被 safe 吞掉）。
+  const scanner = createScanner({ dshHome: 42 })
+  await assert.rejects(scanner.get(), TypeError)
+  const st = scanner.status()
+  assert.deepEqual(Object.keys(st).sort(), ['error', 'finishedAt', 'phase', 'scanned', 'startedAt', 'state', 'total'].sort())
+  assert.equal(st.state, 'failed')
+  assert.equal(st.error, 'scan-failed')
+  assert.equal(st.phase, null) // 先于任何 emit 就抛了：连 listing 都不曾出现
+  assert.equal(st.scanned, 0)
+  assert.equal(st.total, 0)
+  assert.equal(typeof st.startedAt, 'number')
+  assert.equal(typeof st.finishedAt, 'number')
+  assert.ok(st.finishedAt >= st.startedAt)
+  // X- 泄漏纪律：整个快照只含基元，无绝对路径/盘符片段（error 只放码不放消息）
+  assert.ok(!JSON.stringify(st).includes(':\\'), `泄漏嫌疑: ${JSON.stringify(st)}`)
+  // 同一 scanner 可反复重试：再 get 仍 rejects（下一次 get 复位 scanning 后重新失败，V2 复位语义不变）
+  await assert.rejects(scanner.get(), TypeError)
+  assert.equal(scanner.status().state, 'failed')
+})
+
+test('V3 scan token 防串扰：多 refresh 在飞不混写 status，终态属最后启动的扫描', async () => {
+  const h = await mkdtemp(join(tmpdir(), 'atlas-token-'))
+  try {
+    await buildDirUniverse(h, 150)
+    const scanner = createScanner({ dshHome: h })
+    // 重叠的构造（承接项 1）：先种一个在飞 scan，再让两个 get(true) 排到**同一个** inflight 上。
+    // 它落定后两条 refresh 续体在同一个微任务排空里各自 startScan()——refresh 分支 await 之后
+    // 不复检 inflight，第二次 scan 在第一次仍处飞行时启动：两个 onProgress 写手同时挂上
+    // 共享 status。（严格说，只发两个 get(true) 且无在先 inflight 时 await 会把它们串行化；
+    // 「快速连点重扫」的页面形态——首轮扫描在飞时双击——正是这里的 p0 + p1/p2 形状。）
+    const p0 = scanner.get()
+    const p1 = scanner.get(true)
+    const p2 = scanner.get(true)
+    const corrupt = []
+    let samples = 0
+    let maxStartedAtSeen = 0
+    let stop = false
+    const poll = () => {
+      if (stop) return
+      const s = scanner.status()
+      samples += 1
+      // 观测面 1：ready 快照永不得被另一扫描的半程进度污染。无 token 守卫的基线上，
+      //   同形状竞态实测出过 {state:'ready', phase:'manifests', scanned:295, total:300}
+      //   与 scanning 态内 scanned 回退（RED 证据见 task-V3-report.md）。
+      if (s.state === 'ready' && (s.phase !== 'done' || s.scanned !== s.total)) corrupt.push(s)
+      // 观测面 2：'done' 与终态 .then 之间无宏观任务边界（纯微任务链），宏观采样器不得
+      //   观测到 state 仍 scanning 而 phase 已 done。
+      if (s.state === 'scanning' && s.phase === 'done') corrupt.push(s)
+      if (typeof s.startedAt === 'number' && s.startedAt > maxStartedAtSeen) maxStartedAtSeen = s.startedAt
+      setImmediate(poll)
+    }
+    poll()
+    const [, g1, g2] = await Promise.all([p0, p1, p2])
+    await new Promise((r) => setTimeout(r, 20)) // 让任何迟到的 superseded 事件先落地再停采
+    stop = true
+    assert.ok(samples > 50, `采样过少，竞态未真正展开: ${samples}`)
+    assert.deepEqual(corrupt, [], `出现串扰快照: ${JSON.stringify(corrupt.slice(0, 3))}`)
+    assert.notEqual(g1, g2, '两次 refresh 都真实扫描（竞态真实存在，测试非空洞）')
+    const st = scanner.status()
+    assert.equal(st.state, 'ready')
+    assert.equal(st.phase, 'done')
+    assert.equal(st.scanned, st.total)
+    assert.ok(st.total >= 150, `目录宇宙缩水: ${st.total}`)
+    // 「终态属最后启动的扫描」：startedAt 只在 startScan 的复位块写，最后启动者 token 最大且
+    // 复位最晚——终态 startedAt 必须等于采样所见最大值；superseded 扫描的终态 .then 被 token
+    // 拦截，不得回写 state/finishedAt。
+    assert.equal(st.startedAt, maxStartedAtSeen)
+    // 构造性质（承接项 1 的明示）：守卫后仅 myToken===scanSeq 可写 status，新扫描复位与换 token
+    // 同步原子完成（采样器不可能撕开中间态），单扫描内 scanned 1..n 单调由 V2 进度测试钉死
+    // ——故「扫描进行中 scanned 回退」在守卫后**构造上不可能**，不对其做时序依赖的采样断言；
+    // 上面观测面 1/2 是该构造性质在宏观采样下的可观测量，且在无守卫基线上已被实测违反。
   } finally {
     await rm(h, { recursive: true, force: true })
   }

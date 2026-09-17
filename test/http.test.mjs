@@ -18,7 +18,7 @@ before(async () => {
   refreshCalls = []
   const getGraph = async (refresh = false) => { refreshCalls.push(refresh); return scanner.get(refresh) }
   assets = loadAssets(fileURLToPath(new URL('../web', import.meta.url)))
-  server = createServer((req, res) => { createRequestHandler({ getGraph, assets })(req, res) })
+  server = createServer((req, res) => { createRequestHandler({ getGraph, getStatus: () => scanner.status(), assets })(req, res) })
   await new Promise((r) => server.listen(0, '127.0.0.1', r))
   base = `http://127.0.0.1:${server.address().port}`
 })
@@ -170,4 +170,55 @@ test('bare PREFIX (no trailing slash) 301s to trailing slash and serves index (R
   assert.equal(r.status, 200)
   assert.equal(r.url, base + PREFIX + '/')
   assert.match(r.headers.get('content-type'), /text\/html/)
+})
+
+// ==================== Task V3：/api/status 路由 ====================
+
+test('V3 GET /api/status: 200 + body 逐字段等于快照 + nosniff + CL；HEAD headers-only；POST 405', async () => {
+  const fake = { state: 'scanning', phase: 'manifests', scanned: 3, total: 10, startedAt: 111, finishedAt: null, error: null }
+  let statusCalls = 0
+  const srv = createServer((req, res) => createRequestHandler({
+    getGraph: async () => ({ nodes: [] }),
+    getStatus: () => { statusCalls += 1; return fake },
+    assets,
+  })(req, res))
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r))
+  try {
+    const url = `http://127.0.0.1:${srv.address().port}${PREFIX}/api/status`
+    const res = await fetch(url)
+    assert.equal(res.status, 200)
+    assert.match(res.headers.get('content-type'), /application\/json/)
+    assert.equal(res.headers.get('x-content-type-options'), 'nosniff')
+    const text = await res.text()
+    assert.deepEqual(JSON.parse(text), fake, 'status JSON 必须逐字段等于快照（不掺水、不丢字段）')
+    assert.equal(res.headers.get('content-length'), String(Buffer.byteLength(text)))
+    assert.equal(statusCalls, 1)
+    // HEAD：与 /api/graph 同形态的 headers-only 200（无 CL——不撒谎原则同样适用）
+    const h = await fetch(url, { method: 'HEAD' })
+    assert.equal(h.status, 200)
+    assert.match(h.headers.get('content-type'), /application\/json/)
+    assert.equal(h.headers.get('x-content-type-options'), 'nosniff')
+    assert.equal(await h.text(), '')
+    assert.equal(statusCalls, 1, 'HEAD 不得触发 getStatus（与 HEAD /api/graph 的无副作用纪律一致）')
+    // POST：被全局方法闸拦截（既有闸，路由本身不需自证）
+    const p = await fetch(url, { method: 'POST' })
+    assert.equal(p.status, 405)
+    assert.equal(p.headers.get('allow'), 'GET, HEAD')
+  } finally {
+    await new Promise((r) => srv.close(r))
+  }
+})
+
+test('V3 主服务器 GET /api/status：描述真实扫描器终态（前置测试已扫完）且无路径/栈泄漏', async () => {
+  const res = await fetch(`${base}${PREFIX}/api/status`)
+  assert.equal(res.status, 200)
+  assert.equal(res.headers.get('x-content-type-options'), 'nosniff')
+  const st = await res.json()
+  // 本文件此前的 graph/refresh 测试都已 await 落定 → 终态必须 ready 且计满（快照即最后一次扫描）
+  assert.equal(st.state, 'ready')
+  assert.equal(st.phase, 'done')
+  assert.equal(st.scanned, st.total)
+  assert.ok(st.total > 0)
+  assert.equal(st.error, null)
+  assert.ok(!JSON.stringify(st).includes(':\\'), 'status JSON 不得含绝对路径（X- 泄漏纪律）')
 })

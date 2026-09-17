@@ -11,7 +11,8 @@ const w = async (root, rel, content) => {
 export async function buildFixture(root) {
   const H = root
   await w(H, 'profiles/web/package.json', JSON.stringify({
-    dependencies: { 'plugin-x': '^1.0.0', '@deepseek-ai/base': '^1.0.0', 'patched-plugin': '^9.0.0' },
+    // M-9: @types/node 被 profile 显式引用——ambient types 堆仍须整体排除（不进节点，也不报 missing-install）
+    dependencies: { 'plugin-x': '^1.0.0', '@deepseek-ai/base': '^1.0.0', 'patched-plugin': '^9.0.0', '@types/node': '^20.0.0' },
     dsh: { profile: { bundles: ['@deepseek-ai/base'] } },
   }))
   await w(H, 'profiles/web/cordis.patch.yml', [
@@ -20,6 +21,10 @@ export async function buildFixture(root) {
     '- insert:', "    - id: p3", "      name: '@deepseek-ai/ghost'",
     // M2: escaper 需被挂载才会进 BFS，词法守卫才有机会开火
     '- insert:', "    - id: p4", "      name: '@deepseek-ai/escaper'",
+    // I-2: pkg-broken（空目录）被显式引用——只能是 unreadable，不得再报 missing-install
+    '- insert:', "    - id: p5", "      name: '@deepseek-ai/pkg-broken'",
+    // T-3: 挂载环种子 loop-a ⇄ loop-b 互为 bundle patch 成员
+    '- insert:', "    - id: p6", "      name: '@deepseek-ai/loop-a'",
     "# name: 'commented-out-plugin'",
   ].join('\n'))
   // web layer: one referenced plugin + one hoisted lib (must NOT enter universe)
@@ -67,6 +72,24 @@ export async function buildFixture(root) {
   ].join('\n'))
   // 空目录：无 package.json（w() 的 join 会吃掉尾斜杠并写出 0 字节文件，必须直接 mkdir）
   await mkdir(join(H, 'profiles', 'node_modules', '@deepseek-ai', 'pkg-broken'), { recursive: true })
+  // T-3: 挂载环 fixture——loop-a 的 bundle patch 点名 loop-b，loop-b 反过来点名 loop-a。
+  // BFS 若无 visited 集，此处必死循环；测试即回归钉（pin）。
+  await w(H, 'profiles/node_modules/@deepseek-ai/loop-a/package.json', JSON.stringify({
+    name: '@deepseek-ai/loop-a', version: '1.0.0',
+    repository: { directory: 'packages/loop/loop-a' },
+    dsh: { bundle: { patch: './cordis.patch.yml' } },
+  }))
+  await w(H, 'profiles/node_modules/@deepseek-ai/loop-a/cordis.patch.yml', [
+    '- insert:', "    - id: la1", "      name: '@deepseek-ai/loop-b'",
+  ].join('\n'))
+  await w(H, 'profiles/node_modules/@deepseek-ai/loop-b/package.json', JSON.stringify({
+    name: '@deepseek-ai/loop-b', version: '1.0.0',
+    repository: { directory: 'packages/loop/loop-b' },
+    dsh: { bundle: { patch: './cordis.patch.yml' } },
+  }))
+  await w(H, 'profiles/node_modules/@deepseek-ai/loop-b/cordis.patch.yml', [
+    '- insert:', "    - id: lb1", "      name: '@deepseek-ai/loop-a'",
+  ].join('\n'))
   await w(H, 'profiles/node_modules/patched-plugin/package.json', JSON.stringify({ name: 'patched-plugin', version: '0.1.0' }))
   await w(H, 'profiles/node_modules/hoisted-lib/package.json', JSON.stringify({ name: 'hoisted-lib', version: '1.0.0' }))
   await w(H, 'profiles/node_modules/@types/node/package.json', JSON.stringify({ name: '@types/node', version: '20.0.0' }))
@@ -75,5 +98,6 @@ export async function buildFixture(root) {
 
 export const EXPECTED_PACKAGES = [
   '@deepseek-ai/base@1.0.0', '@deepseek-ai/core@1.0.0', '@deepseek-ai/escaper@1.0.0', '@deepseek-ai/extra@1.0.0',
+  '@deepseek-ai/loop-a@1.0.0', '@deepseek-ai/loop-b@1.0.0',
   '@deepseek-ai/util@1.0.0', '@deepseek-ai/util@2.0.0', 'plugin-x@1.0.0', 'patched-plugin@0.1.0',
 ]

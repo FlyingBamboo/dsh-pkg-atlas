@@ -1,8 +1,9 @@
 import { test, before } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
+import { CATEGORIES } from '../lib/categories.js'
 import { buildFixture, EXPECTED_PACKAGES } from './fixtures.mjs'
 // 命名空间导入：新导出（withinDir）缺失时只让该测试断言失败，不炸整个文件（RED 可读性）
 import * as scanMod from '../lib/scan.js'
@@ -244,4 +245,241 @@ test('@types scope excluded even when profile-referenced: no node, no warning (M
   assert.ok(!graph.nodes.some((n) => n.name === '@types/node'), '@types/node 不得成为节点')
   assert.ok(!graph.warnings.some((x) => x.message?.includes('@types/node')),
     '@types 引用在 missing-install 之前就被剔除，不得出现在任何警告里')
+})
+
+// ==================== Task V2：并行化 + 进度状态机 + category 契约增量 ====================
+//
+// 裁决 R30：`state:'failed'` 没有测试。scan() 不存在可注入的失败面——所有读路径走
+// readJsonSafe/readTextSafe 吞异常，profiles 根不可读只出 root-unreadable warning（I-3/R25），
+// 故 failed 只能靠给 scan 开测试后门来「造」，得不偿失。覆盖方式 = 源码审查：
+// createScanner 的 rejection 分支置 state:'failed' + error:'scan-failed'（只有码，
+// 无堆栈/路径——X- 泄漏纪律）后**继续 throw**（v1 throw 语义不变）；下一次 get()/get(true)
+// 重置 error 回 scanning→ready（spec §5「failed 可重试回 ready」）。
+
+const GOLDEN_URL = new URL('./golden/scan-fixture.json', import.meta.url)
+const PHASES = ['listing', 'manifests', 'assembling', 'done']
+const CATEGORY_IDS = ['kernel', 'session', 'llm', 'tools', 'orchestration', 'integration', 'ui', 'platform', 'infra', 'plugin', 'profiles', 'broken', 'ungrouped']
+
+/** 相邻同名 phase 折叠成一段：断言「四阶段各恰出现一次，且按全序推进、不回跳不打断」。 */
+const phaseRuns = (events) => events.map((e) => e.phase).filter((p, i, a) => i === 0 || a[i - 1] !== p)
+
+/**
+ * golden 的 `_dir` 是生成当时那台临时 home 的绝对路径，等价性测试必然用另一台新临时
+ * home——先把 golden 的 home 根换成当前根再比对。根从 golden 自身反推（`_dir` 去掉
+ * `path` 去掉 `$DSH_HOME` 标签后的尾段），不硬编码，golden 重生成也不失效。
+ * 替换在 JSON 原文上做，故两侧都要用 JSON 转义后的形态（原文里反斜杠是双写的）。
+ * 其余字段（含 warnings/nodes.path 的 `$DSH_HOME` 展示路径）与 home 无关，零处理。
+ */
+function goldenReplanted(text, home) {
+  const golden = JSON.parse(text)
+  const probe = golden.nodes.find((n) => typeof n._dir === 'string' && typeof n.path === 'string')
+  assert.ok(probe, 'golden 必须含带 _dir 的探针节点')
+  const tail = probe.path.slice('$DSH_HOME'.length)
+  const root = probe._dir.slice(0, probe._dir.length - tail.length)
+  assert.ok(isAbsolute(root), `golden home 根必须是绝对路径: ${root}`)
+  const esc = (v) => JSON.stringify(v).slice(1, -1)
+  const replanted = JSON.parse(text.split(esc(root)).join(esc(home)))
+  assert.ok(JSON.stringify(replanted).includes(esc(home)), 're-root 必须真的命中（root 反推错了？）')
+  return replanted
+}
+
+/** R27：等价性只钉 v1 字段——比对前剥掉 generatedAt 与 v2 增量（顶层 categories / node.category / groups[].category）。 */
+const stripForGolden = ({ generatedAt, categories, ...rest }) => ({
+  ...rest,
+  nodes: rest.nodes.map(({ category, ...n }) => n),
+  groups: rest.groups.map(({ category, ...g }) => g),
+})
+
+test('V2 等价性：并行 scan 与 v1 golden 逐字段一致（含节点/边数组序，R27 剥增量字段）', async () => {
+  const h = await mkdtemp(join(tmpdir(), 'atlas-eq-'))
+  try {
+    await buildFixture(h)
+    const g = await scan({ dshHome: h })
+    assert.ok(g.generatedAt, 'generatedAt 仍须存在（仅比对前剔除）')
+    // 先确认 R27 要剥的增量字段确实在（字段丢了的输出剥完也能“等价”，那是假绿）
+    assert.ok(Array.isArray(g.categories), '顶层 categories 必须在')
+    assert.ok(g.nodes.every((n) => 'category' in n), '每个 node.category 必须在')
+    assert.ok(g.groups.every((x) => 'category' in x), '每个 groups[].category 必须在')
+    assert.deepEqual(stripForGolden(g), goldenReplanted(await readFile(GOLDEN_URL, 'utf8'), h))
+  } finally {
+    await rm(h, { recursive: true, force: true })
+  }
+})
+
+test('V2 mapLimit：槽位保序 + 并发上限 + 空输入/超限（并发核单元钉，同 withinDir 先例导出）', async () => {
+  const { mapLimit } = scanMod
+  assert.equal(typeof mapLimit, 'function', 'scan.js 必须导出 mapLimit')
+  const items = [0, 1, 2, 3, 4, 5, 6, 7, 8]
+  let live = 0
+  let peak = 0
+  // 越靠后的项越早完成：不保序的实现（push 完成结果）会在这里给出反序数组
+  const out = await mapLimit(items, 3, async (i) => {
+    live += 1
+    if (live > peak) peak = live
+    await new Promise((r) => setTimeout(r, (items.length - i) * 3))
+    live -= 1
+    return `v${i}`
+  })
+  assert.deepEqual(out, items.map((i) => `v${i}`), '结果必须按输入槽位落位，与完成顺序无关')
+  assert.ok(peak <= 3, `并发上限 3，实测峰值 ${peak}`)
+  assert.ok(peak >= 2, `limit 3 至少该有并行度，实测峰值 ${peak}`)
+  assert.deepEqual(await mapLimit([], 4, async () => 1), [], '空输入 => 空输出，不启动 worker')
+  assert.deepEqual(await mapLimit([1, 2], 16, async (x) => x * 2), [2, 4], 'limit > 项数 合法')
+  await assert.rejects(mapLimit([1, 2, 3], 2, async (x) => { if (x === 2) throw new Error('boom') }), /boom/,
+    'fn 抛错必须向上传播（scan 的 throw 语义不被并发核吞掉）')
+})
+
+test('V2 进度：phase 恰一次全序推进、scanned 单调不减、total 恒为目录宇宙数、末次 scanned===total', async () => {
+  const h = await mkdtemp(join(tmpdir(), 'atlas-prog-'))
+  try {
+    await buildFixture(h)
+    const events = []
+    const g = await scan({ dshHome: h, onProgress: (p) => events.push(p) })
+    assert.ok(events.length > 0, 'onProgress 必须被调用')
+    for (const e of events) {
+      assert.ok(PHASES.includes(e.phase), `未知 phase: ${e.phase}`)
+      assert.equal(typeof e.scanned, 'number')
+      assert.equal(typeof e.total, 'number')
+      assert.ok(e.scanned >= 0 && e.total >= e.scanned, `计数越界: ${JSON.stringify(e)}`)
+    }
+    assert.deepEqual(phaseRuns(events), PHASES, 'listing→manifests→assembling→done 各恰一次')
+    // 宇宙 = 全部 package + broken 节点（profile 虚拟节点不来自目录作业）
+    const n = g.nodes.filter((x) => x.kind !== 'profile').length
+    assert.ok(n > 0)
+    assert.ok(events.every((e) => e.total === n), `total 必须恒为目录宇宙数 ${n}`)
+    for (let i = 1; i < events.length; i += 1) {
+      assert.ok(events[i].scanned >= events[i - 1].scanned, `scanned 回退: ${JSON.stringify(events[i - 1])} → ${JSON.stringify(events[i])}`)
+    }
+    assert.equal(events[0].phase, 'listing')
+    assert.equal(events[0].scanned, 0, 'listing 事件给出 total，scanned 从 0 起（否则单调性被自己打破）')
+    assert.deepEqual(events.filter((e) => e.phase === 'manifests').map((e) => e.scanned),
+      Array.from({ length: n }, (_, i) => i + 1), '每完成一个目录一个 manifests 事件，计数 1..n')
+    const last = events.at(-1)
+    assert.equal(last.phase, 'done')
+    assert.equal(last.scanned, n)
+    assert.equal(last.total, n)
+    assert.deepEqual(events.filter((e) => e.phase === 'assembling').map((e) => [e.scanned, e.total]), [[n, n]])
+  } finally {
+    await rm(h, { recursive: true, force: true })
+  }
+})
+
+test('V2 进度：零目录宇宙（空 home）也走完四阶段各一次 0/0', async () => {
+  const h = await mkdtemp(join(tmpdir(), 'atlas-prog0-'))
+  try {
+    const events = []
+    await scan({ dshHome: h, onProgress: (p) => events.push(p) })
+    assert.deepEqual(phaseRuns(events), PHASES)
+    assert.equal(events.length, 4, '无作业时每阶段恰一事件')
+    for (const e of events) assert.deepEqual([e.scanned, e.total], [0, 0])
+  } finally {
+    await rm(h, { recursive: true, force: true })
+  }
+})
+
+test('V2 scanner.status()：idle → scanning（并发 get 共享单次扫描）→ ready 带计数与时间戳', async () => {
+  const h = await mkdtemp(join(tmpdir(), 'atlas-status-'))
+  try {
+    await buildFixture(h)
+    const scanner = createScanner({ dshHome: h })
+    assert.deepEqual(scanner.status(), { state: 'idle', phase: null, scanned: 0, total: 0, startedAt: null, finishedAt: null, error: null })
+    const both = Promise.all([scanner.get(), scanner.get()]) // 同步进入 scanning
+    const mid = scanner.status()
+    assert.equal(mid.state, 'scanning')
+    assert.equal(mid.error, null)
+    assert.equal(mid.finishedAt, null)
+    assert.equal(typeof mid.startedAt, 'number')
+    assert.ok(mid.phase === null || PHASES.includes(mid.phase), `在飞 phase 非法: ${mid.phase}`)
+    const [a, b] = await both
+    assert.equal(a, b, '并发两个 get 必须共享同一次扫描（同一对象）')
+    const st = scanner.status()
+    assert.equal(st.state, 'ready')
+    assert.equal(st.phase, 'done')
+    assert.equal(st.error, null)
+    assert.equal(typeof st.finishedAt, 'number')
+    assert.ok(st.finishedAt >= st.startedAt)
+    assert.ok(st.total > 0)
+    assert.equal(st.scanned, st.total, 'ready 必须计满')
+    assert.equal(st.total, a.nodes.filter((x) => x.kind !== 'profile').length)
+  } finally {
+    await rm(h, { recursive: true, force: true })
+  }
+})
+
+test('V2 scanner.status() 返回浅拷贝：外部改不动内部状态', () => {
+  const scanner = createScanner({ dshHome: join(tmpdir(), 'atlas-status-copy-none') }) // 不建目录：全程不扫描
+  const snap = scanner.status()
+  snap.state = 'hacked'
+  snap.scanned = 9999
+  snap.error = 'leaked-stack'
+  assert.notEqual(scanner.status(), snap, '每次调用必须给新对象')
+  assert.deepEqual(scanner.status(), { state: 'idle', phase: null, scanned: 0, total: 0, startedAt: null, finishedAt: null, error: null })
+})
+
+test('V2 status() 在 refresh 重扫时重新推进（ready→scanning→ready，error 复位）', async () => {
+  const h = await mkdtemp(join(tmpdir(), 'atlas-status-refresh-'))
+  try {
+    await buildFixture(h)
+    const scanner = createScanner({ dshHome: h })
+    await scanner.get()
+    assert.equal(scanner.status().state, 'ready')
+    await writeFile(join(h, 'profiles/web/node_modules/plugin-x/package.json'),
+      JSON.stringify({ name: 'plugin-x', version: '1.0.1' }), 'utf8')
+    const p = scanner.get(true)
+    const mid = scanner.status()
+    assert.equal(mid.state, 'scanning', 'refresh 必须让 status 重新进入 scanning')
+    assert.equal(mid.scanned, 0, '重扫从零重新计数')
+    assert.equal(mid.error, null)
+    await p
+    assert.equal(scanner.status().state, 'ready')
+    assert.equal(scanner.status().phase, 'done')
+  } finally {
+    await rm(h, { recursive: true, force: true })
+  }
+})
+
+test('V2 category 契约：node.category、groups[].category、顶层 categories（13，kernel 首位）', () => {
+  const node = (id) => graph.nodes.find((x) => x.id === id)
+  // 组→大类走 lib/categories.js（V1）：bundle/core→kernel，util→infra，未知组→ungrouped 兜底
+  assert.equal(node('@deepseek-ai/base@1.0.0').category, 'kernel')
+  assert.equal(node('@deepseek-ai/core@1.0.0').category, 'kernel')
+  assert.equal(node('@deepseek-ai/util@2.0.0').category, 'infra')
+  assert.equal(node('@deepseek-ai/extra@1.0.0').category, 'ungrouped') // 无 repository → ungrouped 组
+  assert.equal(node('@deepseek-ai/escaper@1.0.0').category, 'ungrouped') // escaper 组不在映射表 → 兜底
+  assert.equal(node('plugin-x@1.0.0').category, 'plugin') // 第三方目录组包走组 category（plugin）
+  assert.equal(node('patched-plugin@0.1.0').category, 'plugin')
+  assert.equal(node('broken:@deepseek-ai/pkg-broken').category, 'broken')
+  assert.equal(node('profile:web').category, 'profiles')
+  assert.deepEqual(Object.fromEntries(graph.groups.map((g) => [g.id, g.category])), {
+    bundle: 'kernel', core: 'kernel', escaper: 'ungrouped', ungrouped: 'ungrouped', loop: 'ungrouped',
+    broken: 'broken', util: 'infra', plugin: 'plugin', profiles: 'profiles',
+  })
+  // 结构不变量：每个节点的 category 与它所属组的 category 一致，且必属 13 大类
+  const groupCat = Object.fromEntries(graph.groups.map((g) => [g.id, g.category]))
+  for (const n of graph.nodes) {
+    assert.equal(n.category, groupCat[n.group], `${n.id} 的 category 与其组不符`)
+    assert.ok(CATEGORY_IDS.includes(n.category), `${n.id} 的 category 不在 13 大类内: ${n.category}`)
+  }
+  assert.equal(graph.categories.length, 13)
+  assert.equal(graph.categories[0].id, 'kernel')
+  assert.deepEqual(graph.categories.map((c) => c.id), CATEGORY_IDS)
+  for (const c of graph.categories) assert.ok(c.zh && c.en, `${c.id} 缺双语标签`)
+})
+
+test('V2 顶层 categories 是本次扫描自有副本：跨 scan 与 lib/categories.js 常量互不串味', async () => {
+  const h = await mkdtemp(join(tmpdir(), 'atlas-cats-'))
+  try {
+    await buildFixture(h)
+    const g1 = await scan({ dshHome: h })
+    const g2 = await scan({ dshHome: h })
+    assert.deepEqual(g1.categories, CATEGORIES)
+    assert.notEqual(g1.categories, g2.categories, '两次扫描不得共享同一数组引用')
+    assert.notEqual(g1.categories[0], CATEGORIES[0], '条目对象也不得共享引用（下游改动不得回写模块常量）')
+    g1.categories[0].id = 'tampered'
+    g1.categories.length = 0
+    assert.deepEqual((await scan({ dshHome: h })).categories.map((c) => c.id), CATEGORY_IDS, '下一次扫描不受污染')
+    assert.equal(CATEGORIES[0].id, 'kernel', 'lib/categories.js 的模块常量不得被外部改动波及')
+  } finally {
+    await rm(h, { recursive: true, force: true })
+  }
 })

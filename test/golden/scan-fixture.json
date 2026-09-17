@@ -1,0 +1,494 @@
+{
+ "schema": 1,
+ "dshHome": "$DSH_HOME",
+ "warnings": [
+  {
+   "type": "unreadable",
+   "path": "$DSH_HOME\\profiles\\node_modules\\@deepseek-ai\\pkg-broken",
+   "message": "@deepseek-ai/pkg-broken: 目录存在但读不到 package.json（断链或损坏）"
+  },
+  {
+   "type": "missing-install",
+   "path": "",
+   "message": "引用了 @deepseek-ai/ghost，但本机各层都找不到该目录"
+  },
+  {
+   "type": "parse-fail",
+   "path": "$DSH_HOME\\profiles\\node_modules\\@deepseek-ai\\escaper",
+   "message": "bundle patch 路径越出包目录: ../escape.yml"
+  }
+ ],
+ "profiles": [
+  {
+   "name": "web",
+   "dependencies": {
+    "plugin-x": "^1.0.0",
+    "@deepseek-ai/base": "^1.0.0",
+    "patched-plugin": "^9.0.0",
+    "@types/node": "^20.0.0"
+   },
+   "bundles": [
+    "@deepseek-ai/base"
+   ]
+  }
+ ],
+ "groups": [
+  {
+   "id": "bundle",
+   "kind": "official",
+   "packageCount": 1
+  },
+  {
+   "id": "core",
+   "kind": "official",
+   "packageCount": 1
+  },
+  {
+   "id": "escaper",
+   "kind": "official",
+   "packageCount": 1
+  },
+  {
+   "id": "ungrouped",
+   "kind": "ungrouped",
+   "packageCount": 1
+  },
+  {
+   "id": "loop",
+   "kind": "official",
+   "packageCount": 2
+  },
+  {
+   "id": "broken",
+   "kind": "broken",
+   "packageCount": 1
+  },
+  {
+   "id": "util",
+   "kind": "official",
+   "packageCount": 2
+  },
+  {
+   "id": "plugin",
+   "kind": "plugin",
+   "packageCount": 2
+  },
+  {
+   "id": "profiles",
+   "kind": "profile",
+   "packageCount": 1
+  }
+ ],
+ "nodes": [
+  {
+   "id": "@deepseek-ai/base@1.0.0",
+   "kind": "package",
+   "name": "@deepseek-ai/base",
+   "version": "1.0.0",
+   "scope": "official",
+   "group": "bundle",
+   "path": "$DSH_HOME\\profiles\\node_modules\\@deepseek-ai\\base",
+   "description": null,
+   "servicesRequired": [],
+   "externalDeps": [],
+   "mountedBy": [
+    "web"
+   ],
+   "flags": {
+    "unreadable": false
+   },
+   "_dir": "C:\\Users\\yswhw\\AppData\\Local\\Temp\\atlas-golden-RkrKAx\\profiles\\node_modules\\@deepseek-ai\\base",
+   "_manifest": {
+    "name": "@deepseek-ai/base",
+    "version": "1.0.0",
+    "repository": {
+     "directory": "packages/bundle/base"
+    },
+    "dsh": {
+     "bundle": {
+      "patch": "./cordis.patch.yml"
+     }
+    },
+    "dependencies": {
+     "@deepseek-ai/util": "^1.0.0"
+    }
+   },
+   "_dshPatchRel": "./cordis.patch.yml"
+  },
+  {
+   "id": "@deepseek-ai/core@1.0.0",
+   "kind": "package",
+   "name": "@deepseek-ai/core",
+   "version": "1.0.0",
+   "scope": "official",
+   "group": "core",
+   "path": "$DSH_HOME\\profiles\\node_modules\\@deepseek-ai\\core",
+   "description": "核心内核",
+   "servicesRequired": [],
+   "externalDeps": [],
+   "mountedBy": [
+    "web"
+   ],
+   "flags": {
+    "unreadable": false
+   },
+   "_dir": "C:\\Users\\yswhw\\AppData\\Local\\Temp\\atlas-golden-RkrKAx\\profiles\\node_modules\\@deepseek-ai\\core",
+   "_manifest": {
+    "name": "@deepseek-ai/core",
+    "version": "1.0.0",
+    "repository": {
+     "directory": "packages/core/core"
+    },
+    "description": "pkg-desc-core"
+   },
+   "_dshPatchRel": null
+  },
+  {
+   "id": "@deepseek-ai/escaper@1.0.0",
+   "kind": "package",
+   "name": "@deepseek-ai/escaper",
+   "version": "1.0.0",
+   "scope": "official",
+   "group": "escaper",
+   "path": "$DSH_HOME\\profiles\\node_modules\\@deepseek-ai\\escaper",
+   "description": null,
+   "servicesRequired": [],
+   "externalDeps": [],
+   "mountedBy": [
+    "web"
+   ],
+   "flags": {
+    "unreadable": false
+   },
+   "_dir": "C:\\Users\\yswhw\\AppData\\Local\\Temp\\atlas-golden-RkrKAx\\profiles\\node_modules\\@deepseek-ai\\escaper",
+   "_manifest": {
+    "name": "@deepseek-ai/escaper",
+    "version": "1.0.0",
+    "repository": {
+     "directory": "packages/escaper/escaper"
+    },
+    "dsh": {
+     "bundle": {
+      "patch": "../escape.yml"
+     }
+    }
+   },
+   "_dshPatchRel": "../escape.yml"
+  },
+  {
+   "id": "@deepseek-ai/extra@1.0.0",
+   "kind": "package",
+   "name": "@deepseek-ai/extra",
+   "version": "1.0.0",
+   "scope": "official",
+   "group": "ungrouped",
+   "path": "$DSH_HOME\\profiles\\node_modules\\@deepseek-ai\\extra",
+   "description": null,
+   "servicesRequired": [],
+   "externalDeps": [],
+   "mountedBy": [
+    "web"
+   ],
+   "flags": {
+    "unreadable": false
+   },
+   "_dir": "C:\\Users\\yswhw\\AppData\\Local\\Temp\\atlas-golden-RkrKAx\\profiles\\node_modules\\@deepseek-ai\\extra",
+   "_manifest": {
+    "name": "@deepseek-ai/extra",
+    "version": "1.0.0"
+   },
+   "_dshPatchRel": null
+  },
+  {
+   "id": "@deepseek-ai/loop-a@1.0.0",
+   "kind": "package",
+   "name": "@deepseek-ai/loop-a",
+   "version": "1.0.0",
+   "scope": "official",
+   "group": "loop",
+   "path": "$DSH_HOME\\profiles\\node_modules\\@deepseek-ai\\loop-a",
+   "description": null,
+   "servicesRequired": [],
+   "externalDeps": [],
+   "mountedBy": [
+    "web"
+   ],
+   "flags": {
+    "unreadable": false
+   },
+   "_dir": "C:\\Users\\yswhw\\AppData\\Local\\Temp\\atlas-golden-RkrKAx\\profiles\\node_modules\\@deepseek-ai\\loop-a",
+   "_manifest": {
+    "name": "@deepseek-ai/loop-a",
+    "version": "1.0.0",
+    "repository": {
+     "directory": "packages/loop/loop-a"
+    },
+    "dsh": {
+     "bundle": {
+      "patch": "./cordis.patch.yml"
+     }
+    }
+   },
+   "_dshPatchRel": "./cordis.patch.yml"
+  },
+  {
+   "id": "@deepseek-ai/loop-b@1.0.0",
+   "kind": "package",
+   "name": "@deepseek-ai/loop-b",
+   "version": "1.0.0",
+   "scope": "official",
+   "group": "loop",
+   "path": "$DSH_HOME\\profiles\\node_modules\\@deepseek-ai\\loop-b",
+   "description": null,
+   "servicesRequired": [],
+   "externalDeps": [],
+   "mountedBy": [
+    "web"
+   ],
+   "flags": {
+    "unreadable": false
+   },
+   "_dir": "C:\\Users\\yswhw\\AppData\\Local\\Temp\\atlas-golden-RkrKAx\\profiles\\node_modules\\@deepseek-ai\\loop-b",
+   "_manifest": {
+    "name": "@deepseek-ai/loop-b",
+    "version": "1.0.0",
+    "repository": {
+     "directory": "packages/loop/loop-b"
+    },
+    "dsh": {
+     "bundle": {
+      "patch": "./cordis.patch.yml"
+     }
+    }
+   },
+   "_dshPatchRel": "./cordis.patch.yml"
+  },
+  {
+   "id": "broken:@deepseek-ai/pkg-broken",
+   "kind": "broken",
+   "name": "pkg-broken",
+   "version": "-",
+   "scope": "official",
+   "group": "broken",
+   "path": "$DSH_HOME\\profiles\\node_modules\\@deepseek-ai\\pkg-broken",
+   "description": null,
+   "servicesRequired": [],
+   "externalDeps": [],
+   "mountedBy": [],
+   "flags": {
+    "unreadable": true
+   }
+  },
+  {
+   "id": "@deepseek-ai/util@1.0.0",
+   "kind": "package",
+   "name": "@deepseek-ai/util",
+   "version": "1.0.0",
+   "scope": "official",
+   "group": "util",
+   "path": "$DSH_HOME\\profiles\\node_modules\\@deepseek-ai\\util",
+   "description": null,
+   "servicesRequired": [],
+   "externalDeps": [],
+   "mountedBy": [],
+   "flags": {
+    "unreadable": false
+   },
+   "_dir": "C:\\Users\\yswhw\\AppData\\Local\\Temp\\atlas-golden-RkrKAx\\profiles\\node_modules\\@deepseek-ai\\util",
+   "_manifest": {
+    "name": "@deepseek-ai/util",
+    "version": "1.0.0",
+    "repository": {
+     "directory": "packages/util/util"
+    }
+   },
+   "_dshPatchRel": null
+  },
+  {
+   "id": "patched-plugin@0.1.0",
+   "kind": "package",
+   "name": "patched-plugin",
+   "version": "0.1.0",
+   "scope": "third-party",
+   "group": "plugin",
+   "path": "$DSH_HOME\\profiles\\node_modules\\patched-plugin",
+   "description": null,
+   "servicesRequired": [],
+   "externalDeps": [],
+   "mountedBy": [
+    "web"
+   ],
+   "flags": {
+    "unreadable": false
+   },
+   "_dir": "C:\\Users\\yswhw\\AppData\\Local\\Temp\\atlas-golden-RkrKAx\\profiles\\node_modules\\patched-plugin",
+   "_manifest": {
+    "name": "patched-plugin",
+    "version": "0.1.0"
+   },
+   "_dshPatchRel": null
+  },
+  {
+   "id": "@deepseek-ai/util@2.0.0",
+   "kind": "package",
+   "name": "@deepseek-ai/util",
+   "version": "2.0.0",
+   "scope": "official",
+   "group": "util",
+   "path": "$DSH_HOME\\profiles\\web\\node_modules\\@deepseek-ai\\util",
+   "description": null,
+   "servicesRequired": [],
+   "externalDeps": [],
+   "mountedBy": [
+    "web"
+   ],
+   "flags": {
+    "unreadable": false
+   },
+   "_dir": "C:\\Users\\yswhw\\AppData\\Local\\Temp\\atlas-golden-RkrKAx\\profiles\\web\\node_modules\\@deepseek-ai\\util",
+   "_manifest": {
+    "name": "@deepseek-ai/util",
+    "version": "2.0.0",
+    "repository": {
+     "directory": "packages/util/util"
+    }
+   },
+   "_dshPatchRel": null
+  },
+  {
+   "id": "plugin-x@1.0.0",
+   "kind": "package",
+   "name": "plugin-x",
+   "version": "1.0.0",
+   "scope": "third-party",
+   "group": "plugin",
+   "path": "$DSH_HOME\\profiles\\web\\node_modules\\plugin-x",
+   "description": "X 插件。",
+   "servicesRequired": [],
+   "externalDeps": [
+    {
+     "name": "lodash",
+     "range": "^4.0.0"
+    }
+   ],
+   "mountedBy": [
+    "web"
+   ],
+   "flags": {
+    "unreadable": false
+   },
+   "_dir": "C:\\Users\\yswhw\\AppData\\Local\\Temp\\atlas-golden-RkrKAx\\profiles\\web\\node_modules\\plugin-x",
+   "_manifest": {
+    "name": "plugin-x",
+    "version": "1.0.0",
+    "dependencies": {
+     "@deepseek-ai/util": "^2.0.0",
+     "lodash": "^4.0.0"
+    },
+    "peerDependencies": {
+     "@deepseek-ai/core": "^1.0.0"
+    },
+    "peerDependenciesMeta": {
+     "@deepseek-ai/core": {
+      "optional": true
+     }
+    },
+    "dsh": {
+     "bundle": {
+      "patch": "./cordis.patch.yml"
+     }
+    }
+   },
+   "_dshPatchRel": "./cordis.patch.yml"
+  },
+  {
+   "id": "profile:web",
+   "kind": "profile",
+   "name": "web",
+   "version": "-",
+   "scope": "meta",
+   "group": "profiles",
+   "path": "$DSH_HOME\\profiles\\web",
+   "description": null,
+   "servicesRequired": [],
+   "externalDeps": [],
+   "mountedBy": [],
+   "flags": {
+    "unreadable": false
+   }
+  }
+ ],
+ "edges": [
+  {
+   "from": "@deepseek-ai/base@1.0.0",
+   "to": "@deepseek-ai/util@1.0.0",
+   "kind": "dep"
+  },
+  {
+   "from": "plugin-x@1.0.0",
+   "to": "@deepseek-ai/util@2.0.0",
+   "kind": "dep"
+  },
+  {
+   "from": "plugin-x@1.0.0",
+   "to": "@deepseek-ai/core@1.0.0",
+   "kind": "peer-optional"
+  },
+  {
+   "from": "profile:web",
+   "to": "@deepseek-ai/base@1.0.0",
+   "kind": "mount"
+  },
+  {
+   "from": "profile:web",
+   "to": "plugin-x@1.0.0",
+   "kind": "mount"
+  },
+  {
+   "from": "profile:web",
+   "to": "patched-plugin@0.1.0",
+   "kind": "mount",
+   "unsatisfied": true
+  },
+  {
+   "from": "profile:web",
+   "to": "@deepseek-ai/extra@1.0.0",
+   "kind": "mount"
+  },
+  {
+   "from": "profile:web",
+   "to": "@deepseek-ai/escaper@1.0.0",
+   "kind": "mount"
+  },
+  {
+   "from": "profile:web",
+   "to": "@deepseek-ai/loop-a@1.0.0",
+   "kind": "mount"
+  },
+  {
+   "from": "@deepseek-ai/base@1.0.0",
+   "to": "@deepseek-ai/core@1.0.0",
+   "kind": "mount"
+  },
+  {
+   "from": "@deepseek-ai/base@1.0.0",
+   "to": "@deepseek-ai/extra@1.0.0",
+   "kind": "mount"
+  },
+  {
+   "from": "@deepseek-ai/base@1.0.0",
+   "to": "@deepseek-ai/util@2.0.0",
+   "kind": "mount"
+  },
+  {
+   "from": "@deepseek-ai/loop-a@1.0.0",
+   "to": "@deepseek-ai/loop-b@1.0.0",
+   "kind": "mount"
+  },
+  {
+   "from": "@deepseek-ai/loop-b@1.0.0",
+   "to": "@deepseek-ai/loop-a@1.0.0",
+   "kind": "mount"
+  }
+ ]
+}

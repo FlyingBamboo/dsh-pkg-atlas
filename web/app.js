@@ -343,10 +343,21 @@
   }
 
   // ---------- boot ----------
-  function bindFilters() {
+  // Static header controls bind once at boot (R20): after a failed first load the
+  // error bar + retry must already work — they cannot wait for a successful load().
+  var chromeBoundOnce = false
+  function bindChromeOnce() {
+    if (chromeBoundOnce) return
+    chromeBoundOnce = true
     ;[['f-official', 'official'], ['f-plugin', 'plugin'], ['f-mount', 'mount'], ['f-peer', 'peer'], ['f-dep', 'dep']].forEach(function (pair) {
       document.getElementById(pair[0]).addEventListener('change', function (ev) { state.filters[pair[1]] = ev.target.checked; render() })
     })
+    document.getElementById('refresh').addEventListener('click', function () { load(true) })
+    document.getElementById('focus-depth').addEventListener('input', function () { applyFocusClasses() })
+    document.getElementById('retry').addEventListener('click', function () { document.getElementById('error-bar').hidden = true; load(false) })
+  }
+  // Data-dependent filters only: #f-profiles checkboxes come from the loaded graph.
+  function bindFilters() {
     var pf = document.getElementById('f-profiles')
     state.graph.profiles.forEach(function (p) {
       var label = document.createElement('label'); label.title = t('profileFilterHint')
@@ -358,9 +369,6 @@
       label.appendChild(cb); label.appendChild(document.createTextNode(' ' + p.name))
       pf.appendChild(label)
     })
-    document.getElementById('refresh').addEventListener('click', function () { load(true) })
-    document.getElementById('focus-depth').addEventListener('input', function () { applyFocusClasses() })
-    document.getElementById('retry').addEventListener('click', function () { document.getElementById('error-bar').hidden = true; load(false) })
   }
   function renderMetaAndWarnings() {
     var meta = document.getElementById('meta')
@@ -401,6 +409,7 @@
     document.querySelectorAll('[data-i18n]').forEach(function (el) { el.textContent = t(el.getAttribute('data-i18n')) })
     document.querySelectorAll('[data-i18n-ph]').forEach(function (el) { el.placeholder = t(el.getAttribute('data-i18n-ph')) })
     bindSearch()
+    bindChromeOnce()
     load(false)
   }
   boot()

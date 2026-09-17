@@ -99,3 +99,12 @@ test('outside prefix is not ours: 404 (no cross-route interference)', async () =
   const res = await fetch(`${base}/other-plugin`)
   assert.equal(res.status, 404)
 })
+
+test('bare PREFIX (no trailing slash) 301s to trailing slash and serves index (R21)', async () => {
+  // Relative asset refs in index.html (app.js, vendor/…) only resolve at the trailing-slash URL.
+  const r = await fetch(base + PREFIX, { redirect: 'follow' })
+  assert.equal(r.redirected, true)
+  assert.equal(r.status, 200)
+  assert.equal(r.url, base + PREFIX + '/')
+  assert.match(r.headers.get('content-type'), /text\/html/)
+})

@@ -102,6 +102,7 @@
 
   // ---------- render ----------
   function render() {
+    if (!state.graph) return // static chrome is bound at boot; ignore interaction until first load lands
     if (state.tableMode) { renderTable(); return }
     try {
       if (!state.cy) {

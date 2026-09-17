@@ -132,6 +132,22 @@ function assertFiniteAll(res, label) {
     }
   }
 }
+// R26/rule 5 for a SINGLE filter axis: build unfiltered (EXPANDED) and filtered,
+// then prove every still-present element id keeps identical x/y. The `checked`
+// floor guards against a vacuous pass when the filter prunes everything.
+function assertFilterNeverMovesCoordinates(M, graph, overrides, label) {
+  const full = elMap(M.buildView(graph, EXPANDED()))
+  const filtered = M.buildView(graph, Object.assign(EXPANDED(), overrides))
+  let checked = 0
+  for (const e of els(filtered)) {
+    assert.ok(full.has(e.data.id), `${label}: ${e.data.id} present under filter but absent unfiltered`)
+    if (e.group !== 'nodes') continue // edges carry no coordinates
+    assert.equal(full.get(e.data.id).data.x, e.data.x, `${label}: ${e.data.id}.x moved under filter`)
+    assert.equal(full.get(e.data.id).data.y, e.data.y, `${label}: ${e.data.id}.y moved under filter`)
+    checked++
+  }
+  assert.ok(checked > 0, `${label}: no shared positioned elements to compare (vacuous)`)
+}
 
 // =========================================================================
 // Rule 0 — contract: classic script in a bare sandbox + ZONE_LAYOUT
@@ -159,7 +175,6 @@ test('V4-00 script contract: bare-sandbox globalThis.AtlasModel + ZONE_LAYOUT co
 test('V4-01 default view = all groups collapsed: zones+cards only, ordered per rule 8', () => {
   const M = loadModel()
   const res = M.buildView(fixture(), {})
-  assert.ok(Number.isFinite(0), 'sanity')
 
   // zones render in graph.categories order (kernel, tools, llm, plugin, profiles, broken)
   assert.deepEqual(kindIds(res, 'zone'), ['cat:kernel', 'cat:tools', 'cat:llm', 'cat:plugin', 'cat:profiles', 'cat:broken'])
@@ -274,19 +289,24 @@ test('V4-04 R26 coordinate constancy: collapsed vs expanded builds — same ids 
   }
 })
 
-test('V4-04b R26 filters also never move coordinates (rule 5)', () => {
+test('V4-04b R26 filterCats never moves coordinates of surviving elements (rule 5)', () => {
   const M = loadModel()
-  const graph = fixture()
-  const full = elMap(M.buildView(graph, EXPANDED()))
-  const filtered = M.buildView(graph, {
-    collapsedCats: new Set(), collapsedGroups: new Set(), filterCats: ['llm'],
-    filterScope: 'all', edgeKinds: null, filterProfile: null, showRealCross: false,
-  })
-  for (const e of els(filtered)) {
-    assert.ok(full.has(e.data.id), `${e.data.id} present under filter but absent unfiltered`)
-    assert.equal(full.get(e.data.id).data.x, e.data.x, `${e.data.id}.x moved under filterCats`)
-    assert.equal(full.get(e.data.id).data.y, e.data.y, `${e.data.id}.y moved under filterCats`)
-  }
+  assertFilterNeverMovesCoordinates(M, fixture(), { filterCats: ['llm'] }, 'filterCats=llm')
+})
+
+test('V4-04c R26 filterScope never moves coordinates of surviving elements (rule 5)', () => {
+  const M = loadModel()
+  assertFilterNeverMovesCoordinates(M, fixture(), { filterScope: 'official' }, 'filterScope=official')
+})
+
+test('V4-04d R26 edgeKinds subset never moves coordinates of surviving elements (rule 5)', () => {
+  const M = loadModel()
+  assertFilterNeverMovesCoordinates(M, fixture(), { edgeKinds: new Set(['dep', 'mount']) }, 'edgeKinds=dep+mount')
+})
+
+test('V4-04e R26 filterProfile never moves coordinates of surviving elements (rule 5)', () => {
+  const M = loadModel()
+  assertFilterNeverMovesCoordinates(M, fixture(), { filterProfile: 'web' }, 'filterProfile=web')
 })
 
 // =========================================================================
@@ -377,7 +397,18 @@ test('V4-09 filterCats prunes whole zones incl. edges touching them; agg recompu
     filterScope: 'all', edgeKinds: null, filterProfile: null, showRealCross: true,
   })
   const idset = new Set(ids(res))
+  // OUT-of-scope (filterCats = EXCLUDE list): the pruned zone must be gone…
   assert.ok(!idset.has('cat:llm') && !idset.has('g:llm') && !idset.has(P1) && !idset.has(P2))
+  // …and IN-scope must be POSITIVELY present, not merely "not the pruned ids".
+  // An absence-only suite passes on a polarity-inverted filter that empties the
+  // whole view; these survivor asserts pin the keep side of the same filter.
+  assert.ok(idset.has('cat:kernel'), 'in-scope zone cat:kernel must survive an llm exclusion')
+  assert.ok(idset.has(A1), 'a member package of the in-scope zone must survive')
+  assert.ok(edgeEls(res).length > 0, 'at least one edge among survivors must survive')
+  for (const e of edgeEls(res)) {
+    assert.ok(idset.has(e.data.source) && idset.has(e.data.target),
+      `surviving edge ${e.data.id} must reference rendered endpoints only`)
+  }
   for (const e of edgeEls(res)) {
     assert.ok(!String(e.data.source).includes('llm') || e.data.source.startsWith('cat:'))
     assert.ok(!['llm', P1, P2].some((x) => e.data.source === 'g:' + x || e.data.target === 'g:' + x || e.data.source === x || e.data.target === x),
@@ -476,10 +507,15 @@ test('V4-14 determinism: double build deep-equal; model never mutates graph/view
   })
   const g1 = fixture()
   const g2 = fixture()
+  // Deep structural snapshot BEFORE any build: comparing g1 vs g2 only after
+  // both builds is vacuous (identical corruption on both sides passes it).
+  const g1Before = JSON.stringify(g1)
+  const g2Before = JSON.stringify(g2)
   const s1 = JSON.stringify(M.buildView(g1, view()))
   const s2 = JSON.stringify(M.buildView(g2, view()))
   assert.equal(s1, s2, 'two builds over equal inputs must be deep-equal')
-  assert.equal(JSON.stringify(g1), JSON.stringify(g2), 'graph input must not be mutated by builds')
+  assert.equal(JSON.stringify(g1), g1Before, 'graph g1 after build must byte-match its pre-build snapshot')
+  assert.equal(JSON.stringify(g2), g2Before, 'graph g2 after build must byte-match its pre-build snapshot')
   const v = view()
   M.buildView(g1, v)
   assert.deepEqual([...v.collapsedGroups], ['bundle', 'llm'], 'view sets must not be mutated')

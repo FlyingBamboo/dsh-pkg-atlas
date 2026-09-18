@@ -1,14 +1,23 @@
 # dsh-pkg-atlas
 
 本机 DSH 包依赖图谱：一个独立 HTTP 页面，展示当前 DSH_HOME 已安装的官方
-`@deepseek-ai/*` 包与第三方插件之间的依赖与挂载关系。零运行时依赖、纯本机数据、
+`@deepseek-ai/*` 包与第三方插件之间的依赖与挂载关系。图谱按功能大类分区、
+组为复合节点、包在组内成网格，首屏有扫描进度。零运行时依赖、纯本机数据、
 只读、全离线可用。
 
 页面地址（安装并重启后）：`http://127.0.0.1:3080/dsh-pkg-atlas/`
 
+## 图谱三层结构
+
+大类区（功能分类：内核·装配 / 会话·状态 / 界面 / LLM·模型 / 编排 / 平台 / 工具 /
+集成 / 基础设施，外加插件、profiles、断链、未归类四个特殊区）→ 组
+（`repository.directory` 推导的功能组，复合容器节点）→ 包（组内网格）。
+节点坐标由视图模型按展开态维度预分配（无布局引擎）：展开/折叠/筛选不重排、
+不移动，只重建元素集合，因此位置在交互间保持稳定。
+
 ## 它回答什么问题
 
-- 某个工具/插件在 DSH 生态里的位置：属于哪个功能组、被谁依赖、挂了哪些 bundle。
+- 某个工具/插件在 DSH 生态里的位置：属于哪个大类、哪个功能组、被谁依赖、挂了哪些 bundle。
 - 一个官方 bundle（如 `dsh-base`）到底把哪些包挂载进 profile（BFS 展开
   `cordis.patch.yml` 的 `name:` 行）。
 - 哪些目录断了链（broken junction，标红伪节点）、哪些版本区间装不到满足版本
@@ -28,14 +37,20 @@
 
 ## 页面用法
 
-- 组级全景：节点 = 功能组（`repository.directory` 推导），双击组节点展开为单包。
-- 搜索：包名或中文描述，回车项点击定位。
-- 聚焦：详情面板「聚焦此包」按上下游 BFS 深度 1-3 高亮，URL hash 可分享深链
-  （`#node=<id>`）。
-- 详情：描述（cordis manifest → README.zh → package.json 链）、挂载方、被依赖、
-  依赖、外部依赖、README 原文。
-- 顶栏筛选：官方/第三方、mount/peer/dep 边、按 profile 只看其挂载面。
-- 「重扫」按钮强制重扫（快照缓存 60s TTL）。
+- 三层图谱：默认组级视图（大类区展开、组为卡片）；双击组卡片展开为单包网格，
+  双击大类区标题折叠整个区。搜索/聚焦命中会自动展开祖先。
+- 首屏进度：扫描按 目录清单→manifest 读取→组装 三阶段推进，进度条实时显示
+  已扫/总数（`/api/status` 轮询）；服务端启动即预热，通常首屏即缓存就绪。
+- 大类筛选 chips：**点击 = 隐藏该区**（再点恢复）；官方/第三方、边类型
+  （mount/peer/dep/peer-optional）、profile 挂载面、真实跨包边开关、深浅主题、
+  中英切换均在顶栏。
+- 搜索：包名或中文描述，回车项点击定位（自动展开祖先）。
+- 聚焦：选中包后可选深度 1-3 高亮上下游（真实边、无向），其余淡出；URL hash
+  可分享深链（`#node=<id>`，打开即展开定位）。
+- 详情：大类/组/类型三级面包屑、描述、挂载方、依赖与被依赖（按类型分组计数、
+  可跳转、unsatisfied 标记）、外部依赖、README 原文。
+- 图例（右下角）：4 种节点形状 + 5 种边类型，可折叠。
+- 「重扫」按钮强制重扫（快照缓存 60s TTL）；扫描中进度条重新走条。
 
 ## 开发
 
@@ -54,15 +69,28 @@
 `dsh plugin --profile web add link:D:/codes/harness-dev/dsh-pkg-atlas`，
 重启终端 A 后打开 `http://127.0.0.1:3090/dsh-pkg-atlas/`。
 
-浏览器人工清单：组级全景渲染 / 双击展开 plugin 组 / 搜索 `dsh-llm` 定位 /
-聚焦上下游与取消 / 详情面板 README / 断链与 unsatisfied 展示（真实 home 约 4 个
-broken junction 目录，可与 `Get-ChildItem $env:USERPROFILE\.dsh\profiles\node_modules\@deepseek-ai`
-当场对表）/ 断网重开页面仍可用（全离线）。
+浏览器人工清单：首屏进度条走到就绪 / 三层图谱渲染（大类区→组卡→双击展开包）/
+双击大类区标题折叠 / chips 隐藏再恢复 UI 区 / 搜索 `dsh-llm` 定位并展开祖先 /
+聚焦深度 1-3 与清除 / 详情面板 README 与依赖跳转 / 断链与 unsatisfied 展示
+（真实 home 约 4 个 broken junction 目录，可与
+`Get-ChildItem $env:USERPROFILE\.dsh\profiles\node_modules\@deepseek-ai`
+当场对表）/ 中英切换 / 深浅主题 / 断网重开页面仍可用（全离线）。
 
 注：验证可用**全局安装的 dsh 二进制** + 隔离 DSH_HOME（与真实安装拓扑一致，
 无需克隆源码构建）。
 
-## 已知边界（v1）
+## 已知边界
+
+- 每次视图状态变更（展开/折叠/筛选/聚焦）都整体重建 cytoscape 元素集合，
+  无增量动画；换来的是零布局引擎、坐标确定可测（vendored cytoscape 3.x 已无
+  compound collapse/expand API）。
+- `repository.directory` 不以 `packages/` 开头的官方包（如 `apps/cli`、`apps/web`、
+  `native/system/*`）落在「未归类」区：组派生只认 `packages/<组>` 模式。当前
+  真实 home 有 3 个：`@deepseek-ai/dsh`、`@deepseek-ai/dsh-web-frontend`、
+  `@deepseek-ai/node-addon-system`。
+- 大类映射表是维护品（49 组 → 9 大类 + 4 特殊区）：新增 `packages/*` 目录组
+  未入表时默认落「未归类」，需人工补 `lib/categories.js`。
+以下限制继承自 v1：
 
 - 挂载面为 bundle/patch 的 `name:` 行启发式抽取：不解析 YAML 结构、`disabled`
   语义、嵌套值；行尾内联注释容忍；`config:` 下恰好叫 `name` 的键可能误抽。
@@ -74,7 +102,6 @@ broken junction 目录，可与 `Get-ChildItem $env:USERPROFILE\.dsh\profiles\no
   「消费服务」仅在有值时显示。
 - 第三方插件自身 bundle 成员不递归展开（只展开官方包 patch）。
 - 缓存 = 60s TTL + 手动「重扫」；外部安装/卸载后最长 60s 视图陈旧。
-- 图布局在每次筛选/展开后重算（cose 重排），位置不保留。
 - 浏览器降级表格模式（cytoscape 加载失败时）为一次性：恢复需刷新页面。
 - DSH Desktop profile 未验证（CLI 拒绝 boot desktop）。
 - 数据源为 DSH_HOME 已安装内容；不含任何线上目录，无遥测，GET-only。

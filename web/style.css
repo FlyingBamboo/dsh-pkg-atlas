@@ -41,6 +41,10 @@ main { display: flex; flex: 1; min-height: 0; position: relative; }
 .leg-edge.ek-peer { border-top-style: dashed; border-top-color: #4c7fb8; }
 .leg-edge.ek-peer-optional { border-top-style: dotted; border-top-color: #9dc1e8; }
 .leg-edge.ek-agg { border-top-width: 5px; }
+/* V21 R36 legend swatches: the SAME hexes as FOCUS_COLORS in app.js (pinned by
+   test/render-smoke.test.mjs) — amber = dependency path, teal = depended-on. */
+.leg-edge.fp-down { border-top-color: light-dark(#b45309, #f59e0b); border-top-width: 3px; }
+.leg-edge.fp-up { border-top-color: light-dark(#0e7490, #22d3ee); border-top-width: 3px; }
 header .chips { display: inline-flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 #zone-chips:empty { display: none; }
 /* zone chips: chip ⇔ zone EXCLUDED from view.filterCats (see app.js mapping) */
@@ -75,6 +79,9 @@ header .chips { display: inline-flex; gap: 6px; flex-wrap: wrap; align-items: ce
 #details .jump { display: block; width: 100%; text-align: left; border: 0; background: none; cursor: pointer; padding: 1px 4px; font: inherit; font-size: 12px; color: inherit; overflow-wrap: anywhere; }
 #details .jump:hover { background: #8882; }
 #details .jump .unsat { color: #d0433f; font-size: 10px; }
+/* V21 R35 path-list rows: the BFS-layer token rides on the existing .jump row */
+#details .jump .dist { opacity: .6; font-size: 10px; margin-left: 2px; }
+#details .jump .badge { margin-left: 2px; }
 #details pre.readme { max-height: 40vh; overflow: auto; font-size: 11px; background: #8882; padding: 8px; white-space: pre-wrap; }
 #details .btns { margin-top: 10px; display: flex; gap: 8px; }
 #search-results { position: absolute; top: 44px; left: 320px; max-height: 50vh; overflow: auto; background: light-dark(#fff, #171c22); border: 1px solid #8886; z-index: 5; width: 460px; }

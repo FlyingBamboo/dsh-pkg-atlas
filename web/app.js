@@ -36,13 +36,17 @@
       scopeLabel: '类型', scopeAll: '全部', scopeOfficial: '官方', scopeThird: '第三方',
       profileLabel: 'Profile', profileAll: '全部', realCrossLabel: '真实跨包线',
       edgeKindsLabel: '边型',
-      focusLabel: '聚焦深度', focusOn: '聚焦上下游', focusOff: '取消聚焦',
-      legendTitle: '图例', legendShapes: '节点形状', legendEdges: '边类型',
+      focusLabel: '聚焦深度', focusUnlimited: '不限', focusOn: '聚焦上下游', focusOff: '取消聚焦',
+      legendTitle: '图例', legendShapes: '节点形状', legendEdges: '边类型', legendFocus: '聚焦路径',
       shOfficial: '官方包', shThirdParty: '第三方包', shProfile: 'Profile', shBroken: '断链包',
       egDep: '依赖 dep', egMount: '挂载 mount', egPeer: '对等 peer',
       egPeerOpt: '可选对等 peer-opt', egAgg: '聚合边（粗细∝计数）',
       membersLabel: '成员', groupsLabel: '组', pkgsLabel: '包',
-      mountedByLabel: '挂载方', depsLabel: '依赖 →', dependentsLabel: '← 被依赖',
+      // R35 path lists (depsLabel/dependentsLabel stay: the edge details panel uses them)
+      pathDownLabel: '依赖路径 ↓', pathUpLabel: '被依赖路径 ↑',
+      pathCountLabel: '{n} · 最深 {d} 层', pathNoneLabel: '无', pathDistLabel: 'd{n}',
+      mountsLabel: '挂载 ↓',
+      depsLabel: '依赖 →', dependentsLabel: '← 被依赖',
       unsatLabel: '未满足', bundleSurfaceLabel: 'bundle 面', declaredDepsLabel: '声明依赖',
       readmeLabel: 'README', noReadmeLabel: '（无 README）', moreLabel: '+{n} 更多',
       kindLabel: '类型', groupLabel: '组', zoneLabel: '区' },
@@ -54,13 +58,16 @@
       scopeLabel: 'scope', scopeAll: 'all', scopeOfficial: 'official', scopeThird: 'third-party',
       profileLabel: 'Profile', profileAll: 'all', realCrossLabel: 'real cross edges',
       edgeKindsLabel: 'edge kinds',
-      focusLabel: 'focus depth', focusOn: 'focus neighbors', focusOff: 'clear focus',
-      legendTitle: 'Legend', legendShapes: 'node shapes', legendEdges: 'edge kinds',
+      focusLabel: 'focus depth', focusUnlimited: 'unlimited', focusOn: 'focus paths', focusOff: 'clear focus',
+      legendTitle: 'Legend', legendShapes: 'node shapes', legendEdges: 'edge kinds', legendFocus: 'focus paths',
       shOfficial: 'official pkg', shThirdParty: 'third-party', shProfile: 'profile', shBroken: 'broken',
       egDep: 'depends dep', egMount: 'mount', egPeer: 'peer',
       egPeerOpt: 'optional peer (peer-opt)', egAgg: 'aggregate (width ∝ count)',
       membersLabel: 'members', groupsLabel: 'groups', pkgsLabel: 'packages',
-      mountedByLabel: 'mounted by', depsLabel: 'depends on →', dependentsLabel: '← depended by',
+      pathDownLabel: 'depends paths ↓', pathUpLabel: 'depended-on paths ↑',
+      pathCountLabel: '{n} · {d} levels deep', pathNoneLabel: 'none', pathDistLabel: 'd{n}',
+      mountsLabel: 'mounts ↓',
+      depsLabel: 'depends on →', dependentsLabel: '← depended by',
       unsatLabel: 'unsatisfied', bundleSurfaceLabel: 'bundle surface', declaredDepsLabel: 'declared deps',
       readmeLabel: 'README', noReadmeLabel: '(no README)', moreLabel: '+{n} more',
       kindLabel: 'kind', groupLabel: 'group', zoneLabel: 'zone' },
@@ -94,6 +101,27 @@
   // The four edge kinds lib/scan.js emits, in legend order. The edge-kind filter
   // checkboxes (index.html #edge-kinds) carry exactly these data-kind values.
   var EDGE_KINDS_ALL = ['dep', 'mount', 'peer', 'peer-optional']
+  // R35: the kinds each focus direction may traverse. DOWN is a package's own
+  // dependency paths, so `mount` is NOT a down kind (a mount edge X→Y reads
+  // "X mounts Y", i.e. Y's path runs UP to X). UP accepts every kind: climbing
+  // mount backwards is what takes a member to its bundle and on to profile:<name>.
+  var DOWN_EDGE_KINDS = ['dep', 'peer', 'peer-optional']
+  var UP_EDGE_KINDS = ['dep', 'mount', 'peer', 'peer-optional']
+
+  // R36 direction palette (both themes): down = amber family, up = teal family,
+  // both = magenta family. R36 forbids colliding with what already ships —
+  // profiles gold #c08a2e/#c9a45c/#d9a441, third-party purple #9a6ac2/#8a5fc0/
+  // #c194e8, broken red #e05252/#c04a4a, dep blue #4c7fb8/#6da3d8, mount green
+  // #3f9d6d/#57b98a, selection gold #ffd166 — every hex below is distinct from
+  // all of those and from the zone palette (test/render-smoke.test.mjs pins it,
+  // and style.css repeats these SAME hexes for the legend swatches).
+  var FOCUS_COLORS = {
+    light: { down: '#b45309', up: '#0e7490', both: '#be185d' },
+    dark: { down: '#f59e0b', up: '#22d3ee', both: '#ec4899' },
+  }
+  // Path lists are unbounded in depth (R35: 完整路径列表); the row COUNT is
+  // capped like the retired dep blocks were (same +N 更多 tail).
+  var PATH_ROW_CAP = 60
 
   // ---------- state (brief Interfaces) ----------
   var state = {
@@ -108,7 +136,8 @@
       filterCats: new Set(), filterScope: 'all', filterProfile: null,
       edgeKinds: null, showRealCross: false,
     },
-    focus: null,   // null | {rootId, depth}   (V6: depth 1-3 via #focus-depth)
+    focus: null,   // null | {rootId, depth}  (R35: depth null = unlimited — the
+                   // default; 1-3 via #focus-depth. Only kind=package nodes are roots.)
     selected: null,
   }
 
@@ -120,43 +149,183 @@
   // =======================================================================
 
   /**
-   * focusNeighbors(graph, rootId, depth) → Array<string> node ids.
-   * Undirected BFS over the REAL scan edges (graph.edges `{from,to,kind}`, all
-   * kinds, `unsatisfied` edges included — they are real relationships the focus
-   * view must show). depth clamped to [1,3] (invalid/absent → 1). The root is
-   * always the first element, even when it is isolated or unknown. Insertion
-   * order is deterministic (edge-array order), never hash-map iteration order.
+   * normalizeDepth(depth) → null | 1 | 2 | 3 (R35).
+   * `null` = UNLIMITED, and it is the shipped default: the depth control's
+   * value 0 means unlimited, so 0 / absent / junk all normalize to null (an
+   * unusable depth must widen the view, never silently narrow it to one layer).
+   * 1..3 are kept, fractions floor, anything above 3 clamps to 3.
    */
-  function focusNeighbors(graph, rootId, depth) {
+  function normalizeDepth(depth) {
+    var v = typeof depth === 'number' && isFinite(depth) ? Math.floor(depth) : 0
+    return v >= 1 ? Math.min(3, v) : null
+  }
+
+  /**
+   * pathSets(graph, rootId, depth) →
+   *   { rootId, down:Set, up:Set, both:Set, downEdges:Set, upEdges:Set }
+   *
+   * R35/R36: the two directed path universes of one package, computed over the
+   * REAL scan edges (graph.edges `{from,to,kind[,unsatisfied]}`) — never over the
+   * rendered aggregates, which depend on the current collapse state.
+   *  - down: BFS over OUT-edges whose kind DOWN_EDGE_KINDS allows.
+   *  - up:   BFS over IN-edges whose kind UP_EDGE_KINDS allows (mount included,
+   *          traversed backwards → a member climbs to its bundle and on to
+   *          `profile:<name>` without special-casing).
+   *  - both: down ∩ up (cycle members).
+   * The root is in NONE of the three sets: it always paints `selected`.
+   * `depth` (normalizeDepth) limits the layers of EACH direction independently;
+   * null is unlimited. Cycle-safe via the visited set.
+   * Edge sets follow the INDUCED rule: the kind must be one this direction
+   * traverses AND both endpoints must sit in (that set ∪ root) — so an edge
+   * between two lit nodes with the wrong kind stays dark, and an edge that leaves
+   * the set stays dark. An edge present in BOTH sets paints with the `both`
+   * color. Edge keys are 'e:<from>|<to>|<kind>', AtlasModel's own real-cross edge
+   * id, so a rendered real edge carries the key verbatim.
+   * Deterministic (Sets built in graph.edges order, never hash order), defensive
+   * (malformed edges skipped, junk inputs → empty sets) and side-effect free:
+   * graph (and any view) is never written.
+   */
+  function pathSets(graph, rootId, depth) {
     var g = graph || {}
-    var edges = Array.isArray(g.edges) ? g.edges : []
-    var d = typeof depth === 'number' && depth >= 1 ? Math.min(3, Math.floor(depth)) : 1
-    var adj = new Map()
-    for (var i = 0; i < edges.length; i++) {
-      var e = edges[i]
-      if (!e || e.from == null || e.to == null) continue
-      var a = String(e.from), b = String(e.to)
-      var la = adj.get(a); if (!la) { la = []; adj.set(a, la) }
-      la.push(b)
-      var lb = adj.get(b); if (!lb) { lb = []; adj.set(b, lb) }
-      lb.push(a)
-    }
+    var list = Array.isArray(g.edges) ? g.edges : []
     var root = String(rootId == null ? '' : rootId)
-    var keep = new Set([root])
-    var frontier = [root]
-    for (var r = 0; r < d; r++) {
-      var next = []
-      for (var f = 0; f < frontier.length; f++) {
-        var list = adj.get(frontier[f])
-        if (!list) continue
-        for (var k = 0; k < list.length; k++) {
-          if (!keep.has(list[k])) { keep.add(list[k]); next.push(list[k]) }
-        }
-      }
-      frontier = next
-      if (!frontier.length) break
+    var max = normalizeDepth(depth)
+    var clean = [], out = new Map(), inc = new Map()
+    for (var i = 0; i < list.length; i++) {
+      var e = list[i]
+      if (!e || e.from == null || e.to == null) continue
+      var from = String(e.from), to = String(e.to), kind = String(e.kind)
+      clean.push({ from: from, to: to, kind: kind })
+      var ix = clean.length - 1
+      var la = out.get(from); if (!la) { la = []; out.set(from, la) }
+      la.push(ix)
+      var lb = inc.get(to); if (!lb) { lb = []; inc.set(to, lb) }
+      lb.push(ix)
     }
-    return Array.from(keep)
+    function walk(adjacent, kinds, outward) {
+      var seen = new Set([root])
+      var frontier = [root]
+      for (var layer = 1; frontier.length && (max === null || layer <= max); layer++) {
+        var next = []
+        for (var f = 0; f < frontier.length; f++) {
+          var links = adjacent.get(frontier[f])
+          if (!links) continue
+          for (var k = 0; k < links.length; k++) {
+            var ce = clean[links[k]]
+            if (kinds.indexOf(ce.kind) < 0) continue
+            var other = outward ? ce.to : ce.from
+            if (seen.has(other)) continue
+            seen.add(other); next.push(other)
+          }
+        }
+        frontier = next
+      }
+      seen.delete(root)
+      return seen
+    }
+    var down = walk(out, DOWN_EDGE_KINDS, true)
+    var up = walk(inc, UP_EDGE_KINDS, false)
+    var both = new Set()
+    down.forEach(function (id) { if (up.has(id)) both.add(id) })
+    var downSide = new Set(down); downSide.add(root)
+    var upSide = new Set(up); upSide.add(root)
+    var downEdges = new Set(), upEdges = new Set()
+    for (var j = 0; j < clean.length; j++) {
+      var ce2 = clean[j]
+      var key = 'e:' + ce2.from + '|' + ce2.to + '|' + ce2.kind
+      if (DOWN_EDGE_KINDS.indexOf(ce2.kind) >= 0 && downSide.has(ce2.from) && downSide.has(ce2.to)) downEdges.add(key)
+      if (UP_EDGE_KINDS.indexOf(ce2.kind) >= 0 && upSide.has(ce2.from) && upSide.has(ce2.to)) upEdges.add(key)
+    }
+    return { rootId: root, down: down, up: up, both: both, downEdges: downEdges, upEdges: upEdges }
+  }
+
+  /**
+   * buildPathLists(sets, graph, byId) → { down: Row[], up: Row[] }
+   * Row = { id, name, version, dist, kinds, unsat, isProfile }
+   *
+   * The details-panel data half of R35. `sets` is a pathSets() result (it carries
+   * rootId, which is all this function needs from it beyond the Sets). Per row:
+   *  - dist  = the node's BFS layer in THAT direction (1 = direct), recomputed
+   *            over the direction's induced edge set — the set every member was
+   *            discovered through, so a member is always reachable from the root.
+   *  - kinds = the deduped kinds of the path edges that REACH the node (the down
+   *            row of a both-direction node therefore lists its dependency kind,
+   *            its up row the kind that reaches it backwards — a profile row ends
+   *            up carrying `mount`).
+   *  - unsat = one of those reaching edges is `unsatisfied`.
+   *  - isProfile / name: `profile:` ids are flagged and the prefix is stripped
+   *            for display. Names and versions come from the graph nodes
+   *            VERBATIM (they are attacker-influenced third-party data — the
+   *            renderer writes them with escText, never as markup).
+   * Sort: dist asc, then display name asc, then id. A node in `both` appears in
+   * both lists, each with its own dist/kinds. Junk inputs → two empty lists.
+   */
+  function buildPathLists(sets, graph, byId) {
+    var s = sets || {}
+    var g = graph || {}
+    var list = Array.isArray(g.edges) ? g.edges : []
+    var root = String(s.rootId == null ? '' : s.rootId)
+    function kindRank(k) { var ix = EDGE_KINDS_ALL.indexOf(k); return ix < 0 ? EDGE_KINDS_ALL.length : ix }
+    function cmp(a, b) { return a < b ? -1 : a > b ? 1 : 0 }
+    function build(dirSet, edgeSet, outward) {
+      var rows = []
+      if (!(dirSet instanceof Set) || !(edgeSet instanceof Set) || !dirSet.size) return rows
+      var reach = function (e) { return outward ? e.to : e.from }
+      var prev = function (e) { return outward ? e.from : e.to }
+      var adj = new Map(), clean = []
+      for (var i = 0; i < list.length; i++) {
+        var e = list[i]
+        if (!e || e.from == null || e.to == null) continue
+        var from = String(e.from), to = String(e.to), kind = String(e.kind)
+        if (!edgeSet.has('e:' + from + '|' + to + '|' + kind)) continue
+        var ce = { from: from, to: to, kind: kind, unsat: !!e.unsatisfied }
+        clean.push(ce)
+        var p = prev(ce)
+        var la = adj.get(p); if (!la) { la = []; adj.set(p, la) }
+        la.push(ce)
+      }
+      var dist = new Map()
+      dist.set(root, 0)
+      var frontier = [root]
+      for (var layer = 1; frontier.length; layer++) {
+        var next = []
+        for (var f = 0; f < frontier.length; f++) {
+          var links = adj.get(frontier[f])
+          if (!links) continue
+          for (var k = 0; k < links.length; k++) {
+            var t = reach(links[k])
+            if (dist.has(t) || !dirSet.has(t)) continue
+            dist.set(t, layer); next.push(t)
+          }
+        }
+        frontier = next
+      }
+      dirSet.forEach(function (id) {
+        var d = dist.get(id)
+        if (d === undefined || d < 1) return // not reachable inside the induced set
+        var kinds = [], unsat = false
+        for (var j = 0; j < clean.length; j++) {
+          if (reach(clean[j]) !== id) continue
+          if (kinds.indexOf(clean[j].kind) < 0) kinds.push(clean[j].kind)
+          if (clean[j].unsat) unsat = true
+        }
+        kinds.sort(function (x, y) { return kindRank(x) - kindRank(y) })
+        var n = byId && typeof byId.get === 'function' ? byId.get(id) : null
+        var isProfile = id.indexOf('profile:') === 0
+        var name = n && n.name != null ? String(n.name) : id
+        if (isProfile && name.indexOf('profile:') === 0) name = name.slice('profile:'.length)
+        rows.push({
+          id: id, name: name, version: n && n.version != null ? String(n.version) : null,
+          dist: d, kinds: kinds, unsat: unsat, isProfile: isProfile,
+        })
+      })
+      rows.sort(function (a, b) { return a.dist - b.dist || cmp(a.name, b.name) || cmp(a.id, b.id) })
+      return rows
+    }
+    return {
+      down: build(s.down, s.downEdges, true),
+      up: build(s.up, s.upEdges, false),
+    }
   }
 
   /**
@@ -346,7 +515,13 @@
     st.push({ selector: 'edge.cross', style: { opacity: 0.5 } })
 
     // ---- selection / focus / flash classes (applied only inside paint + reveal) ----
-    st.push({ selector: 'node.selected', style: { 'border-width': 3, 'border-color': '#ffd166' } })
+    // Selection is an UNDERLAY halo, not a border: V21 hands node borders to the
+    // f-* direction colors, and a border-based ring would be overwritten on any
+    // selected element that is also a path member (underlay draws under the shape,
+    // so the two never compete for the same property).
+    st.push({ selector: 'node.selected', style: {
+      'underlay-color': '#ffd166', 'underlay-opacity': 0.55, 'underlay-padding': 4,
+    } })
     st.push({ selector: 'edge.selected', style: { 'overlay-color': '#ffd166', 'overlay-opacity': 0.3, 'overlay-padding': 4 } })
     st.push({ selector: '.in-focus', style: { 'border-width': 2, 'border-color': '#ffd166' } })
     st.push({ selector: '.dim', style: { opacity: 0.15 } })
@@ -355,6 +530,22 @@
       'border-width': 4, 'border-color': '#ffd166', 'background-opacity': 1,
       'overlay-color': '#ffd166', 'overlay-opacity': 0.25, 'overlay-padding': 6,
     } })
+    // ---- V21 R36: focus direction colors — MUST stay LAST ----
+    // A property is resolved by the LAST matching rule (verified against the
+    // frozen 3.34.1 dist: it resolves by declaration order, not by selector
+    // specificity — a 2-token `.node.f-up` beats a 3-token `node.pkg.sc-official`
+    // purely because it comes later). So this block belongs after every
+    // e-<kind>/sc-*/gk-*/sk-* rule: a focused dashed e-peer edge keeps its
+    // dashed LINE-STYLE (this block never sets line-style) and takes its COLORS
+    // from here. A focused member also carries .in-focus (gold border) — these
+    // rules win that tie, which is exactly R36's "direction color" ruling.
+    var fc = FOCUS_COLORS[theme] || FOCUS_COLORS.light
+    st.push({ selector: 'node.f-down', style: { 'border-width': 2.5, 'border-color': fc.down } })
+    st.push({ selector: 'node.f-up', style: { 'border-width': 2.5, 'border-color': fc.up } })
+    st.push({ selector: 'node.f-both', style: { 'border-width': 2.5, 'border-color': fc.both } })
+    st.push({ selector: 'edge.f-e-down', style: { 'line-color': fc.down, 'target-arrow-color': fc.down } })
+    st.push({ selector: 'edge.f-e-up', style: { 'line-color': fc.up, 'target-arrow-color': fc.up } })
+    st.push({ selector: 'edge.f-e-both', style: { 'line-color': fc.both, 'target-arrow-color': fc.both } })
     return st
   }
 
@@ -405,35 +596,74 @@
   }
 
   // focus/selected classes — the ONLY element mutation inside paint's tail.
-  // V6: the focus set is computed by the PURE focusNeighbors() over the REAL
-  // graph.edges (not the rendered aggregate edges — those depend on the current
-  // collapse state and would make focus collapse-dependent). Each hit maps onto
-  // whatever actually renders: the pkg node itself, else its group card, else
-  // its zone shell; ancestors of kept elements are never dimmed.
+  // V21: the sets come from the PURE pathSets() over the REAL graph.edges (not
+  // the rendered aggregate edges — those depend on the current collapse state and
+  // would make focus collapse-dependent). Each hit maps onto whatever actually
+  // renders: the pkg node itself, else its group card, else its zone shell; the
+  // ancestors of kept elements are never dimmed. Direction classes are written as
+  // LITERAL addClass calls (the STYLE↔class guard derives the pairing from them).
+  function renderIdOf(id) {
+    var cy = state.cy
+    if (cy.getElementById(id).length) return id
+    var n = state.byId.get(id)
+    if (!n) return null
+    var gid = gidOf(n)
+    if (cy.getElementById('g:' + gid).length) return 'g:' + gid
+    var zid = state.groupZone.get(gid)
+    if (zid && cy.getElementById('cat:' + zid).length) return 'cat:' + zid
+    return null
+  }
   function applyClasses() {
     var cy = state.cy
     if (!cy) return
-    cy.elements().removeClass('dim in-focus selected')
+    cy.elements().removeClass('dim in-focus selected f-down f-up f-both f-e-down f-e-up f-e-both')
     if (state.focus) {
-      var hits = focusNeighbors(state.graph, state.focus.rootId, state.focus.depth)
+      var sets = pathSets(state.graph, state.focus.rootId, state.focus.depth)
+      var rootRid = renderIdOf(String(state.focus.rootId))
       var keep = new Set()
-      hits.forEach(function (id) {
-        if (cy.getElementById(id).length) { keep.add(id); return }
-        var n = state.byId.get(id)
-        if (!n) return
-        var gid = gidOf(n)
-        if (cy.getElementById('g:' + gid).length) { keep.add('g:' + gid); return }
-        var zid = state.groupZone.get(gid)
-        if (zid && cy.getElementById('cat:' + zid).length) keep.add('cat:' + zid)
-      })
+      var dirOf = new Map() // rendered id -> { down, up }
+      if (rootRid) keep.add(rootRid)
+      function mark(id, down, up) {
+        var rid = renderIdOf(id)
+        if (!rid) return
+        keep.add(rid)
+        var f = dirOf.get(rid)
+        if (!f) { f = { down: false, up: false }; dirOf.set(rid, f) }
+        f.down = f.down || down
+        f.up = f.up || up
+      }
+      sets.down.forEach(function (id) { mark(id, true, sets.up.has(id)) })
+      sets.up.forEach(function (id) { mark(id, sets.down.has(id), true) })
       // a focused element drags its ancestor chain in with it
       keep.forEach(function (id) {
         var el = cy.getElementById(id)
         if (el.length) el.parents().forEach(function (p) { keep.add(p.id()) })
       })
-      cy.nodes().forEach(function (el) { if (keep.has(el.id())) el.addClass('in-focus'); else el.addClass('dim') })
+      // the induced edge rule counts the root as a member of both sides
+      function sideHas(rid, side) {
+        if (rootRid && rid === rootRid) return true
+        var f = dirOf.get(rid)
+        return !!(f && f[side])
+      }
+      cy.nodes().forEach(function (el) {
+        var id = el.id()
+        if (!keep.has(id)) { el.addClass('dim'); return }
+        el.addClass('in-focus')
+        var f = dirOf.get(id)
+        if (!f) return
+        if (f.down && f.up) el.addClass('f-both')
+        else if (f.down) el.addClass('f-down')
+        else if (f.up) el.addClass('f-up')
+      })
       cy.edges().forEach(function (el) {
-        if (keep.has(el.data('source')) && keep.has(el.data('target'))) el.addClass('in-focus'); else el.addClass('dim')
+        var src = el.data('source'), tgt = el.data('target')
+        if (!keep.has(src) || !keep.has(tgt)) { el.addClass('dim'); return }
+        el.addClass('in-focus')
+        var dn = sideHas(src, 'down') && sideHas(tgt, 'down')
+        var up = sideHas(src, 'up') && sideHas(tgt, 'up')
+        if (dn && up) el.addClass('f-e-both')
+        else if (dn) el.addClass('f-e-down')
+        else if (up) el.addClass('f-e-up')
       })
     }
     if (state.selected) {
@@ -470,10 +700,31 @@
     state.view.collapsedGroups.has(gid) ? state.view.collapsedGroups.delete(gid) : state.view.collapsedGroups.add(gid)
     paint()
   }
+  // R35: focus follows selection, and a PACKAGE node is the only legal focus
+  // root. isFocusRoot() also owns the rescan guard (a root that vanished or
+  // changed kind can no longer anchor a focus).
+  function isFocusRoot(id) {
+    var n = id == null ? null : state.byId.get(String(id))
+    return !!(n && n.kind === 'package')
+  }
+  // Selecting anything that is not a package (broken/profile node, group card,
+  // zone shell, or a blank tap) clears the focus; tapping an EDGE leaves it alone
+  // (an edge is not a root, and selecting one must not drop the path being read).
+  function focusForId(id) {
+    var s = String(id == null ? '' : id)
+    if (!s) return null
+    if (!state.byId.has(s)) {
+      if (s.indexOf('agg:') === 0 || s.indexOf('e:') === 0) return state.focus
+      return null
+    }
+    return isFocusRoot(s) ? { rootId: s, depth: depthOfCtl() } : null
+  }
   function selectNode(id) {
     state.selected = id
+    state.focus = focusForId(id)
     renderDetails(id)
-    paint(false) // selection-only repaint: keep the viewport
+    syncFocusCtl()
+    paint(false) // selection/focus-only repaint: keep the viewport
   }
   // Expand the view so `n` renders: its zone un-collapsed AND un-filtered, its
   // group un-collapsed. (view mutations only — paint() renders the result.)
@@ -489,8 +740,10 @@
     if (!n) return
     expandPath(n)
     state.selected = n.id
+    state.focus = focusForId(n.id) // search reveal selects → R35 focus follows
     paint()
     renderDetails(n.id)
+    syncFocusCtl()
     flashReveal(n.id)
   }
   // V6 Step 2: center+zoom animation and a 1.2s transient `.flash` class.
@@ -506,15 +759,19 @@
       if (again && again.length) again.removeClass('flash')
     }, 1200)
   }
-  // V6 Step 3: focus = pure BFS hits on graph.edges + ensureVisible of ALL hit
-  // ancestors + dim of everything else (classes land in applyClasses at paint).
+  // V6 Step 3 / V21 R35: structural focus reveal — expand the ROOT and every
+  // path member's ancestors, repaint (applyClasses writes the f-* classes), then
+  // pan+zoom + 1.2s flash on the root. Reached from the details 聚焦 button, the
+  // depth slider and the #node= deep link; a plain tap focuses through
+  // selectNode() without expanding anything (the tapped node is visible already).
   function focusNode(rootId, depth, selectId) {
-    var d = typeof depth === 'number' && depth >= 1 ? Math.min(3, Math.floor(depth)) : 2
+    var d = normalizeDepth(depth)
     state.focus = { rootId: rootId, depth: d }
-    focusNeighbors(state.graph, rootId, d).forEach(function (id) {
-      var n = state.byId.get(id)
-      if (n) expandPath(n)
-    })
+    var sets = pathSets(state.graph, rootId, d)
+    var rn = state.byId.get(String(rootId))
+    if (rn) expandPath(rn)
+    sets.down.forEach(function (id) { var n = state.byId.get(id); if (n) expandPath(n) })
+    sets.up.forEach(function (id) { var n = state.byId.get(id); if (n) expandPath(n) })
     if (selectId) state.selected = selectId
     paint()
     syncFocusCtl()
@@ -523,15 +780,17 @@
   }
   function depthOfCtl() {
     var s = document.getElementById('focus-depth')
-    var v = s ? parseInt(s.value, 10) : 2
-    return v >= 1 && v <= 3 ? v : 2
+    var v = s ? parseInt(s.value, 10) : 0
+    // R35: the control's value 0 means UNLIMITED (and it is the default);
+    // anything unparseable falls back to the same unlimited reading.
+    return v === 0 ? null : v >= 1 && v <= 3 ? v : null
   }
   function syncFocusCtl() {
     var ctl = document.getElementById('focus-ctl')
     if (!ctl) return
     ctl.hidden = !state.focus
     var sel = document.getElementById('focus-depth')
-    if (state.focus && sel) sel.value = String(Math.min(3, Math.max(1, state.focus.depth)))
+    if (state.focus && sel) sel.value = String(state.focus.depth == null ? 0 : state.focus.depth)
   }
 
   // ---------- search (V6 Step 2: pure matcher + Enter selects the top hit) ----------
@@ -717,29 +976,17 @@
     box.appendChild(desc)
     if (n.flags && n.flags.unreadable) kvRow(box, 'flags', 'unreadable')
 
-    var mb = Array.isArray(n.mountedBy) ? n.mountedBy : []
-    if (mb.length) {
-      secTitle(box, t('mountedByLabel'))
-      mb.forEach(function (pname) {
-        jumpButton(box, String(pname), function () {
-          var pn = state.byId.get('profile:' + pname)
-          if (pn) revealNode(pn); else selectNode(null)
-        })
-      })
-    }
-
-    // depends / depended-by from the REAL scan edges (graph.edges), grouped by
-    // kind with counts; `unsatisfied` (present only on scan edges) is flagged.
-    var out = new Map(), inc = new Map()
-    var edges = Array.isArray(state.graph.edges) ? state.graph.edges : []
-    edges.forEach(function (e) {
-      if (!e || e.from == null || e.to == null) return
-      var from = String(e.from), to = String(e.to)
-      if (from === n.id && to !== n.id) { if (!out.has(String(e.kind))) out.set(String(e.kind), []); out.get(String(e.kind)).push(e) }
-      if (to === n.id && from !== n.id) { if (!inc.has(String(e.kind))) inc.set(String(e.kind), []); inc.get(String(e.kind)).push(e) }
-    })
-    depSection(box, t('depsLabel'), out, 'out')
-    depSection(box, t('dependentsLabel'), inc, 'in')
+    // R35: the two path lists replace the old 挂载方 block and the kind-grouped
+    // deps/dependents counts — they carry everything those did (mounted-by is the
+    // `mount` row of the up list) plus the whole transitive chain.
+    var lists = buildPathLists(pathSets(state.graph, n.id, null), state.graph, state.byId)
+    pathListSection(box, t('pathDownLabel'), lists.down)
+    pathListSection(box, t('pathUpLabel'), lists.up)
+    // `mount` is not a DOWN path kind (R35: X→mount→Y means Y's path runs UP to
+    // X), so what THIS node mounts is invisible to both lists. It is the app's
+    // headline question (「dsh-base 到底把哪些包挂载进来」), so it keeps its own
+    // section — rows of the same shape, built straight off the mount out-edges.
+    mountOutSection(box, n.id)
 
     // profile nodes: declared deps + bundle surface (graph.profiles entry)
     if (n.kind === 'profile') {
@@ -795,35 +1042,75 @@
     }
   }
 
-  // deps/dependents block: `dir` selects which endpoint is "the other side"
-  // ('out' = this node depends on e.to; 'in' = e.from depends on this node).
-  function depSection(box, title, byKind, dir) {
-    var total = 0
-    byKind.forEach(function (list) { total += list.length })
-    if (!total) return
-    secTitle(box, title + ' ×' + total)
-    // stable order: EDGE_KINDS_ALL first, any foreign kinds after (defensive)
-    var kinds = EDGE_KINDS_ALL.filter(function (k) { return byKind.has(k) })
-    byKind.forEach(function (_l, k) { if (EDGE_KINDS_ALL.indexOf(k) < 0) kinds.push(k) })
-    kinds.forEach(function (kind) {
-      var list = byKind.get(kind)
-      kvRow(box, kind + ' ×' + list.length, '')
-      list.slice(0, 60).forEach(function (e) {
-        var otherId = String(dir === 'out' ? e.to : e.from)
-        var tn = state.byId.get(otherId)
-        var b = jumpButton(box, tn ? shortName(tn.name, tn.kind) : otherId, function () {
-          var target = state.byId.get(otherId)
-          if (target) revealNode(target)
-        })
-        // `unsatisfied` lives ONLY on scan edges (graph.edges) — flag it here
-        if (e.unsatisfied) {
-          var u = document.createElement('span'); u.className = 'unsat'
-          escText(u, ' ⚠ ' + t('unsatLabel'))
-          b.appendChild(u)
-        }
-      })
-      if (list.length > 60) kvRow(box, '', t('moreLabel').replace('{n}', list.length - 60))
+  // ---------- V21 R35 path-list blocks ----------
+  // One row = `name@version · d{layer} · kind badges · ⚠`, click = selectNode(row.id)
+  // which re-roots the focus on that row. Row text (attacker-influenced third-party
+  // names) goes through escText only; the classes reuse .jump/.badge/.unsat.
+  function pathRow(box, row, onClick) {
+    var b = document.createElement('button'); b.className = 'jump'
+    var nm = document.createElement('span')
+    escText(nm, row.name + (row.version && row.version !== '-' ? '@' + row.version : ''))
+    b.appendChild(nm)
+    if (row.dist != null) {
+      var d = document.createElement('span'); d.className = 'dist'
+      escText(d, ' · ' + t('pathDistLabel').replace('{n}', row.dist))
+      b.appendChild(d)
+    }
+    row.kinds.forEach(function (k) {
+      var s = document.createElement('span'); s.className = 'badge'
+      escText(s, k)
+      b.appendChild(document.createTextNode(' '))
+      b.appendChild(s)
     })
+    if (row.unsat) {
+      var u = document.createElement('span'); u.className = 'unsat'
+      escText(u, ' ⚠ ' + t('unsatLabel'))
+      b.appendChild(u)
+    }
+    b.addEventListener('click', onClick)
+    box.appendChild(b)
+  }
+  // Header carries the count and the deepest layer (「N · 最深 M 层」); an empty
+  // list still renders its title with 「无」 so the two sections never disappear.
+  function pathListSection(box, title, rows) {
+    if (!rows.length) { secTitle(box, title + ' · ' + t('pathNoneLabel')); return }
+    var deepest = 0
+    rows.forEach(function (r) { if (r.dist > deepest) deepest = r.dist })
+    secTitle(box, title + ' · ' + t('pathCountLabel').replace('{n}', rows.length).replace('{d}', deepest))
+    rows.slice(0, PATH_ROW_CAP).forEach(function (r) {
+      pathRow(box, r, function () { selectNode(r.id) })
+    })
+    if (rows.length > PATH_ROW_CAP) kvRow(box, '', t('moreLabel').replace('{n}', rows.length - PATH_ROW_CAP))
+  }
+  // What this node MOUNTS (its bundle surface). R35's down kinds exclude `mount`
+  // (correct for the highlight), so these packages are not path rows — they get
+  // their own block instead of the shipped answer to 「谁被它挂载」 disappearing.
+  function mountOutSection(box, id) {
+    var rows = []
+    var seen = new Set()
+    var edges = Array.isArray(state.graph.edges) ? state.graph.edges : []
+    edges.forEach(function (e) {
+      if (!e || e.from == null || e.to == null) return
+      if (String(e.from) !== String(id) || String(e.kind) !== 'mount') return
+      var otherId = String(e.to)
+      if (seen.has(otherId)) return
+      seen.add(otherId)
+      var tn = state.byId.get(otherId)
+      var isProfile = otherId.indexOf('profile:') === 0
+      var name = tn && tn.name != null ? String(tn.name) : otherId
+      if (isProfile && name.indexOf('profile:') === 0) name = name.slice('profile:'.length)
+      rows.push({
+        id: otherId, name: name, version: tn && tn.version != null ? String(tn.version) : null,
+        dist: null, kinds: ['mount'], unsat: !!e.unsatisfied, isProfile: isProfile,
+      })
+    })
+    if (!rows.length) return
+    rows.sort(function (a, b) { return a.name < b.name ? -1 : a.name > b.name ? 1 : a.id < b.id ? -1 : 1 })
+    secTitle(box, t('mountsLabel') + ' · ' + rows.length)
+    rows.slice(0, PATH_ROW_CAP).forEach(function (r) {
+      pathRow(box, r, function () { selectNode(r.id) })
+    })
+    if (rows.length > PATH_ROW_CAP) kvRow(box, '', t('moreLabel').replace('{n}', rows.length - PATH_ROW_CAP))
   }
 
   // ---------- legend (V6 Step 6: 4 shapes + 5 edge kinds, collapsible) ----------
@@ -856,6 +1143,9 @@
     legRow('ek-peer', 'leg-edge', t('egPeer'))
     legRow('ek-peer-optional', 'leg-edge', t('egPeerOpt'))
     legRow('ek-agg', 'leg-edge', t('egAgg'))
+    legSec(t('legendFocus'))
+    legRow('fp-down', 'leg-edge', t('pathDownLabel'))
+    legRow('fp-up', 'leg-edge', t('pathUpLabel'))
   }
 
   // ---------- zone chips (V6 Step 5) ----------
@@ -1053,7 +1343,8 @@
     state.byId = new Map(json.nodes.map(function (n) { return [n.id, n] }))
     computeGroupUniverse()
     if (keepView) {
-      if (state.focus && !state.byId.has(state.focus.rootId)) state.focus = null
+      // a focus root that vanished OR stopped being a package cannot anchor R35
+      if (state.focus && !isFocusRoot(state.focus.rootId)) state.focus = null
       if (state.selected && state.selected.indexOf(':') < 0 && !state.byId.has(state.selected)) state.selected = null
     } else {
       state.view = freshView()
@@ -1071,7 +1362,7 @@
       var m = /node=(.+)$/.exec(hash)
       if (m) {
         var n = state.byId.get(m[1])
-        if (n) { focusNode(n.id, 2, n.id); return }
+        if (n) { focusNode(n.id, null, n.id); return } // R35: a deep link focuses at UNLIMITED depth
       }
     }
     paint()

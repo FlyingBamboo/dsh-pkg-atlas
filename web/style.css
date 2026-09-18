@@ -11,8 +11,17 @@ button { padding: 3px 10px; }
 .warnhead { cursor: pointer; }
 .warnlist { max-height: 180px; overflow: auto; font-size: 12px; opacity: .85; }
 #error-bar { padding: 8px 12px; background: light-dark(#ffe2e2, #4a1f1f); }
-main { display: flex; height: calc(100vh - 46px); }
+main { display: flex; height: calc(100vh - 46px); position: relative; }
 #graph { flex: 1; min-width: 0; }
+/* V6 fills #legend and #zone-chips; empty containers must stay invisible (V5) */
+#legend { position: absolute; right: 10px; bottom: 10px; max-width: 300px; max-height: 40vh; overflow: auto; z-index: 2; pointer-events: none; background: light-dark(#ffffffe6, #12161be6); border: 1px solid #8884; border-radius: 6px; padding: 8px 10px; font-size: 11px; }
+#legend:empty { display: none; }
+header .chips { display: inline-flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+#zone-chips:empty { display: none; }
+#progress-bar { display: flex; align-items: center; gap: 8px; padding: 4px 12px; }
+#progress-bar .progress-track { flex: 1; height: 6px; border-radius: 3px; background: #8883; overflow: hidden; }
+#progress-bar .progress-fill { height: 100%; width: 0; background: light-dark(#4c7fb8, #6db3ef); }
+#progress-bar .progress-text { font-size: 11px; opacity: .7; white-space: nowrap; }
 #table-fallback { flex: 1; overflow: auto; padding: 12px; }
 #table-fallback table { border-collapse: collapse; width: 100%; }
 #table-fallback td, #table-fallback th { border: 1px solid #8884; padding: 3px 8px; text-align: left; }

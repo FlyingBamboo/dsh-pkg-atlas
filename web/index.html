@@ -11,25 +11,26 @@
     <h1 data-i18n="title">dsh-pkg-atlas</h1>
     <span class="grow"></span>
     <input id="search" type="search" data-i18n-ph="search" autocomplete="off">
-    <label><input type="checkbox" id="f-official" checked><span data-i18n="official"></span></label>
-    <label><input type="checkbox" id="f-plugin" checked><span data-i18n="plugin"></span></label>
-    <label><input type="checkbox" id="f-mount" checked>mount</label>
-    <label><input type="checkbox" id="f-peer" checked>peer</label>
-    <label><input type="checkbox" id="f-dep" checked>dep</label>
-    <span id="f-profiles"></span>
-    <label><span data-i18n="focusDepth"></span><input id="focus-depth" type="range" min="1" max="3" value="2"></label>
+    <span id="zone-chips" class="chips"></span>
     <button id="refresh" data-i18n="refresh"></button>
     <span id="meta"></span>
   </header>
+  <div id="progress-bar" hidden>
+    <div class="progress-track"><div class="progress-fill"></div></div>
+    <span class="progress-text"></span>
+  </div>
   <div id="warning-bar" hidden></div>
   <div id="error-bar" hidden><span id="error-msg"></span><button id="retry" data-i18n="retry"></button></div>
   <main>
     <div id="graph"></div>
+    <div id="legend"></div>
     <div id="search-results" hidden></div>
     <aside id="details" hidden></aside>
     <div id="table-fallback" hidden></div>
   </main>
+  <!-- vendor (frozen) → AtlasModel (classic script, sets globalThis.AtlasModel) → app -->
   <script src="vendor/cytoscape.min.js"></script>
+  <script src="graph-model.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

@@ -104,7 +104,8 @@
       var kind = entry && entry.kind
       if (!kind) {
         kind = gid2 === 'broken' ? 'broken' : gid2 === 'profiles' ? 'profile'
-          : gid2 === 'plugin' ? 'plugin' : gid2 === 'ungrouped' ? 'ungrouped' : 'official'
+          : gid2 === 'plugin' ? 'plugin' : gid2 === 'vendor' ? 'vendor'
+            : gid2 === 'ungrouped' ? 'ungrouped' : 'official'
       }
       groupById.set(gid2, { id: gid2, kind: String(kind), category: String(cat), members: _list })
     })
@@ -144,16 +145,21 @@
         gr.slotW = Math.max(L.CARD_W, gridW)
         gr.slotH = Math.max(L.CARD_H, gridH)
       })
-      // groups flow into rows; row height = max inside the row
+      // groups flow into rows; row height = max inside the row.
+      // I-5: EVERY item needs its OWN leading-edge offset inside the row. A single
+      // `row.x` per row made every card in the row share one x (they stacked). The
+      // per-item offset lives on the group (`gr.rowX`); `row.w` stays the row TOTAL
+      // width (contentW + the (contentW - row.w)/2 centering still read it).
       zz.rows = []
       var contentW = 0
       zz.groups.forEach(function (gr) {
         var row = zz.rows[zz.rows.length - 1]
         if (row && row.w + L.GAP + gr.slotW > L.FLOW_W) row = null
-        if (!row) { row = { items: [], w: 0, h: 0, x: 0, y: 0 }; zz.rows.push(row) }
-        row.x = row.w
+        if (!row) { row = { items: [], w: 0, h: 0, y: 0 }; zz.rows.push(row) }
+        if (row.items.length) row.w += L.GAP
+        gr.rowX = row.w
         row.items.push(gr)
-        row.w += (row.items.length > 1 ? L.GAP : 0) + gr.slotW
+        row.w += gr.slotW
         if (gr.slotH > row.h) row.h = gr.slotH
         if (row.w > contentW) contentW = row.w
       })
@@ -186,7 +192,7 @@
       zz.rows.forEach(function (row) {
         var rowLeft = left + L.ZONE_PAD + (zz.contentW - row.w) / 2
         row.items.forEach(function (gr) {
-          gr.x = rowLeft + row.x + gr.slotW / 2
+          gr.x = rowLeft + gr.rowX + gr.slotW / 2
           gr.y = top + L.ZONE_PAD + L.ZONE_LABEL_H + row.y + gr.slotH / 2
           gr.members.forEach(function (mm, k) {
             var col = k % gr.cols

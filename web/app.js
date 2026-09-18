@@ -106,7 +106,13 @@
     var peerOpt = dark ? '#3f5a74' : '#9dc1e8'
     var mount = dark ? '#57b98a' : '#3f9d6d'
     var st = [
-      { selector: 'core', style: { background: bg } },
+      // Theme of the canvas. `background` is NOT a cytoscape property (3.34.1:
+      // "The style property `background: …` is invalid"); the core spelling is
+      // background-color. Dist caveat, verified here: the canvas renderer never
+      // draws a core background (CRp.clearCanvas only clearRects) and the webgl
+      // path reads the CONTAINER's CSS background (getBGColor) — so web/style.css
+      // paints #graph with these same colors (the pairing is pinned by a test).
+      { selector: 'core', style: { 'background-color': bg } },
 
       // ---- zones: `zone` + `cat-<zoneId>` classes, w/h floors per V5-M-6 above ----
       { selector: 'node.zone', style: {
@@ -116,7 +122,7 @@
         'compound-sizing-wrt-labels': 'exclude',
         label: 'data(label)', 'font-size': 13, 'font-weight': 'bold', color: text,
         'text-valign': 'top-inside', 'text-halign': 'center', 'text-margin-y': 8,
-        'text-wrap': 'ellipsis', 'max-text-width': 300,
+        'text-wrap': 'ellipsis', 'text-max-width': 300,
       } },
       // per-zone fill/border/label colors (ZONE_COLORS[theme][zoneId])
     ]
@@ -132,17 +138,33 @@
     })
 
     // ---- group cards: `group` + `gk-<kind>` + optional `collapsed` ----
+    // CARD vs CONTAINER (I-2, dist-verified): `:not()` does NOT exist in the
+    // 3.34.1 selector engine — the old `node.group:not(.collapsed)` rule was
+    // rejected outright ("The selector … is invalid"), so the container override
+    // landed on NOTHING and every group painted at the base opacity. The state is
+    // structural instead: an expanded group ALWAYS has its members in the element
+    // set (survivors > 0 is the render gate) → `:parent`; a collapsed card never
+    // does (AtlasModel omits them) → the base CARD look. (`:orphan` is NOT the
+    // card marker in this dist — it means "no parent", and every group card has a
+    // zone parent; `:childless` is the childless test, `:parent` the container one.)
     st.push({ selector: 'node.group', style: {
       shape: 'round-rectangle', 'border-width': 1,
       width: 'data(w)', height: 'data(h)', 'min-width': 'data(w)', 'min-height': 'data(h)',
       'compound-sizing-wrt-labels': 'exclude',
-      label: 'data(label)', 'font-size': 11, color: text, 'text-wrap': 'ellipsis', 'max-text-width': 120,
+      label: 'data(label)', 'font-size': 11, color: text, 'text-wrap': 'ellipsis', 'text-max-width': 120,
       'text-valign': 'top-inside', 'text-halign': 'center', 'text-margin-y': 4, 'background-opacity': 0.9,
     } })
-    st.push({ selector: 'node.group:not(.collapsed)', style: { 'background-opacity': 0.14, 'border-width': 1.25 } })
+    st.push({ selector: 'node.group:parent', style: { 'background-opacity': 0.14, 'border-width': 1.25 } })
+    // The card is a 132×36 chip: its label centers. The container keeps the
+    // top-inside strip. (This is what makes the model's `collapsed` class carry a
+    // selector — the I-6 derived guard requires every emitted class to have one.)
+    st.push({ selector: 'node.group.collapsed', style: { 'text-valign': 'center', 'text-margin-y': 0 } })
+    // gk-<kind> palette. `vendor` is NOT optional: lib/scan.js emits group kind
+    // `vendor` (dir startsWith 'vendor/') → infra zone; without an entry the card
+    // falls back to cytoscape's defaults (verified: rgb(238,238,238)/rgb(204,204,204)).
     var gk = dark
-      ? { official: ['#243140', '#4b7bb5'], plugin: ['#3a2f4d', '#9a6ac2'], profile: ['#403624', '#c9a45c'], broken: ['#4a262a', '#e05252'], ungrouped: ['#3a3a3a', '#9aa4ae'] }
-      : { official: ['#dde7f3', '#4b7bb5'], plugin: ['#e9defa', '#8a5fc0'], profile: ['#f7ecd7', '#c08a2e'], broken: ['#f4d3d6', '#c04a4a'], ungrouped: ['#e8e8e8', '#909aa4'] }
+      ? { official: ['#243140', '#4b7bb5'], plugin: ['#3a2f4d', '#9a6ac2'], profile: ['#403624', '#c9a45c'], broken: ['#4a262a', '#e05252'], vendor: ['#1f3b34', '#4fc2a0'], ungrouped: ['#3a3a3a', '#9aa4ae'] }
+      : { official: ['#dde7f3', '#4b7bb5'], plugin: ['#e9defa', '#8a5fc0'], profile: ['#f7ecd7', '#c08a2e'], broken: ['#f4d3d6', '#c04a4a'], vendor: ['#d9ece6', '#0f7d64'], ungrouped: ['#e8e8e8', '#909aa4'] }
     Object.keys(gk).forEach(function (kind) {
       st.push({ selector: 'node.group.gk-' + kind, style: { 'background-color': gk[kind][0], 'border-color': gk[kind][1] } })
     })
@@ -153,7 +175,7 @@
       shape: 'ellipse', width: 16, height: 16,
       label: 'data(label)', 'font-size': 8, color: text,
       'text-valign': 'bottom', 'text-halign': 'center', 'text-margin-y': 3,
-      'text-wrap': 'ellipsis', 'max-text-width': 96, 'background-opacity': 1,
+      'text-wrap': 'ellipsis', 'text-max-width': 96, 'background-opacity': 1,
     } })
     st.push({ selector: 'node.pkg.sc-official', style: { 'background-color': dark ? '#6da3d8' : '#4c7fb8' } })
     st.push({ selector: 'node.pkg.sc-third-party', style: { shape: 'hexagon', 'background-color': dark ? '#c194e8' : '#9a6ac2' } })

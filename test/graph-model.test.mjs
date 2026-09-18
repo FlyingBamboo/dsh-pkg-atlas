@@ -531,3 +531,156 @@ test('V4-15 zone collapse hides all members but keeps zone shell with total coun
   assert.ok(!m.has(A1) && !m.has(U1), 'members hidden')
   assertFiniteAll(res, 'zone collapse')
 })
+
+// =========================================================================
+// I-5 — zone group-flow: every card owns its slot. A single `row.x` per row
+// made EVERY card in the row read the same x, so they stacked on one another
+// (measured on HEAD: g:bundle and g:util both at (226,81), 132x36 overlap).
+// These tests are the ones that would have caught it.
+// =========================================================================
+/** One zone with 6 single-member groups → 3 cards per row (132*3 + 2*12 = 420
+ *  ≤ FLOW_W 480, a 4th would need 564) → two rows; plus a 2-card zone. */
+function wideGraph() {
+  const nodes = []
+  const groups = []
+  for (let i = 0; i < 6; i++) {
+    groups.push({ id: 'wg' + i, kind: 'official', category: 'kernel', packageCount: 1 })
+    nodes.push(node('w' + i + '@1.0.0', 'pkg-w' + i, 'package', 'official', 'wg' + i, 'kernel', ['web']))
+  }
+  groups.push({ id: 'u2a', kind: 'official', category: 'tools', packageCount: 1 })
+  groups.push({ id: 'u2b', kind: 'official', category: 'tools', packageCount: 1 })
+  nodes.push(node('t1@1.0.0', 'pkg-t1', 'package', 'official', 'u2a', 'tools', ['web']))
+  nodes.push(node('t2@1.0.0', 'pkg-t2', 'package', 'official', 'u2b', 'tools', ['web']))
+  return {
+    schema: 1, generatedAt: 'x', dshHome: '$DSH_HOME', warnings: [],
+    categories: [{ id: 'kernel', zh: 'k', en: 'k' }, { id: 'tools', zh: 't', en: 't' }],
+    profiles: [], groups, nodes, edges: [{ from: 'w0@1.0.0', to: 'w1@1.0.0', kind: 'dep' }],
+  }
+}
+
+/** Rows = cards sharing a y (the flow engine tops-aligns inside a row). */
+function rowsOf(cards) {
+  const byZone = new Map()
+  for (const c of cards) {
+    const key = c.data.parent
+    if (!byZone.has(key)) byZone.set(key, new Map())
+    const byY = byZone.get(key)
+    const bk = String(c.data.y)
+    if (!byY.has(bk)) byY.set(bk, [])
+    byY.get(bk).push(c.data)
+  }
+  return byZone
+}
+
+function assertSlotGeometry(M, graph, overrides, label, { exactFill }) {
+  const L = M.ZONE_LAYOUT
+  const res = M.buildView(graph, overrides)
+  const zones = nodeEls(res).filter((e) => e.data.kind === 'zone')
+  const cards = nodeEls(res).filter((e) => e.data.kind === 'group')
+  assert.ok(zones.length >= 2 && cards.length >= 6, `${label}: geometry probe needs zones+cards (${zones.length}/${cards.length})`)
+
+  // 1) pairwise-distinct (x,y) — stacked cards share BOTH coordinates
+  const at = new Map()
+  for (const c of cards) {
+    const k = c.data.x + '|' + c.data.y
+    assert.ok(!at.has(k), `${label}: ${c.data.id} stacks on ${at.get(k)} at (${k})`)
+    at.set(k, c.data.id)
+  }
+
+  // 2) slot rectangles never overlap (center ± w/2, ± h/2)
+  for (let i = 0; i < cards.length; i++) {
+    for (let j = i + 1; j < cards.length; j++) {
+      const a = cards[i].data, b = cards[j].data
+      const ox = Math.min(a.x + a.w / 2, b.x + b.w / 2) - Math.max(a.x - a.w / 2, b.x - b.w / 2)
+      const oy = Math.min(a.y + a.h / 2, b.y + b.h / 2) - Math.max(a.y - a.h / 2, b.y - b.h / 2)
+      assert.ok(ox <= 1e-9 || oy <= 1e-9, `${label}: ${a.id} overlaps ${b.id} by ${ox.toFixed(1)}x${oy.toFixed(1)}`)
+    }
+  }
+  // …and neither do the zone rectangles themselves
+  for (let i = 0; i < zones.length; i++) {
+    for (let j = i + 1; j < zones.length; j++) {
+      const a = zones[i].data, b = zones[j].data
+      const ox = Math.min(a.x + a.w / 2, b.x + b.w / 2) - Math.max(a.x - a.w / 2, b.x - b.w / 2)
+      const oy = Math.min(a.y + a.h / 2, b.y + b.h / 2) - Math.max(a.y - a.h / 2, b.y - b.h / 2)
+      assert.ok(ox <= 1e-9 || oy <= 1e-9, `${label}: zone ${a.id} overlaps ${b.id}`)
+    }
+  }
+
+  // 3) per zone, the cards fill the ROW they were flowed into (this is the
+  //    stacking detector: with one shared row.x the extent is a single card).
+  const byZone = rowsOf(cards)
+  let multiCardRows = 0, multiRowZones = 0
+  for (const [zid, byY] of byZone) {
+    const zone = zones.find((z) => z.data.id === zid)
+    assert.ok(zone, `${label}: cards of ${zid} have a rendered zone`)
+    if (byY.size > 1) multiRowZones++
+    const contentW = zone.data.w - 2 * L.ZONE_PAD
+    const left = zone.data.x - zone.data.w / 2, right = zone.data.x + zone.data.w / 2
+    let widest = 0
+    for (const [, row] of byY) {
+      row.sort((a, b) => a.x - b.x)
+      if (row.length > 1) multiCardRows++
+      const lo = Math.min(...row.map((d) => d.x - d.w / 2))
+      const hi = Math.max(...row.map((d) => d.x + d.w / 2))
+      widest = Math.max(widest, hi - lo)
+      assert.ok(lo >= left + L.ZONE_PAD - 1e-9 && hi <= right - L.ZONE_PAD + 1e-9,
+        `${label}: row of ${row.length} in ${zid} escapes the zone content box`)
+      for (let k = 1; k < row.length; k++) {
+        const gap = (row[k].x - row[k].w / 2) - (row[k - 1].x + row[k - 1].w / 2)
+        assert.ok(gap >= L.GAP - 1e-9,
+          `${label}: ${zid} cards ${row[k - 1].id}/${row[k].id} are ${gap.toFixed(1)} apart (< GAP ${L.GAP})`)
+      }
+    }
+    const eps = 1e-9
+    if (exactFill) {
+      assert.ok(Math.abs(widest - contentW) <= 1e-6,
+        `${label}: ${zid} widest row spans ${widest.toFixed(1)} but the zone content width is ${contentW.toFixed(1)}`)
+    } else {
+      assert.ok(widest <= contentW + eps, `${label}: ${zid} row spans ${widest} > content width ${contentW}`)
+      // every card sits in its own slot: a stacked row spans exactly one card
+      assert.ok(widest >= (contentW + L.CARD_W) / 2,
+        `${label}: ${zid} row spans only ${widest} of ${contentW} → cards are stacking`)
+    }
+  }
+  assert.ok(multiCardRows >= 1, `${label}: fixture must produce a row with >1 card (vacuous otherwise)`)
+  return { cards: cards.length, multiCardRows, multiRowZones }
+}
+
+test('V5-16 I-5 slot flow: cards are distinct, non-overlapping and fill their row (rich fixture)', () => {
+  const M = loadModel()
+  const collapsed = assertSlotGeometry(M, fixture(), {}, 'all-collapsed', { exactFill: false })
+  const expanded = assertSlotGeometry(M, fixture(), EXPANDED(), 'all-expanded', { exactFill: false })
+  assert.ok(collapsed.multiCardRows >= 1 && expanded.multiCardRows >= 1)
+})
+
+test('V5-16b I-5 slot flow: multi-row zone — widest row equals the zone content width', () => {
+  const M = loadModel()
+  const L = M.ZONE_LAYOUT
+  const stats = assertSlotGeometry(M, wideGraph(), {}, 'wide all-collapsed', { exactFill: true })
+  assert.equal(stats.multiRowZones, 1, 'the 6-group zone flowed into two rows')
+  assert.equal(stats.multiCardRows, 3, 'two rows × (3 cards… one has the pair zone) rows of >1 card')
+  assertSlotGeometry(M, wideGraph(), { collapsedGroups: new Set() }, 'wide all-expanded', { exactFill: true })
+  // 3 cards fit a 480 row: 3*132 + 2*12 = 420, a 4th would need 564
+  const { elements } = M.buildView(wideGraph(), {})
+  const kernel = elements.find((e) => e.data.id === 'cat:kernel').data
+  assert.equal(kernel.w, 3 * L.CARD_W + 2 * L.GAP + 2 * L.ZONE_PAD, 'zone width = widest row + padding')
+  // …and the two rows are stacked, not printed on top of each other
+  const ys = [...new Set(elements.filter((e) => e.data.kind === 'group' && e.data.parent === 'cat:kernel').map((e) => e.data.y))]
+  assert.equal(ys.length, 2, 'kernel has two card rows at distinct y')
+})
+
+test('V5-16c I-5 slot flow is collapse-independent (V4 coordinate constancy re-pinned)', () => {
+  const M = loadModel()
+  for (const graph of [fixture(), wideGraph()]) {
+    const c = elMap(M.buildView(graph, {}))
+    const e = elMap(M.buildView(graph, EXPANDED()))
+    for (const id of [...c.keys()]) {
+      if (!e.has(id) || c.get(id).group !== 'nodes') continue
+      assert.deepEqual(
+        { x: c.get(id).data.x, y: c.get(id).data.y },
+        { x: e.get(id).data.x, y: e.get(id).data.y },
+        `${id} moved between collapse states`,
+      )
+    }
+  }
+})

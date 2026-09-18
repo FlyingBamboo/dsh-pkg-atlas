@@ -1277,6 +1277,109 @@ test('V21 applyClasses: edges light f-e-down/f-e-up/f-e-only, induced-subgraph o
   assert.ok(!cy.classesOf(real(A1, U1, 'dep')).includes('f-e-up'), 'a down edge takes no up colour')
 })
 
+/**
+ * Fix-round-1 fixtures: the rendered-vs-pure contradiction. Every node is a
+ * package in a single kernel zone; one-zone-one-group renders it all-expanded
+ * (real cross edges), the four-group variant renders it as group CARDS
+ * (aggregate edges) when the view collapses groups by default.
+ */
+function miniNode(id, group) {
+  return {
+    id, kind: 'package', name: id, version: '1.0.0', scope: 'official', group, category: 'kernel',
+    path: '$DSH_HOME\\x', description: null, servicesRequired: [], externalDeps: [],
+    mountedBy: [], flags: { unreadable: false },
+  }
+}
+function miniGraph(groups, nodes, edges) {
+  return {
+    schema: 1, generatedAt: 'x', dshHome: '$DSH_HOME', warnings: [],
+    categories: [{ id: 'kernel', zh: '内核', en: 'Kernel' }],
+    profiles: [],
+    groups: groups.map((g) => ({ id: g, kind: 'official', category: 'kernel', packageCount: 1 })),
+    nodes, edges,
+  }
+}
+// a→b carries BOTH a dep and a mount edge; bnd→x is a bundle's mount-out edge.
+// In both cases the two endpoints are DOWN members, which is exactly what the
+// old endpoint-only rule mistook for a down edge.
+function mountPairGraph() {
+  return miniGraph(['g1'], [miniNode('r', 'g1'), miniNode('a', 'g1'), miniNode('b', 'g1'),
+    miniNode('bnd', 'g1'), miniNode('x', 'g1')], [
+    { from: 'r', to: 'a', kind: 'dep' },
+    { from: 'a', to: 'b', kind: 'dep' },
+    { from: 'a', to: 'b', kind: 'mount' },   // wrong kind between two down members
+    { from: 'r', to: 'bnd', kind: 'dep' },
+    { from: 'r', to: 'x', kind: 'dep' },     // makes x a down member on its own path
+    { from: 'bnd', to: 'x', kind: 'mount' }, // bundle mount-out: never colored (R37)
+  ])
+}
+// One package per group: collapsed, every edge renders as an aggregate whose
+// data.kind is the DOMINANT kind of its bucket.
+function aggMountGraph() {
+  return miniGraph(['gr', 'gb', 'gx', 'gy', 'gp'], [miniNode('r', 'gr'), miniNode('b', 'gb'),
+    miniNode('x', 'gx'), miniNode('y', 'gy'), miniNode('p', 'gp')], [
+    { from: 'r', to: 'b', kind: 'dep' },
+    { from: 'r', to: 'x', kind: 'dep' },
+    { from: 'x', to: 'y', kind: 'dep' },
+    { from: 'b', to: 'x', kind: 'mount' },  // aggregate mount between two DOWN cards
+    { from: 'p', to: 'r', kind: 'mount' },  // aggregate mount on the UP side (p → root)
+  ])
+}
+
+test('V21 fix1 (R37): a real edge takes its direction from pathSets, not endpoint membership', () => {
+  const Model = loadModel()
+  const logic = loadFocusLogic()
+  const { pathSets } = loadAppPure()
+  const graph = mountPairGraph()
+  const cy = makeFakeCy(paintElements(Model, graph, { collapsedGroups: new Set(), showRealCross: true }))
+  logic.apply({
+    cy, graph, byId: byIdMap(graph), groupZone: zoneTable(graph),
+    focus: { rootId: 'r', depth: null }, selected: 'r',
+  })
+  const real = (s, t, k) => `e:${s}|${t}|${k}`
+  const sets = pathSets(graph, 'r', null)
+  // the seam the fix leans on: AtlasModel's real-cross id IS the pathSets key
+  assert.ok(sets.downEdges.has(real('a', 'b', 'dep')),
+    'pathSets keys the dep edge with the model id (graph-model.js buildView)')
+  assert.ok(!sets.downEdges.has(real('a', 'b', 'mount')),
+    'R37: a mount edge is in NO down-edge set, whatever its endpoints are')
+
+  assert.ok(cy.classesOf(real('a', 'b', 'dep')).includes('f-e-down'), 'the dep edge lights amber')
+  for (const id of [real('a', 'b', 'mount'), real('bnd', 'x', 'mount')]) {
+    const c = cy.classesOf(id)
+    assert.ok(c.includes('in-focus'), `${id} sits inside the induced subgraph → stays visible`)
+    for (const f of ['f-e-down', 'f-e-up', 'f-e-both']) {
+      assert.ok(!c.includes(f), `R37: ${id} carries no direction colour (${f})`)
+    }
+  }
+})
+
+test('V21 fix1 (R37): aggregate edges take the kind-aware rule (agg mount between down cards stays dark)', () => {
+  const Model = loadModel()
+  const logic = loadFocusLogic()
+  const graph = aggMountGraph()
+  const cy = makeFakeCy(paintElements(Model, graph, {})) // default: every group collapsed
+  logic.apply({
+    cy, graph, byId: byIdMap(graph), groupZone: zoneTable(graph),
+    focus: { rootId: 'r', depth: null }, selected: 'g:gr',
+  })
+  const agg = (s, t) => `agg:g:${s}|g:${t}`
+  // Pinned behavior (R37): an aggregate edge has no raw pathSets key, so the
+  // kind half comes from data.kind (the dominant kind) and the endpoint half
+  // from the SAME container-membership predicate the nodes use — a group card
+  // counts as a member of the side its mapped members sit on, and the root's
+  // own card counts on both sides. Hence: mount never down, dep never up.
+  assert.ok(cy.classesOf(agg('gr', 'gb')).includes('f-e-down'), 'root card → down card dep lights amber')
+  assert.ok(cy.classesOf(agg('gx', 'gy')).includes('f-e-down'), 'down card → down card dep lights amber')
+  const c = cy.classesOf(agg('gb', 'gx'))
+  assert.ok(c.includes('in-focus'), 'the aggregate mount edge stays visible (both cards kept)')
+  for (const f of ['f-e-down', 'f-e-up', 'f-e-both']) {
+    assert.ok(!c.includes(f), `R37: agg mount between two down containers carries no direction colour (${f})`)
+  }
+  assert.ok(cy.classesOf(agg('gp', 'gr')).includes('f-e-up'),
+    'mount IS an up kind: the p→root card aggregate lights teal (both sides of the gate hold)')
+})
+
 test('V21 applyClasses: depth reaches the class algebra', () => {
   const Model = loadModel()
   const graph = fixture()
@@ -1713,6 +1816,16 @@ test('V21 R35 controls: depth 0 option ships selected (unlimited), and the wirin
   // rescan guard: a focus root that vanished OR stopped being a package is dropped
   assert.match(src, /state\.focus && \!isFocusRoot\(state\.focus\.rootId\)\) state\.focus = null/,
     'applyGraph prunes a stale focus root')
+})
+
+test('V21 fix1: the #node= deep link is gated by isFocusRoot (only a package anchors a focus)', () => {
+  const src = readFileSync(join(WEB, 'app.js'), 'utf8')
+  const i = src.indexOf('/node=(.+)$/.exec(hash)')
+  assert.ok(i >= 0, 'the #node= deep-link branch still exists')
+  const block = src.slice(i, src.indexOf('paint()', i))
+  assert.match(block, /isFocusRoot\(/,
+    'R35 gate: #node=profile:web anchors a selection, never a focus (package kind only)')
+  assert.match(block, /focusNode\(n\.id, null, n\.id\)/, 'a package anchor still focuses at unlimited depth')
 })
 
 test('V21 R36 legend + README + style.css stay in sync with the direction palette', () => {

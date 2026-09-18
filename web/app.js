@@ -659,8 +659,30 @@
         var src = el.data('source'), tgt = el.data('target')
         if (!keep.has(src) || !keep.has(tgt)) { el.addClass('dim'); return }
         el.addClass('in-focus')
-        var dn = sideHas(src, 'down') && sideHas(tgt, 'down')
-        var up = sideHas(src, 'up') && sideHas(tgt, 'up')
+        // R37 applied to edges: membership is not direction. The colour comes
+        // from the SAME rule pathSets uses (kind ∈ that direction's kinds AND the
+        // endpoints sit on that side), so a mount edge between two DOWN members
+        // stays kind-coloured instead of going amber.
+        var eid = el.id()
+        var dn, up
+        if (eid.indexOf('e:') === 0) {
+          // Real cross edge: AtlasModel's id IS the pathSets key
+          // ('e:'+from+'|'+to+'|'+kind, graph-model.js buildView), so the pure
+          // rule answers directly — an edge in neither set is in-focus but dark,
+          // and one in both (a cycle member) paints with the both colour.
+          dn = sets.downEdges.has(eid)
+          up = sets.upEdges.has(eid)
+        } else {
+          // Aggregate edge ('agg:'+s+'|'+d): it stands for a bucket of raw edges
+          // and carries only the dominant data.kind, so no raw key exists to look
+          // up. Apply the kind half of the rule here and take the endpoint half
+          // through the very same container predicate the nodes use (sideHas): a
+          // card/zone counts on the side its mapped members sit on, the root's
+          // own container on both.
+          var ekind = String(el.data('kind') == null ? '' : el.data('kind'))
+          dn = DOWN_EDGE_KINDS.indexOf(ekind) >= 0 && sideHas(src, 'down') && sideHas(tgt, 'down')
+          up = UP_EDGE_KINDS.indexOf(ekind) >= 0 && sideHas(src, 'up') && sideHas(tgt, 'up')
+        }
         if (dn && up) el.addClass('f-e-both')
         else if (dn) el.addClass('f-e-down')
         else if (up) el.addClass('f-e-up')
@@ -1362,7 +1384,11 @@
       var m = /node=(.+)$/.exec(hash)
       if (m) {
         var n = state.byId.get(m[1])
-        if (n) { focusNode(n.id, null, n.id); return } // R35: a deep link focuses at UNLIMITED depth
+        // R35 gate: a deep link anchors a focus only when it names a PACKAGE.
+        // Anything else (profile:, broken, a group id) just reveals the node —
+        // focusForId() declines it, exactly as a tap on the same node would.
+        if (n && isFocusRoot(n.id)) { focusNode(n.id, null, n.id); return } // R35: a deep link focuses at UNLIMITED depth
+        if (n) { revealNode(n); return }
       }
     }
     paint()

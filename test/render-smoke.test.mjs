@@ -1,5 +1,7 @@
 /**
- * Task V5 — headless render smoke (+ fix round 1: dist-validity guards).
+ * Task V5 — headless render smoke (+ fix round 1: dist-validity guards)
+ * + Task V6 — interaction layer: pure-helper unit tests, control→view
+ *   mapping guards, i18n parity, CSS [hidden]/pointer-events guards, XSS re-sweep.
  *
  * app.js cannot run here (no DOM), so this test pins the layers V5 depends on:
  *  1. AtlasModel output contract (the exact fields app.js binds in paint()/STYLE):
@@ -595,4 +597,241 @@ test('http: /graph-model.js is served as a first-class asset', () => {
   assert.match(a.type, /text\/javascript/, 'js mime')
   assert.ok(a.body.length > 1000, 'non-trivial body')
   assert.ok(assets.has('/app.js') && assets.has('/index.html'), 'existing routes intact')
+})
+
+// =========================================================================
+// Task V6 — interaction layer. The pure helpers (focusNeighbors/matchNodes/
+// progressFor/edgeKindsFor) are DOM-free by contract (app.js keeps them
+// self-contained apart from EDGE_KINDS_ALL), so the SAME balanced-extraction
+// seam that loadAppStyle() uses lifts them into a bare function scope.
+// Anchor caveat: extractBalanced() counts only { } and [ ], so a function
+// anchor must END at the body's opening brace — full signature required.
+// =========================================================================
+
+function loadAppPure() {
+  const src = readFileSync(join(WEB, 'app.js'), 'utf8')
+  const body = [
+    extractBalanced(src, 'var EDGE_KINDS_ALL = [') + '\n',
+    extractBalanced(src, 'function focusNeighbors(graph, rootId, depth) {') + '\n',
+    extractBalanced(src, 'function matchNodes(graph, query, limit) {') + '\n',
+    extractBalanced(src, 'function progressFor(status) {') + '\n',
+    extractBalanced(src, 'function edgeKindsFor(checked) {') + '\n',
+    'return { EDGE_KINDS_ALL, focusNeighbors, matchNodes, progressFor, edgeKindsFor }',
+  ].join('')
+  return new Function(body)()
+}
+
+// Mini focus graph: chain a—b—c—d; b→c is UNSATISFIED (still a real edge);
+// 'iso' has no edges at all.
+function focusFixture() {
+  return {
+    nodes: [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }, { id: 'iso' }],
+    edges: [
+      { from: 'a', to: 'b', kind: 'dep' },
+      { from: 'b', to: 'c', kind: 'mount', unsatisfied: true },
+      { from: 'c', to: 'd', kind: 'peer-optional' },
+    ],
+  }
+}
+
+// Search fixture: prefix / substring / description-only ranks, plus a
+// name-null node (matcher falls back to id) and a non-matching node.
+function searchFixture() {
+  return {
+    nodes: [
+      { id: 'n4', name: 'zulu', description: 'The CORE idea' },
+      { id: 'n1', name: 'core', description: null },
+      { id: 'n2', name: 'core-sync', description: 'misc' },
+      { id: 'n3', name: 'pkgcorex', description: 'core also in description' },
+      { id: 'n5', name: 'delta', description: 'nothing here' },
+      { id: 'n6', name: null, description: null },
+    ],
+  }
+}
+
+test('V6 focusNeighbors: depth 1/2/3 hit the exact sets (undirected; unsatisfied edges traversed)', () => {
+  const { focusNeighbors } = loadAppPure()
+  const g = focusFixture()
+  const sorted = (a) => [...a].sort()
+  assert.deepEqual(sorted(focusNeighbors(g, 'a', 1)), ['a', 'b'])
+  assert.deepEqual(sorted(focusNeighbors(g, 'a', 2)), ['a', 'b', 'c'],
+    'the unsatisfied b→c edge is a real relationship — BFS must cross it')
+  assert.deepEqual(sorted(focusNeighbors(g, 'a', 3)), ['a', 'b', 'c', 'd'])
+  // undirected: walking back from d traverses each edge against its from→to
+  assert.deepEqual(sorted(focusNeighbors(g, 'd', 1)), ['c', 'd'])
+  assert.deepEqual(sorted(focusNeighbors(g, 'd', 2)), ['b', 'c', 'd'])
+  assert.deepEqual(sorted(focusNeighbors(g, 'd', 3)), ['a', 'b', 'c', 'd'])
+  // every kind participates: dep/mount/peer-optional already ruled above; peer explicitly:
+  assert.deepEqual(sorted(focusNeighbors({ edges: [{ from: 'p', to: 'q', kind: 'peer' }] }, 'q', 1)), ['p', 'q'])
+})
+
+test('V6 focusNeighbors: depth clamped to [1,3]; root always first; two calls deep-equal', () => {
+  const { focusNeighbors } = loadAppPure()
+  const g = focusFixture()
+  const d1 = focusNeighbors(g, 'a', 1)
+  const d2 = focusNeighbors(g, 'a', 2)
+  const d3 = focusNeighbors(g, 'a', 3)
+  assert.deepEqual(focusNeighbors(g, 'a', 0), d1, '0 → 1')
+  assert.deepEqual(focusNeighbors(g, 'a', -5), d1, 'negative → 1')
+  assert.deepEqual(focusNeighbors(g, 'a', undefined), d1, 'absent → 1')
+  assert.deepEqual(focusNeighbors(g, 'a', '2'), d1, 'non-numeric → 1')
+  assert.deepEqual(focusNeighbors(g, 'a', 1.6), d1, 'fraction floors (1.6 → 1)')
+  assert.deepEqual(focusNeighbors(g, 'a', 2.6), d2, 'fraction floors (2.6 → 2)')
+  assert.deepEqual(focusNeighbors(g, 'a', 99), d3, 'above 3 → 3')
+  assert.deepEqual(focusNeighbors(g, 'iso', 3), ['iso'], 'isolated root → itself')
+  assert.deepEqual(focusNeighbors(g, 'nope', 2), ['nope'], 'unknown root → itself')
+  assert.equal(focusNeighbors(g, 'd', 3)[0], 'd', 'root is the FIRST element')
+  // deterministic insertion order (edge-array order, never hash-map order):
+  assert.deepEqual(focusNeighbors(g, 'b', 3), ['b', 'a', 'c', 'd'], 'exact order pinned')
+  assert.deepEqual(focusNeighbors(g, 'b', 3), focusNeighbors(g, 'b', 3), 'two calls deep-equal')
+  assert.deepEqual(focusNeighbors(null, 'z', 2), ['z'], 'defensive: no graph → root only')
+  assert.deepEqual(focusNeighbors({}, 'z', 2), ['z'], 'defensive: no edges → root only')
+})
+
+test('V6 matchNodes: name-prefix > name-substring > description-only, then name asc, case-insensitive', () => {
+  const { matchNodes } = loadAppPure()
+  const g = searchFixture()
+  const ids = (q, lim) => matchNodes(g, q, lim).map((n) => n.id)
+  assert.deepEqual(ids('core'), ['n1', 'n2', 'n3', 'n4'],
+    'prefix ("core" < "core-sync" by name) → substring → description-only')
+  assert.deepEqual(ids('CORE'), ['n1', 'n2', 'n3', 'n4'], 'query is lower-cased')
+  assert.deepEqual(ids('sync'), ['n2'], 'name substring alone')
+  assert.deepEqual(ids('idea'), ['n4'], 'description-only hit still matches')
+  assert.deepEqual(ids('zzz'), [], 'no match → []')
+  assert.deepEqual(matchNodes(g, 'core')[0].name, 'core', 'rank wins over array position (n3 listed before n4)')
+  assert.deepEqual(matchNodes(null, 'core'), [], 'defensive: no graph → []')
+})
+
+test('V6 matchNodes: empty query → []; limit honored; non-positive limit falls back to the 40 cap', () => {
+  const { matchNodes } = loadAppPure()
+  const g = searchFixture()
+  for (const q of ['', '   ', null, undefined]) {
+    assert.deepEqual(matchNodes(g, q), [], `blank-ish query ${JSON.stringify(q)} → []`)
+  }
+  assert.deepEqual(matchNodes(g, 'core', 2).map((n) => n.id), ['n1', 'n2'], 'limit=2 honored')
+  assert.deepEqual(matchNodes(g, 'core', 1).map((n) => n.id), ['n1'], 'limit=1 honored')
+  assert.equal(matchNodes(g, 'core', 0).length, 4, 'limit 0 → default (no truncation at 4 hits)')
+  assert.equal(matchNodes(g, 'core', -3).length, 4, 'negative limit → default')
+  const many = { nodes: Array.from({ length: 42 }, (_x, i) => ({ id: 'i' + i, name: 'k' + i, description: null })) }
+  assert.equal(matchNodes(many, 'k').length, 40, 'default cap is 40')
+  assert.equal(matchNodes(many, 'k', 999).length, 42, 'explicit limit above the hit count is respected')
+})
+
+test('V6 progressFor: idle/scanning → bar frame with floored+clamped pct; ready/failed/junk → null', () => {
+  const { progressFor } = loadAppPure()
+  for (const junk of [null, undefined, 'x', 42, true]) {
+    assert.equal(progressFor(junk), null, `non-object ${JSON.stringify(junk)} → null`)
+  }
+  assert.equal(progressFor({ state: 'ready' }), null, 'ready → hide the bar')
+  assert.equal(progressFor({ state: 'failed', error: 'e-scan-failed' }), null, 'failed → hide the bar')
+  assert.deepEqual(progressFor({ state: 'idle' }),
+    { state: 'idle', phase: null, pct: 0, scanned: 0, total: 0 }, 'idle → zeroed frame')
+  assert.deepEqual(progressFor({ state: 'booting' }),
+    { state: 'idle', phase: null, pct: 0, scanned: 0, total: 0 }, 'any non-terminal state → idle frame')
+  assert.deepEqual(progressFor({ state: 'scanning', phase: 'manifests', scanned: 30, total: 120 }),
+    { state: 'scanning', phase: 'manifests', pct: 25, scanned: 30, total: 120 }, 'pct = floor(scanned/total·100)')
+  assert.equal(progressFor({ state: 'scanning', scanned: 1, total: 3 }).pct, 33, 'floored, not rounded')
+  assert.equal(progressFor({ state: 'scanning', scanned: 150, total: 100 }).pct, 100, 'clamped to 100')
+  assert.equal(progressFor({ state: 'scanning', scanned: 5, total: 0 }).pct, 0, 'unknown total → pct 0')
+  assert.deepEqual(progressFor({ state: 'scanning', scanned: -5, total: 10 }),
+    { state: 'scanning', phase: null, pct: 0, scanned: 0, total: 10 }, 'negative scanned → 0')
+  assert.equal(progressFor({ state: 'scanning', scanned: '12', total: 10 }).scanned, 0, 'non-numeric → 0')
+  assert.equal(progressFor({ state: 'scanning', scanned: Infinity, total: 10 }).pct, 0, 'non-finite scanned → 0')
+  assert.equal(progressFor({ state: 'scanning', scanned: 5, total: NaN }).total, 0, 'non-finite total → 0 → pct 0')
+})
+
+test('V6 edgeKindsFor: all kinds checked → null (model "all pass"); anything else → Set of checked kinds only', () => {
+  const { edgeKindsFor, EDGE_KINDS_ALL } = loadAppPure()
+  assert.deepEqual(EDGE_KINDS_ALL, ['dep', 'mount', 'peer', 'peer-optional'], 'the four kinds lib/scan.js emits')
+  assert.equal(edgeKindsFor(['dep', 'mount', 'peer', 'peer-optional']), null, 'all checked → null')
+  assert.equal(edgeKindsFor(['peer', 'dep', 'peer-optional', 'mount']), null, 'order-independent')
+  assert.equal(edgeKindsFor(['dep', 'mount', 'peer', 'peer-optional', 'zzz']), null, 'extras cannot break all-checked')
+  const sub = edgeKindsFor(['dep', 'peer'])
+  assert.ok(sub instanceof Set, 'subset → Set')
+  assert.deepEqual([...sub], ['dep', 'peer'], 'checked kinds only')
+  assert.equal(sub.has('mount'), false, 'unchecked kind excluded')
+  assert.equal(edgeKindsFor([]).size, 0, 'nothing checked → EMPTY Set (passes nothing — deliberate, NOT null)')
+  assert.equal(edgeKindsFor(null).size, 0, 'non-array → empty Set')
+  assert.equal(edgeKindsFor('dep').size, 0, 'string is not an array → empty Set')
+  assert.deepEqual([...edgeKindsFor(['dep', 'dep', 'mount'])], ['dep', 'mount'], 'duplicates collapse')
+  assert.deepEqual([...edgeKindsFor(['dep', 'zzz'])], ['dep', 'zzz'], 'foreign kinds survive in a subset')
+})
+
+test('V6 controls → view: every index.html control id is referenced by app.js and writes its view field', () => {
+  const src = readFileSync(join(WEB, 'app.js'), 'utf8')
+  const html = readFileSync(join(WEB, 'index.html'), 'utf8')
+  // the brief checklist (its #profile-filter appears twice there — deduplicated)
+  const ids = ['scope-filter', 'profile-filter', 'edge-kinds', 'show-real-cross', 'zone-chips',
+    'focus-depth', 'focus-clear', 'lang-btn', 'search', 'refresh']
+  for (const id of ids) {
+    assert.ok(html.includes(`id="${id}"`), `index.html declares #${id}`)
+    // referenced either as a getElementById string or as a (possibly compound)
+    // CSS selector string: '#edge-kinds input[data-kind]' etc.
+    const wired = src.includes(`'${id}'`) || src.includes(`'#${id}'`) || src.includes(`'#${id} `)
+    assert.ok(wired, `app.js references #${id}`)
+  }
+  // the mapping itself: each handler mutates exactly its view field, paint renders it
+  assert.match(src, /state\.view\.filterScope = scope\.value \|\| 'all'/, '#scope-filter → filterScope')
+  assert.match(src, /state\.view\.filterProfile = prof\.value \|\| null/, '#profile-filter → filterProfile')
+  assert.match(src, /state\.view\.showRealCross = !!cross\.checked/, '#show-real-cross → showRealCross')
+  assert.match(src, /state\.view\.edgeKinds = edgeKindsFor\(kinds\)/, '#edge-kinds → edgeKinds via edgeKindsFor()')
+  assert.match(src, /state\.view\.filterCats\.has\(id\)\) state\.view\.filterCats\.delete\(id\); else state\.view\.filterCats\.add\(id\)/,
+    '#zone-chips → filterCats EXCLUSION toggle (R32: dim chip = hidden zone)')
+  assert.match(src, /state\.focus = \{ rootId: rootId, depth: d \}/, 'focus wiring sets state.focus {rootId, depth}')
+  assert.match(src, /state\.focus = null/, '#focus-clear clears state.focus')
+  assert.match(src, /state\.lang = state\.lang === 'zh' \? 'en' : 'zh'/, '#lang-btn drives state.lang (V6: the switch is live)')
+})
+
+test('V6 i18n parity: every t() literal, dynamic key, and data-i18n attribute resolves in zh AND en', () => {
+  const src = readFileSync(join(WEB, 'app.js'), 'utf8')
+  const html = readFileSync(join(WEB, 'index.html'), 'utf8')
+  const I18N = new Function(extractBalanced(src, 'var I18N = {') + '\nreturn I18N')()
+  assert.ok(I18N.zh && I18N.en, 'table carries zh + en entries')
+  assert.deepEqual(Object.keys(I18N.zh).sort(), Object.keys(I18N.en).sort(), 'zh and en key SETS are equal')
+
+  const used = new Set()
+  let m
+  // bare t('key') calls — the boundary class keeps escText('…')/createElement('…')
+  // (whose names also end in t + paren) from masquerading as i18n lookups
+  const reT = /(?:^|[^A-Za-z0-9_$.])t\('([A-Za-z][A-Za-z0-9]*)'\)/g
+  while ((m = reT.exec(src))) used.add(m[1])
+  // the two DYNAMIC call sites: scope-option table pairs + progressText phase map
+  const rePair = /\['(?:all|official|third-party)', '([A-Za-z][A-Za-z0-9]*)'\]/g
+  while ((m = rePair.exec(src))) used.add(m[1])
+  const rePhase = /'(phase[A-Za-z0-9]+)'/g
+  while ((m = rePhase.exec(src))) used.add(m[1])
+  // static chrome strings: index.html data-i18n(-ph|-title) attributes
+  const reAttr = /data-i18n(?:-ph|-title)?="([A-Za-z][A-Za-z0-9]*)"/g
+  while ((m = reAttr.exec(html))) used.add(m[1])
+
+  assert.ok(used.size >= 30, `the scan must find the full key surface (got ${used.size})`)
+  for (const k of [...used].sort()) {
+    assert.ok(Object.prototype.hasOwnProperty.call(I18N.zh, k), `zh entry for "${k}"`)
+    assert.ok(Object.prototype.hasOwnProperty.call(I18N.en, k), `en entry for "${k}"`)
+  }
+})
+
+test('V6 css guards: #legend is clickable again; #focus-ctl[hidden] and #progress-bar[hidden] stay display:none', () => {
+  const css = readFileSync(join(WEB, 'style.css'), 'utf8')
+  const html = readFileSync(join(WEB, 'index.html'), 'utf8')
+  const legendRule = /#legend\s*\{[^}]*\}/.exec(css)
+  assert.ok(legendRule, 'style.css styles #legend')
+  // V5 shipped pointer-events:none (decorative + empty); V6 puts the collapse
+  // button INSIDE #legend — clicks must reach it.
+  assert.doesNotMatch(legendRule[0], /pointer-events:\s*none/, '#legend must accept clicks (legend collapse lives there now)')
+  assert.match(css, /#legend:empty\s*\{\s*display:\s*none/, '#legend:empty still collapses when unpopulated (V5)')
+  // #focus-ctl declares display:inline-flex, which beats the UA [hidden] rule —
+  // the override must exist or the focus chip shows while state.focus is null.
+  assert.match(css, /#focus-ctl\s*\{[^}]*display:\s*inline-flex/, '#focus-ctl base display')
+  assert.match(css, /#focus-ctl\[hidden\]\s*\{[^}]*display:\s*none/, 'the [hidden] override exists')
+  assert.match(html, /id="focus-ctl"\s+hidden/, 'focus control ships hidden')
+  // the V5-pinned progress rule survives V6 verbatim (showProgress toggles .hidden)
+  assert.ok(css.includes('#progress-bar[hidden] { display: none; }'), '#progress-bar[hidden] rule verbatim')
+  assert.match(css, /#progress-bar\s*\{[^}]*display:\s*flex/, 'and it still displays when un-hidden')
+})
+
+test('V6 XSS re-sweep: the banned HTML sinks appear nowhere in app.js (code or comments)', () => {
+  const src = readFileSync(join(WEB, 'app.js'), 'utf8')
+  assert.doesNotMatch(src, /\.innerHTML|insertAdjacentHTML|createContextualFragment|document\.write/,
+    'DOM writes go through textContent/createTextNode only (front-end XSS discipline)')
 })

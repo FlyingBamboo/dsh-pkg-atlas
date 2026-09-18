@@ -1,17 +1,21 @@
 :root { color-scheme: light dark; }
 * { box-sizing: border-box; }
-body { margin: 0; font: 13px/1.5 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; }
+body { margin: 0; font: 13px/1.5 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; display: flex; flex-direction: column; height: 100vh; }
 header { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 8px 12px; border-bottom: 1px solid #8884; position: sticky; top: 0; background: light-dark(#f7f8fa, #12161b); z-index: 3; }
 header h1 { font-size: 15px; margin: 0; }
 header .grow { flex: 1; }
 header label { white-space: nowrap; }
+header label.ctl { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; }
 input[type=search] { width: 220px; padding: 4px 8px; }
 button { padding: 3px 10px; }
+select { font-size: 11px; }
 #warning-bar { padding: 4px 12px; background: light-dark(#fff3cd, #3d3417); border-bottom: 1px solid #8884; }
 .warnhead { cursor: pointer; }
 .warnlist { max-height: 180px; overflow: auto; font-size: 12px; opacity: .85; }
 #error-bar { padding: 8px 12px; background: light-dark(#ffe2e2, #4a1f1f); }
-main { display: flex; height: calc(100vh - 46px); position: relative; }
+/* V6: the header wraps to a variable height (chips + filters), so the pane is
+   the flex remainder of the viewport instead of a fixed `100vh - 46px` calc. */
+main { display: flex; flex: 1; min-height: 0; position: relative; }
 /* The frozen cytoscape 3.34.1 canvas renderer never paints a core background:
    CRp.clearCanvas only clearRects (dist line 31533) and the webgl path reads the
    CONTAINER's CSS background, not the stylesheet (getBGColor, dist line 34295).
@@ -19,11 +23,34 @@ main { display: flex; height: calc(100vh - 46px); position: relative; }
    SAME two colors, and light-dark() tracks the same prefers-color-scheme signal
    app.js resolves at boot (the pairing is pinned by test/render-smoke.test.mjs). */
 #graph { flex: 1; min-width: 0; background: light-dark(#f7f8fa, #12161b); }
-/* V6 fills #legend and #zone-chips; empty containers must stay invisible (V5) */
-#legend { position: absolute; right: 10px; bottom: 10px; max-width: 300px; max-height: 40vh; overflow: auto; z-index: 2; pointer-events: none; background: light-dark(#ffffffe6, #12161be6); border: 1px solid #8884; border-radius: 6px; padding: 8px 10px; font-size: 11px; }
+/* V6 fills #legend and #zone-chips; empty containers must stay invisible (V5).
+   V6 adds a clickable collapse button inside #legend → pointer-events must be
+   auto (V5 shipped none because it was decorative-only and empty). */
+#legend { position: absolute; right: 10px; bottom: 10px; max-width: 300px; max-height: 40vh; overflow: auto; z-index: 2; background: light-dark(#ffffffe6, #12161be6); border: 1px solid #8884; border-radius: 6px; padding: 8px 10px; font-size: 11px; }
 #legend:empty { display: none; }
+.leg-head { border: 0; background: none; cursor: pointer; font: inherit; font-size: 11px; font-weight: 600; padding: 0; margin: 0 0 4px; }
+.leg-sec { font-size: 10px; opacity: .6; margin: 6px 0 2px; }
+.leg-row { display: flex; align-items: center; gap: 8px; margin: 2px 0; }
+.leg-shape { flex: 0 0 14px; width: 14px; height: 14px; background: light-dark(#4c7fb8, #6da3d8); }
+.leg-shape.sh-official { border-radius: 50%; }
+.leg-shape.sh-third-party { background: light-dark(#9a6ac2, #c194e8); clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%); }
+.leg-shape.sh-profile { background: #d9a441; border-radius: 2px; width: 18px; height: 10px; flex-basis: 18px; }
+.leg-shape.sh-broken { background: #e05252; transform: rotate(45deg) scale(.82); }
+.leg-edge { flex: 0 0 26px; width: 26px; border-top: 2px solid #9aa7b4; }
+.leg-edge.ek-mount { border-top-color: #3f9d6d; border-top-width: 3px; }
+.leg-edge.ek-peer { border-top-style: dashed; border-top-color: #4c7fb8; }
+.leg-edge.ek-peer-optional { border-top-style: dotted; border-top-color: #9dc1e8; }
+.leg-edge.ek-agg { border-top-width: 5px; }
 header .chips { display: inline-flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 #zone-chips:empty { display: none; }
+/* zone chips: chip ⇔ zone EXCLUDED from view.filterCats (see app.js mapping) */
+.chip { display: inline-flex; align-items: center; gap: 4px; border: 1px solid #8885; border-radius: 999px; padding: 1px 8px; background: light-dark(#fff, #171c22); cursor: pointer; font-size: 11px; color: inherit; }
+.chip .dot { width: 9px; height: 9px; border-radius: 50%; }
+.chip.off { opacity: .38; }
+.chip.off .n { text-decoration: line-through; }
+#edge-kinds label { font-size: 11px; }
+#focus-ctl { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; }
+#focus-ctl[hidden] { display: none; } /* the inline-flex above would beat the UA [hidden] rule */
 #progress-bar { display: flex; align-items: center; gap: 8px; padding: 4px 12px; }
 /* display:flex above overrides the UA `[hidden]{display:none}` (author origin wins
    regardless of specificity), so a hidden bar used to leave a permanent empty
@@ -38,9 +65,16 @@ header .chips { display: inline-flex; gap: 6px; flex-wrap: wrap; align-items: ce
 #details { width: 340px; overflow: auto; padding: 12px; border-left: 1px solid #8884; background: light-dark(#fbfcfd, #10141a); }
 #details h2 { font-size: 14px; margin: 0 0 4px; overflow-wrap: anywhere; }
 #details .sub, #details .path { font-size: 11px; opacity: .7; overflow-wrap: anywhere; }
+#details .crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; font-size: 11px; opacity: .85; }
+#details .crumbs .crumb { border: 0; background: none; padding: 0; font: inherit; color: inherit; cursor: pointer; text-decoration: underline dotted; }
+#details .badge { border: 1px solid #8886; border-radius: 3px; padding: 0 5px; font-size: 10px; white-space: nowrap; }
 #details .desc { margin: 8px 0; }
 #details .kv { margin: 4px 0; font-size: 12px; }
 #details .kv span:first-child { font-weight: 600; margin-right: 6px; }
+#details .sec { margin: 10px 0 2px; font-size: 11px; font-weight: 600; opacity: .85; }
+#details .jump { display: block; width: 100%; text-align: left; border: 0; background: none; cursor: pointer; padding: 1px 4px; font: inherit; font-size: 12px; color: inherit; overflow-wrap: anywhere; }
+#details .jump:hover { background: #8882; }
+#details .jump .unsat { color: #d0433f; font-size: 10px; }
 #details pre.readme { max-height: 40vh; overflow: auto; font-size: 11px; background: #8882; padding: 8px; white-space: pre-wrap; }
 #details .btns { margin-top: 10px; display: flex; gap: 8px; }
 #search-results { position: absolute; top: 44px; left: 320px; max-height: 50vh; overflow: auto; background: light-dark(#fff, #171c22); border: 1px solid #8886; z-index: 5; width: 460px; }

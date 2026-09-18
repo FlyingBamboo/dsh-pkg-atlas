@@ -88,8 +88,8 @@
   `native/system/*`）落在「未归类」区：组派生只认 `packages/<组>` 模式。当前
   真实 home 有 3 个：`@deepseek-ai/dsh`、`@deepseek-ai/dsh-web-frontend`、
   `@deepseek-ai/node-addon-system`。
-- 大类映射表是维护品（49 组 → 9 大类 + 4 特殊区）：新增 `packages/*` 目录组
-  未入表时默认落「未归类」，需人工补 `lib/categories.js`。
+- 大类映射表是维护品（`lib/categories.js`，现 47 个目录组键——当前真实 home 实测 46 组
+  在用、1 键为前瞻目录预留）：新增 `packages/*` 目录组未入表时默认落「未归类」，人工补表。
 以下限制继承自 v1：
 
 - 挂载面为 bundle/patch 的 `name:` 行启发式抽取：不解析 YAML 结构、`disabled`

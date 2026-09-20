@@ -172,6 +172,27 @@ test('bare PREFIX (no trailing slash) 301s to trailing slash and serves index (R
   assert.match(r.headers.get('content-type'), /text\/html/)
 })
 
+test('HTML + every asset: Cache-Control: no-cache on GET and HEAD (stale-asset poison)', async () => {
+  // 浏览器接受测试实测到的真缺陷：HTML/资源此前完全不带缓存头 → 启发式缓存 → 同端口重新部署后
+  // 用户继续执行旧 JS。资源自 loadAssets 起常驻内存，恒 revalidate 才是正确性规则。
+  // 只比 handler 亲自写的头：connection/keep-alive/date 是 socket 层噪声（GET 复用、HEAD 收尾即不同）
+  const TRANSPORT = new Set(['connection', 'keep-alive', 'date', 'transfer-encoding', 'server'])
+  const norm = (h) => [...h.entries()].filter(([k]) => !TRANSPORT.has(k)).map(([k, v]) => `${k}: ${v}`).sort().join('\n')
+  // 路由派生自 assets 表（不镜像清单）；'/' 是 HTML 的另一入口
+  for (const route of ['/', ...assets.keys()]) {
+    const g = await fetch(`${base}${PREFIX}${route}`)
+    assert.equal(g.status, 200, route)
+    assert.equal(g.headers.get('cache-control'), 'no-cache', `GET ${route} 必须 no-cache（精确值，非 max-age/无头）`)
+    const gText = await g.text()
+    const h = await fetch(`${base}${PREFIX}${route}`, { method: 'HEAD' })
+    assert.equal(h.status, 200, route)
+    assert.equal(h.headers.get('cache-control'), 'no-cache', `HEAD ${route} 必须与 GET 同头`)
+    assert.equal(await h.text(), '')
+    assert.equal(norm(h.headers), norm(g.headers), `HEAD ${route} 头集合必须逐条等于 GET`)
+    if (route === '/') assert.ok(gText.includes('<html'), 'GET / 仍是 HTML 正文')
+  }
+})
+
 // ==================== Task V3：/api/status 路由 ====================
 
 test('V3 GET /api/status: 200 + body 逐字段等于快照 + nosniff + CL；HEAD headers-only；POST 405', async () => {

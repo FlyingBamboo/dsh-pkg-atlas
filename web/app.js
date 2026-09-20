@@ -634,7 +634,6 @@
     try { return !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) } catch (e) { return false }
   }
   function gidOf(n) { return n.group == null ? 'ungrouped' : String(n.group) }
-  function zoneOf(n) { return state.groupZone.get(gidOf(n)) || String(n.category || 'ungrouped') }
 
   // ---------- STYLE (rebuilt per theme; V5 Step 1 + V6 flash/dim) ----------
   function styleFor(theme) {
@@ -717,14 +716,17 @@
 
     // ---- packages: shape mapping R29 (ellipse/hexagon/rectangle/diamond) ----
     // classes from AtlasModel: pkg sk-<node.kind> sc-<node.scope>
-    // V2.3 LABEL CLAMP (the real fix for the browser-only label overlap): a pkg
-    // node's LABEL is part of its bbox and a compound sizes to its children's
-    // bboxes, so a label wider than the slot it sits in drags the group/zone box
-    // wider and the neighbouring row collides. The grid puts row centres
-    // CELL(46)+GAP(12)=58 apart (graph-model ZONE_LAYOUT), so 50 is the widest
-    // label that cannot reach past its own column — the 96 this shipped with was
-    // 1.66× that. Headless cytoscape has no font metrics, so no probe here can
-    // reproduce the overlap; the numeric pin in the tests is the guard.
+    // V2.3 LABEL CLAMP (the real fix for the browser-only label overlap): the
+    // overlap is TEXT on TEXT — SIBLING pkg labels side by side, never box on
+    // box. Both compound rules above pin width/height/min-* to data(w)/data(h)
+    // with compound-sizing-wrt-labels:'exclude', so group/zone frames NEVER grow
+    // with child labels. What collides: a pkg label centres under its node, and
+    // the shipped 96 clamp let it outgrow the intra-row centre pitch
+    // CELL(46)+GAP(12)=58 (graph-model ZONE_LAYOUT) and lie across the next
+    // column's text — short names hide it, scoped long names do not. 50 fits a
+    // label inside the pitch (96 was 1.66× it). Headless cytoscape has no font
+    // metrics, so no probe here can reproduce the overlap; the numeric pin in
+    // the tests is the guard.
     st.push({ selector: 'node.pkg', style: {
       shape: 'ellipse', width: 16, height: 16,
       label: 'data(label)', 'font-size': 8, color: text,

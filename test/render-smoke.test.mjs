@@ -508,12 +508,14 @@ test('computed style: collapsed CARD vs expanded CONTAINER, vendor palette, them
         // I-1: the label cap is the declared value, not the dist default 9999
         const zone = els.find((e) => e.classes.includes('zone'))
         assert.equal(pnum(cy.getElementById(zone.data.id), 'text-max-width'), 300, 'zone label cap applied')
-        // V2.3 label clamp (THE fix for the browser-only label collision): a pkg
-        // label may never outgrow the intra-row CENTRE distance, CELL(46)+GAP(12)
-        // = 58 — at 96px a wrapped label spanned past its neighbour and the grown
-        // child bbox dragged the parent compound wider with it (compound sizing
-        // includes child labels for PKG nodes: only zones/groups opt out via
-        // compound-sizing-wrt-labels). Headless cytoscape has no font metrics, so
+        // V2.3 label clamp (THE fix for the browser-only label collision): the
+        // collision is SIBLING PKG LABELS side by side, never box on box — both
+        // compound rules pin width/height/min-* to data(w)/data(h) and set
+        // compound-sizing-wrt-labels:'exclude' (app.js, the zone and group
+        // rules), so frames never grow with child labels. At the shipped 96px a
+        // centred label outgrew the intra-row CENTRE pitch CELL(46)+GAP(12)=58
+        // and lay across the neighbouring column's text (short names hide it,
+        // scoped long names do not). Headless cytoscape has no font metrics, so
         // the numeric pin below is what the harness can honestly assert.
         const pkgs = els.filter((e) => e.group === 'nodes' && e.classes.includes('pkg'))
         if (expectOp === 0.14) assert.ok(pkgs.length >= 6, 'the expanded view renders packages to clamp')
@@ -2136,6 +2138,30 @@ test('V2.3 buildGroupMembers: names/versions are attacker data and arrive VERBAT
   assert.equal(rows[0].name, evil, 'the raw string rides to the renderer (escText writes it as TEXT — pinned in the DOM test)')
   assert.equal(rows[0].version, '<script>')
   assert.equal(rows[0].scope, evil)
+})
+
+test('V2.3 buildGroupMembers sort: identical name+version breaks the tie on id', () => {
+  const { buildGroupMembers } = loadAppPure()
+  // name AND version identical; input order adversarial (z before a) so only a
+  // real id tiebreak can produce the expected order.
+  const g = { nodes: [
+    { id: 'z@1', kind: 'package', name: 'twin', version: '1.0.0', group: 't', scope: 'official' },
+    { id: 'a@1', kind: 'package', name: 'twin', version: '1.0.0', group: 't', scope: 'official' },
+  ], edges: [] }
+  assert.deepEqual(buildGroupMembers({ kind: 'group', id: 't' }, g).rows.map((x) => x.id), ['a@1', 'z@1'],
+    'id is the final tiebreak of the name→version→id order')
+})
+
+test('V2.3 buildGroupMembers sort: same name breaks on version before id is consulted', () => {
+  const { buildGroupMembers } = loadAppPure()
+  // ids point one way (a@1 sorts first), versions the other (z@1@1.0.0 first):
+  // only a version-keyed order can produce the expected rows.
+  const g = { nodes: [
+    { id: 'a@1', kind: 'package', name: 'same', version: '2.0.0', group: 't', scope: 'official' },
+    { id: 'z@1', kind: 'package', name: 'same', version: '1.0.0', group: 't', scope: 'official' },
+  ], edges: [] }
+  assert.deepEqual(buildGroupMembers({ kind: 'group', id: 't' }, g).rows.map((x) => x.id), ['z@1', 'a@1'],
+    'version orders ahead of id (an id-first order would put a@1 first)')
 })
 
 

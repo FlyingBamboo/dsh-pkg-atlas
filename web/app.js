@@ -168,10 +168,11 @@
     granMode: 'auto',
     focus: null,   // null | {rootId, depth}  (R35: depth null = unlimited — the
                    // default; 1-3 via #focus-depth. Only kind=package nodes are roots.)
-    // V22b path-mode back stack (walk history, newest last, cap PATH_STACK_CAP),
-    // the viewport snapshot taken at ENTRY (deep copy — cytoscape's pan() object
-    // is live), and the one-shot restore arm for the exit animation.
-    pathStack: [], viewport: null, restore: false,
+    // V22b path-mode back stack (walk history, newest last, cap PATH_STACK_CAP)
+    // and the viewport snapshot taken at ENTRY (deep copy — cytoscape's pan()
+    // object is live). A non-null viewport IS the armed marker for the exit
+    // animation: restoreViewport() is the only reader and it spends it.
+    pathStack: [], viewport: null,
     selected: null,
   }
 
@@ -1015,10 +1016,12 @@
     return { entered: false, walked: false, exited: false }
   }
   // Exit half, shared by blank-tap, the Esc key and the 退出路径 button: focus
-  // gone, stack gone, and IF an entry snapshot exists it is armed for exactly
-  // one animate-back. The SNAPSHOT ITSELF STAYS PUT — restoreViewport() is the
-  // only thing allowed to spend it (nulling it here made that guard bail every
-  // time, i.e. the documented 镜头滑回 never ran).
+  // gone, stack gone, and IF an entry snapshot exists it is left in place, armed
+  // for exactly one animate-back — the surviving snapshot IS the armed marker,
+  // there is no separate flag.
+  // The SNAPSHOT ITSELF STAYS PUT — restoreViewport() is the only thing allowed
+  // to spend it (nulling it here made that guard bail every time, i.e. the
+  // documented 镜头滑回 never ran).
   // Every exit call site runs the sequence exitFocus() → paint(false) →
   // restoreViewport() in exactly that order, and the order is load-bearing: the
   // repaint sees focus === null (the whole graph is back on screen, viewport
@@ -1027,7 +1030,6 @@
   function exitFocus() {
     state.focus = null
     state.pathStack = []
-    state.restore = !!state.viewport // armed marker; state.viewport is the payload
   }
   function selectNode(id) {
     var act = focusFlowAction(id)
@@ -1064,9 +1066,8 @@
     } else if (was) {
       exitFocus()
       // The full refit below IS the exit for a reveal: no glide on top of it, so
-      // the exit disarms and the (now stale) snapshot goes with it — the reveal
-      // has already re-planted the camera on a different node.
-      state.restore = false
+      // the (now stale) snapshot goes with it — dropping it IS the disarm. The
+      // reveal has already re-planted the camera on a different node.
       state.viewport = null
     }
     paint()
@@ -1120,7 +1121,9 @@
   }
   function restoreViewport() {
     var cy = state.cy
-    state.restore = false // one-shot: armed by exitFocus, spent here once
+    // A non-null state.viewport IS the armed marker (no separate flag): this is
+    // its only reader, and every path out of here spends the snapshot — so the
+    // restore is one-shot by construction (armed by exitFocus, spent here once).
     if (!cy || !state.viewport || state.tableMode) { state.viewport = null; return }
     cy.animate({ zoom: state.viewport.zoom, pan: state.viewport.pan, duration: 250 })
     state.viewport = null
@@ -1920,7 +1923,7 @@
       if (state.selected && state.selected.indexOf(':') < 0 && !state.byId.has(state.selected)) state.selected = null
       // V22b: with the focus gone the walk history is dead weight; the viewport
       // snapshot too (the graph under it just changed shape).
-      if (!state.focus) { state.pathStack = []; state.viewport = null; state.restore = false }
+      if (!state.focus) { state.pathStack = []; state.viewport = null }
     } else {
       state.view = freshView()
       state.focus = null
@@ -1930,7 +1933,6 @@
       state.granMode = 'auto'
       state.pathStack = []
       state.viewport = null
-      state.restore = false
     }
     rebuildFilterControls()
     buildZoneChips()

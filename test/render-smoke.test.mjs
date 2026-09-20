@@ -2214,7 +2214,7 @@ function loadFocusFlow() {
     'var CALLS = [], DEPTH = null\n',
     'function depthOfCtl() { return DEPTH }\n',
     'function snapshotViewport() { CALLS.push(\x27snapshot\x27); state.viewport = { zoom: 3.3, pan: { x: 1, y: 2 } } }\n',
-    'var state = { byId: new Map(), focus: null, selected: null, pathStack: [], viewport: null, restore: false }\n',
+    'var state = { byId: new Map(), focus: null, selected: null, pathStack: [], viewport: null }\n',
     stackCap[0] + '\n',
     extractBalanced(src, 'function pushPathStack(stack, id, cap) {') + '\n',
     extractBalanced(src, 'function isFocusRoot(id) {') + '\n',
@@ -2223,7 +2223,7 @@ function loadFocusFlow() {
     extractBalanced(src, 'function focusFlowAction(id) {') + '\n',
     'return { state: state, CALLS: CALLS,\n'
     + '  reset: function (o) { state.byId = new Map(); state.focus = null; state.selected = null; state.pathStack = [];\n'
-    + '    state.viewport = null; state.restore = false; CALLS.length = 0; Object.assign(state, o || {}) },\n'
+    + '    state.viewport = null; CALLS.length = 0; Object.assign(state, o || {}) },\n'
     + '  depth: function (d) { DEPTH = d }, act: function (sel) { return focusFlowAction(sel) } }',
   ].join('')
   return new Function(body)()
@@ -2263,7 +2263,7 @@ test('V22b focus flow: exit clears focus+stack and arms the viewport restore; ed
   assert.deepEqual([act.entered, act.walked, act.exited], [false, false, true], 'blank tap = EXIT')
   assert.equal(flow.state.focus, null, 'focus cleared')
   assert.deepEqual(flow.state.pathStack, [], 'the stack empties with the focus')
-  assert.equal(flow.state.restore, true, 'the saved viewport is armed for the animate-back')
+  assert.notEqual(flow.state.viewport, null, 'a surviving viewport IS the armed marker for the animate-back (R41: no separate flag)')
   assert.deepEqual(flow.state.viewport, { zoom: 3.3, pan: { x: 1, y: 2 } },
     'the snapshot itself SURVIVES exitFocus — restoreViewport() is the only thing allowed to spend it (nulling it here made the animate-back guard bail)')
   // an edge tap keeps the current focus (edges are not roots, R35)
@@ -2281,7 +2281,7 @@ test('V22b focus flow: exit clears focus+stack and arms the viewport restore; ed
   flow.state.focus = { rootId: 'a@1', depth: null } // installed WITHOUT the entry snapshot
   act = flow.act(null)
   assert.equal(act.exited, true)
-  assert.equal(flow.state.restore, false, 'nothing to restore to — plain repaint instead')
+  assert.equal(flow.state.viewport, null, 'nothing to restore to (disarmed marker) — plain repaint instead')
 })
 
 test('V22b focus flow: the depth control flows through focusForId with the ctl value', () => {
@@ -2374,7 +2374,7 @@ function loadViewportLogic() {
     extractBalanced(src, 'function snapshotViewport() {') + '\n',
     extractBalanced(src, 'function restoreViewport() {') + '\n',
     extractBalanced(src, 'function animateFitPath() {') + '\n',
-    'var state = { cy: null, graph: null, tableMode: false, focus: null, viewport: null, restore: false }\n',
+    'var state = { cy: null, graph: null, tableMode: false, focus: null, viewport: null }\n',
     'return { state: state, pathFitEles: pathFitEles, snapshot: snapshotViewport, restoreVp: restoreViewport, animateFit: animateFitPath }',
   ].join('')
   return new Function(body)()
@@ -2447,21 +2447,19 @@ test('V22b viewport snapshot/restore: snapshot deep-copies, restore animates zoo
   vp.snapshot()
   pan.x = 999 // the app must not alias cytoscape's live pan object
   assert.deepEqual(vp.state.viewport, { zoom: 2.5, pan: { x: 11, y: 22 } }, 'a deep snapshot survives the live pan mutation')
-  vp.state.restore = true
   vp.restoreVp()
   assert.equal(anims.length, 1)
   assert.deepEqual([anims[0].zoom, anims[0].pan.x, anims[0].pan.y, anims[0].duration], [2.5, 11, 22, 250],
     'restore rides cy.animate({zoom, pan, duration}) — the sole viewport-animation path')
-  assert.equal(vp.state.restore, false, 'restore is one-shot (armed once, spent once)')
+  assert.equal(vp.state.viewport, null, 'restore is one-shot (armed once, spent once — the spent snapshot is the disarm)')
   vp.restoreVp()
   assert.equal(anims.length, 1, 'without a snapshot there is nothing to animate back to')
   // table mode never animates the (absent) canvas
   vp.state.viewport = { zoom: 1, pan: { x: 0, y: 0 } }
-  vp.state.restore = true
   vp.state.tableMode = true
   vp.restoreVp()
   assert.equal(anims.length, 1, 'table fallback skips the animation')
-  assert.equal(vp.state.restore, false)
+  assert.equal(vp.state.viewport, null, 'the table bail discards the snapshot too (no stale arm left behind)')
 })
 
 // ---------- Esc ordering (extracted against stub DOM) ----------
@@ -2472,7 +2470,7 @@ function loadEscLogic() {
     'var CALLS = []\n',
     'var BOX = { hidden: true }\n',
     'var document = { getElementById: function (id) { return id === \x27search-results\x27 ? BOX : null } }\n',
-    'var state = { focus: null, pathStack: [], viewport: null, restore: false, selected: \x27z\x27 }\n',
+    'var state = { focus: null, pathStack: [], viewport: null, selected: \x27z\x27 }\n',
     'function syncFocusCtl() { CALLS.push(\x27sync\x27) }\n',
     'function renderDetails(id) { CALLS.push(\x27details:\x27 + id) }\n',
     'function paint(x) { CALLS.push(\x27paint:\x27 + String(x)) }\n',
@@ -2499,7 +2497,7 @@ test('V22b Esc ordering: open search results close first; then focus exits; text
   esc.key({ key: 'Escape', target: { tagName: 'BODY' } })
   assert.equal(esc.state.focus, null, 'focus exited')
   assert.deepEqual(esc.state.pathStack, [], 'stack cleared by the exit')
-  assert.equal(esc.state.restore, true, 'viewport restore armed…')
+  assert.notEqual(esc.state.viewport, null, 'viewport still armed (a non-null snapshot IS the marker)…')
   assert.deepEqual(esc.CALLS, ['details:z', 'sync', 'paint:false', 'restore'],
     'details -> ctl -> keep-viewport paint -> animate-back, in order')
   // 3. plain view -> no-op
@@ -2554,7 +2552,7 @@ function loadExitWiring() {
     'function decideGranularity() { return null }\n',
     'var LOD_T_IN = 1, LOD_T_OUT = 1, LOD_DEBOUNCE_MS = 120, PEEK_DEBOUNCE_MS = 250\n',
     'var state = { graph: {}, cy: null, byId: new Map(), focus: null, selected: null, pathStack: [],\n'
-    + '  viewport: null, restore: false, tableMode: false, granMode: "auto", view: { collapsedCats: new Set() } }\n',
+    + '  viewport: null, tableMode: false, granMode: "auto", view: { collapsedCats: new Set() } }\n',
     'function coll(items) {\n'
     + '  return { length: items.length, items: items, filter: function (f) { return coll(items.filter(f)) } }\n'
     + '}\n',
@@ -2631,8 +2629,7 @@ test('V22b exit wiring: the registered blank-tap handler repaints the plain view
   assert.equal(back.duration, 250, 'the animate-back is 250ms, like the entry glide')
   assert.deepEqual(w.LOG, ['peek-off', 'details', 'sync', 'paint:keep:nofocus', 'animate'],
     'peek off → details → ctl → viewport-keeping repaint WITH focus already null → then the camera glides')
-  assert.equal(w.state.viewport, null, 'the snapshot is spent')
-  assert.equal(w.state.restore, false, '…and the arming flag with it (one-shot)')
+  assert.equal(w.state.viewport, null, 'the snapshot is spent — and a spent snapshot IS the disarm (one-shot)')
   // a second blank tap must not glide twice off a spent snapshot
   w.LOG.length = 0
   w.tap(w.cy)
@@ -2658,8 +2655,7 @@ test('V22b exit wiring: Esc runs the same chain (order + one-spend), and 退出�
     'the same snapshot, the same duration as the blank-tap exit')
   assert.deepEqual(w.LOG, ['details', 'sync', 'paint:keep:nofocus', 'animate'],
     'details → ctl → repaint with focus null → glide (peek is not part of the Esc chain)')
-  assert.equal(w.state.viewport, null, 'spent by the Esc exit')
-  assert.equal(w.state.restore, false)
+  assert.equal(w.state.viewport, null, 'spent by the Esc exit, and so disarmed — viewport null is the marker')
   // 退出路径 lives in the chrome binder (a full DOM harness is out of scope here):
   // pin its ORDER against the two wiring-verified exits — exit, repaint, glide.
   const src = readFileSync(join(WEB, 'app.js'), 'utf8')

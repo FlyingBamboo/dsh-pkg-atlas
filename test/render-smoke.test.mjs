@@ -508,6 +508,19 @@ test('computed style: collapsed CARD vs expanded CONTAINER, vendor palette, them
         // I-1: the label cap is the declared value, not the dist default 9999
         const zone = els.find((e) => e.classes.includes('zone'))
         assert.equal(pnum(cy.getElementById(zone.data.id), 'text-max-width'), 300, 'zone label cap applied')
+        // V2.3 label clamp (THE fix for the browser-only label collision): a pkg
+        // label may never outgrow the intra-row CENTRE distance, CELL(46)+GAP(12)
+        // = 58 — at 96px a wrapped label spanned past its neighbour and the grown
+        // child bbox dragged the parent compound wider with it (compound sizing
+        // includes child labels for PKG nodes: only zones/groups opt out via
+        // compound-sizing-wrt-labels). Headless cytoscape has no font metrics, so
+        // the numeric pin below is what the harness can honestly assert.
+        const pkgs = els.filter((e) => e.group === 'nodes' && e.classes.includes('pkg'))
+        if (expectOp === 0.14) assert.ok(pkgs.length >= 6, 'the expanded view renders packages to clamp')
+        for (const p of pkgs) {
+          assert.equal(pnum(cy.getElementById(p.data.id), 'text-max-width'), 50,
+            `${theme}/${p.data.id}: pkg label clamped to 50 ≤ CELL+GAP (58)`)
+        }
         // I-3: the themed canvas background actually lands on core
         const core = cy.style().core('background-color')
         assert.ok(core, `${theme}: core background-color rule parsed`)
@@ -543,6 +556,18 @@ test('app.js: binds the AtlasModel contract exactly (sizing/enums/shapes/no-layo
   assert.doesNotMatch(src, /['"]?max-text-width['"]?\s*:/, 'the property is text-max-width, not max-text-width')
   assert.doesNotMatch(src, /\{\s*background\s*:/, 'core background must be spelled background-color')
   assert.match(src, /'text-max-width':\s*300/, 'zone label cap declared')
+  // V2.3: the PACKAGE clamp, derived against the model's own grid constants (the
+  // model file is not edited by this task — it is read here as the source of truth).
+  const modelSrc = readFileSync(join(WEB, 'graph-model.js'), 'utf8')
+  const CELL = Number(/CELL:\s*(\d+)/.exec(modelSrc)[1])
+  const GAP = Number(/\n\s+GAP:\s*(\d+)/.exec(modelSrc)[1])
+  assert.equal(CELL + GAP, 58, 'fixture-free re-derivation: intra-row centre distance is 58')
+  const pkgRule = loadAppStyle(fixture()).styleFor('light').find((r) => r.selector === 'node.pkg')
+  assert.ok(pkgRule, 'node.pkg style rule exists')
+  assert.equal(pkgRule.style['text-max-width'], 50, 'V2.3 pkg label clamp is 50 (was 96)')
+  assert.ok(pkgRule.style['text-max-width'] <= CELL + GAP,
+    'a pkg label can never reach the next column label box')
+  assert.doesNotMatch(src, /'text-max-width':\s*96/, 'the oversized 96px pkg label is gone')
   // cytoscape keeps position outside data (dist-verified) — paint must map x/y in
   assert.match(src, /position:\s*\{\s*x:\s*el\.data\.x,\s*y:\s*el\.data\.y\s*\}/, 'data.x/y mapped to element position on add')
   // R29 shapes via builtin mapping
@@ -625,7 +650,7 @@ function loadAppPure() {
   const model = readFileSync(join(WEB, 'graph-model.js'), 'utf8')
   // bare numeric consts have no brace to balance on: capture the statements
   const consts = {}
-  for (const name of ['LOD_T_IN', 'LOD_T_OUT', 'PEEK_DESC_CAP', 'PATH_STACK_CAP', 'CRUMB_MAX']) {
+  for (const name of ['PEEK_DESC_CAP', 'PATH_STACK_CAP', 'CRUMB_MAX', 'GROUP_MEMBER_CAP']) {
     const m = new RegExp('var ' + name + ' = [^\\n;]+').exec(src)
     assert.ok(m, `app.js must still declare \`var ${name} = …\``)
     consts[name] = m[0] + '\n'
@@ -634,15 +659,15 @@ function loadAppPure() {
     extractBalanced(src, 'var EDGE_KINDS_ALL = [') + '\n',
     extractBalanced(src, 'var DOWN_EDGE_KINDS = [') + '\n',
     extractBalanced(src, 'var UP_EDGE_KINDS = [') + '\n',
-    consts.LOD_T_IN, consts.LOD_T_OUT, consts.PEEK_DESC_CAP, consts.PATH_STACK_CAP, consts.CRUMB_MAX,
+    consts.PEEK_DESC_CAP, consts.PATH_STACK_CAP, consts.CRUMB_MAX, consts.GROUP_MEMBER_CAP,
     extractBalanced(src, 'function normalizeDepth(depth) {') + '\n',
     extractBalanced(src, 'function buildPathLists(sets, graph, byId) {') + '\n',
     extractBalanced(src, 'function matchNodes(graph, query, limit) {') + '\n',
     extractBalanced(src, 'function progressFor(status) {') + '\n',
     extractBalanced(src, 'function edgeKindsFor(checked) {') + '\n',
-    extractBalanced(src, 'function decideGranularity(mode, zoom, T_IN, T_OUT) {') + '\n',
     extractBalanced(src, 'function catTitle(categories, catId, lang) {') + '\n',
     extractBalanced(src, 'function groupZoneOf(graph, gid) {') + '\n',
+    extractBalanced(src, 'function buildGroupMembers(sel, graph) {') + '\n',
     extractBalanced(src, 'function buildPeekCard(n, graph, byId, lang) {') + '\n',
     extractBalanced(src, 'function pushPathStack(stack, id, cap) {') + '\n',
     extractBalanced(src, 'function pathChainText(labels, sep) {') + '\n',
@@ -652,7 +677,7 @@ function loadAppPure() {
     extractBalanced(src, 'function showAllCats() {') + '\n',
     'var __sb = {};(function (globalThis) {' + model + '\n}).call(__sb, __sb)\n',
     'return { EDGE_KINDS_ALL, normalizeDepth, pathSets: __sb.AtlasModel.pathSets, buildPathLists, matchNodes, progressFor, edgeKindsFor,\n'
-    + '  LOD_T_IN, LOD_T_OUT, decideGranularity, catTitle, groupZoneOf, PEEK_DESC_CAP, buildPeekCard,\n'
+    + '  catTitle, groupZoneOf, PEEK_DESC_CAP, buildPeekCard, buildGroupMembers, GROUP_MEMBER_CAP,\n'
     + '  PATH_STACK_CAP, pushPathStack, CRUMB_MAX, pathChainText, groupRowsByDist,\n'
     + '  soloToggleFor, hideAllCats, showAllCats }',
   ].join('')
@@ -1607,8 +1632,13 @@ test('V6 css guards: #legend is clickable again; #focus-ctl[hidden] and #progres
 
 test('V6 XSS re-sweep: the banned HTML sinks appear nowhere in app.js (code or comments)', () => {
   const src = readFileSync(join(WEB, 'app.js'), 'utf8')
-  assert.doesNotMatch(src, /\.innerHTML|insertAdjacentHTML|createContextualFragment|document\.write/,
+  assert.doesNotMatch(src, /\.innerHTML|\.outerHTML|insertAdjacentHTML|createContextualFragment|document\.write/,
     'DOM writes go through textContent/createTextNode only (front-end XSS discipline)')
+  // V2.3 widens the sweep to the code-generation sinks too (the member list is a
+  // NEW render surface for attacker-controlled names — the ban covers the WHOLE
+  // file, not just the new lines).
+  assert.doesNotMatch(src, /\beval\s*\(|new\s+Function\s*\(/,
+    'no code-generation sink anywhere: nothing built from data can be executed')
 })
 
 // =========================================================================
@@ -1949,37 +1979,165 @@ test('V21 details data: attacker-controlled names survive verbatim and never bec
 // cytoscape pins the fit-to-path selection numerically.
 // =========================================================================
 
-// ---------- pure: LOD / decideGranularity ----------
+// ---------- V2.3: the auto-LOD is GONE, the segment is two-state ----------
 
-test('V22b decideGranularity: pinned tiers pass through; auto uses the hysteresis band [T_OUT, T_IN)', () => {
-  const { decideGranularity, LOD_T_IN, LOD_T_OUT } = loadAppPure()
-  assert.equal(LOD_T_IN, 1.5, 'T_IN ships at 1.5 (report: LOD threshold notes)')
-  assert.equal(LOD_T_OUT, 1.3, 'T_OUT ships at 1.3')
-  assert.equal(decideGranularity('groups', 99), 'groups', 'pinned groups ignores zoom entirely')
-  assert.equal(decideGranularity('packages', 0.01), 'packages', 'pinned packages ignores zoom entirely')
-  // auto, above / inside / below the band — the boundary equality is pinned:
-  assert.equal(decideGranularity('auto', 2.4), 'packages', 'zoom above T_IN expands')
-  assert.equal(decideGranularity('auto', LOD_T_IN), 'packages', 'zoom === T_IN counts as packages (>= T_IN)')
-  assert.equal(decideGranularity('auto', 0.4), 'groups', 'zoom below T_OUT collapses')
-  assert.equal(decideGranularity('auto', LOD_T_OUT), null, 'zoom === T_OUT is INSIDE the band -> keep (only < T_OUT drops)')
-  assert.equal(decideGranularity('auto', (LOD_T_IN + LOD_T_OUT) / 2), null, 'inside the band -> null (keep current)')
-  // junk zoom reads as fully zoomed-out (groups), junk mode keeps the groups default
-  for (const junk of [null, undefined, NaN, Infinity, 'x', {}]) {
-    assert.equal(decideGranularity('auto', junk), 'groups', `junk zoom ${JSON.stringify(junk)} -> groups`)
+test('V2.3 auto-LOD deleted: no decideGranularity / zoom thresholds / granMode anywhere', () => {
+  const src = readFileSync(join(WEB, 'app.js'), 'utf8')
+  const html = readFileSync(join(WEB, 'index.html'), 'utf8')
+  for (const gone of ['decideGranularity', 'LOD_T_IN', 'LOD_T_OUT', 'LOD_DEBOUNCE_MS', 'granMode', 'lodAuto']) {
+    assert.ok(!src.includes(gone), `app.js must not mention ${gone} any more (auto-LOD is deleted, not disabled)`)
+    assert.ok(!html.includes(gone), `index.html must not mention ${gone} any more`)
   }
-  assert.equal(decideGranularity('nonsense', 99), 'packages', 'unknown mode behaves like auto (defensive, never a silent pin)')
-  assert.equal(decideGranularity('nonsense', (LOD_T_IN + LOD_T_OUT) / 2), null, 'unknown mode in the band -> keep')
+  // The zoom event survives for exactly one job: a live peek cannot track the camera.
+  assert.match(src, /cy\.on\('zoom', hidePeek\)/, 'zoom still closes a live peek')
+  assert.doesNotMatch(src, /cy\.on\('zoom',\s*function/, 'no zoom HANDLER is left to repaint the structure')
+  // …and no debounce timer is left holding a granularity repaint either
+  assert.doesNotMatch(src, /zoomTimer/, 'the zoom debounce timer is gone')
+  // 组级 ships as the default tier in BOTH places the view is built
+  assert.equal((src.match(/granularity: 'groups'/g) || []).length, 2,
+    'state.view AND freshView() both default to 组级 (the model default, no zoom round-trip)')
 })
 
-test('V22b LOD constants: debounce timings + wheel sensitivity ship as named constants', () => {
+test('V2.3 granularity segment: two states, straight through to view.granularity', () => {
   const src = readFileSync(join(WEB, 'app.js'), 'utf8')
-  assert.match(src, /var LOD_DEBOUNCE_MS = 120/, 'zoom debounce 120ms')
+  const html = readFileSync(join(WEB, 'index.html'), 'utf8')
+  assert.match(html, /<span id="lod-ctl"/, 'the granularity control still exists')
+  const segs = [...html.matchAll(/data-seg="([^"]+)"/g)].map((m) => m[1])
+  assert.deepEqual(segs, ['groups', 'packages'], 'exactly two segments, in order: 组级 | 包级')
+  for (const key of ['lodGroups', 'lodPkgs']) {
+    assert.ok(html.includes(`data-i18n="${key}"`), `${key} label is bilingual`)
+  }
+  // the click handler: the SEGMENT VALUE is the model tier — no decision function,
+  // no zoom read, and a same-tier click repaints nothing.
+  const a = src.indexOf('// V2.3 granularity segment')
+  const b = src.indexOf('// V22b Esc: window-level')
+  assert.ok(a > 0 && b > a, 'the segment binder is still there (anchor pair)')
+  const seg = src.slice(a, b)
+  assert.match(seg, /if \(seg !== 'groups' && seg !== 'packages'\) return/, 'junk segment ignored (two states only)')
+  assert.match(seg, /if \(seg === state\.view\.granularity\) return/, 'the active tier is a no-op click')
+  assert.match(seg, /state\.view\.granularity = seg/, 'the segment writes view.granularity straight through')
+  assert.match(seg, /syncLodCtl\(\)/, 'the active mark follows the click')
+  assert.match(seg, /paint\(\)/, 'a tier switch is a structural repaint (refit, like every other control)')
+  assert.doesNotMatch(seg, /zoom\(\)/, 'the click never consults the zoom')
+  // syncLodCtl marks the tier that IS in effect: it reads the model field, not a mode
+  const s0 = src.indexOf('function syncLodCtl() {')
+  const s1 = src.indexOf('// ---------- V22b global Esc')
+  assert.ok(s0 > 0 && s1 > s0, 'syncLodCtl is still there (anchor pair)')
+  assert.match(src.slice(s0, s1), /getAttribute\('data-seg'\) === state\.view\.granularity/,
+    'the lit segment always reports view.granularity (one source of truth)')
+  assert.doesNotMatch(src.slice(s0, s1), /granMode/, 'syncLodCtl has no separate mode to track')
+})
+
+test('V2.3 constants: peek/wheel timings survive, the LOD thresholds do not', () => {
+  const src = readFileSync(join(WEB, 'app.js'), 'utf8')
   assert.match(src, /var PEEK_DEBOUNCE_MS = 250/, 'peek debounce 250ms')
   assert.match(src, /var WHEEL_SENS = 2\.5/, 'wheel sensitivity constant')
   // wheelSensitivity is a CYTOSCAPE OPTION (init), not a style property
   assert.match(src, /window\.cytoscape\(\{ container: document\.getElementById\('graph'\), elements: \[\], wheelSensitivity: WHEEL_SENS \}\)/,
     'cy init carries wheelSensitivity: WHEEL_SENS')
 })
+
+// ---------- V2.3 pure: group / zone member packages ----------
+
+function memberFixture() {
+  return {
+    categories: [{ id: 'kernel', zh: '内核', en: 'Kernel' }, { id: 'tools', zh: '工具', en: 'Tools' }],
+    groups: [
+      { id: 'bundle', kind: 'official', category: 'kernel', packageCount: 2 },
+      { id: 'fs', kind: 'official', category: 'tools', packageCount: 2 },
+    ],
+    nodes: [
+      { id: 'a@1', kind: 'package', name: 'alpha', version: '1.0.0', group: 'bundle', scope: 'official' },
+      { id: 'b@1', kind: 'package', name: 'beta', version: '2.0.0', group: 'bundle', scope: 'official' },
+      { id: 'c@1', kind: 'package', name: 'gamma', version: '0.1.0', group: 'fs', scope: 'third-party' },
+      // no declared category on this group: the zone comes from the MEMBER's own
+      { id: 'd@1', kind: 'package', name: 'delta', version: '1.0.0', group: 'loose', category: 'tools', scope: 'third-party' },
+      // a package attached to no group at all ('ungrouped'), plus the pseudo-kinds
+      { id: 'l@1', kind: 'package', name: 'loose-lib', version: '1.0.0', group: null, scope: 'third-party' },
+      { id: 'brk', kind: 'broken', name: 'pkg-broken', version: '-', group: 'fs', scope: 'official' },
+    ],
+    edges: [
+      { from: 'a@1', to: 'b@1', kind: 'dep' },
+      { from: 'c@1', to: 'a@1', kind: 'dep', unsatisfied: true }, // touches a@1 AND c@1
+      { from: 'b@1', to: 'b@1', kind: 'dep' },                    // a self-loop touches b@1 only
+    ],
+  }
+}
+
+test('V2.3 buildGroupMembers: a group lists its own packages, sorted name→version→id', () => {
+  const { buildGroupMembers } = loadAppPure()
+  const g = memberFixture()
+  const r = buildGroupMembers({ kind: 'group', id: 'bundle' }, g)
+  assert.equal(r.total, 2, 'the two bundle members')
+  assert.deepEqual(r.rows.map((x) => x.id), ['a@1', 'b@1'], 'sorted by display name')
+  assert.deepEqual(r.rows[0], {
+    id: 'a@1', name: 'alpha', version: '1.0.0', scope: 'official', kind: 'package', broken: false, unsat: true,
+  }, 'row shape: id/name/version/scope/kind/broken/unsat (unsat = an UNSATISFIED edge touches it)')
+  assert.equal(r.rows[1].unsat, false, 'a self-loop / satisfied dep does not flag 未满足')
+  assert.equal(r.capped, false, 'under the cap nothing is capped')
+  // determinism is a contract: the same graph in a shuffled input order, same rows
+  const shuffled = Object.assign({}, g, { nodes: g.nodes.slice().reverse() })
+  assert.deepEqual(buildGroupMembers({ kind: 'group', id: 'bundle' }, shuffled).rows, r.rows,
+    'sort is a total order (name→version→id), not an accident of input order')
+})
+
+test('V2.3 buildGroupMembers: a zone lists every package whose GROUP maps to it', () => {
+  const { buildGroupMembers } = loadAppPure()
+  const g = memberFixture()
+  const tools = buildGroupMembers({ kind: 'zone', id: 'tools' }, g)
+  assert.deepEqual(tools.rows.map((x) => x.id), ['d@1', 'c@1', 'brk'],
+    'declared-category group + member-category group + the broken pseudo-node of that zone')
+  assert.equal(tools.total, 3)
+  assert.equal(tools.rows[2].broken, true, 'kind=broken carries the convenience flag')
+  assert.equal(tools.rows[2].version, '-', 'the pseudo-node version rides through verbatim')
+  assert.deepEqual(buildGroupMembers({ kind: 'zone', id: 'ungrouped' }, g).rows.map((x) => x.id), ['l@1'],
+    'a package on no group at all lands in 未归类, exactly where it renders')
+  assert.deepEqual(buildGroupMembers({ kind: 'zone', id: 'kernel' }, g).rows.map((x) => x.id), ['a@1', 'b@1'],
+    'the declared groups[].category mapping wins')
+})
+
+test('V2.3 buildGroupMembers: empty group, junk selection and unknown kinds list nothing, never throw', () => {
+  const { buildGroupMembers } = loadAppPure()
+  const g = memberFixture()
+  assert.deepEqual(buildGroupMembers({ kind: 'group', id: 'ghost' }, g), { total: 0, rows: [], capped: false },
+    'a group with no members: an honest zero')
+  assert.deepEqual(buildGroupMembers({ kind: 'node', id: 'bundle' }, g).rows, [], 'not a container selection → no list')
+  assert.deepEqual(buildGroupMembers(null, g), { total: 0, rows: [], capped: false }, 'junk selection, never a throw')
+  assert.deepEqual(buildGroupMembers({ kind: 'group', id: 'bundle' }, null), { total: 0, rows: [], capped: false })
+  assert.deepEqual(buildGroupMembers({ kind: 'group' }, g), { total: 0, rows: [], capped: false },
+    'a selection with no id matches nothing (id-less nodes never join the list)')
+})
+
+test('V2.3 buildGroupMembers: 200-row cap with an honest total (meta count is the TRUE count)', () => {
+  const { buildGroupMembers, GROUP_MEMBER_CAP } = loadAppPure()
+  assert.equal(GROUP_MEMBER_CAP, 200, 'member rows cap at 200')
+  const nodes = []
+  for (let i = 0; i < GROUP_MEMBER_CAP + 7; i++) {
+    nodes.push({ id: 'p' + i + '@1', kind: 'package', name: 'pkg-' + String(i).padStart(4, '0'), version: '1.0.0', group: 'big' })
+  }
+  const r = buildGroupMembers({ kind: 'group', id: 'big' }, { nodes, edges: [] })
+  assert.equal(r.total, GROUP_MEMBER_CAP + 7, 'total is the TRUE count, not the rendered count')
+  assert.equal(r.rows.length, GROUP_MEMBER_CAP, 'rows are capped')
+  assert.equal(r.capped, true, 'the renderer gets the truncation flag (and prints the +N tail)')
+  assert.equal(r.rows[0].name, 'pkg-0000', 'the rows kept are the FIRST 200 in sort order')
+  assert.equal(r.rows[GROUP_MEMBER_CAP - 1].name, 'pkg-0199')
+})
+
+test('V2.3 buildGroupMembers: names/versions are attacker data and arrive VERBATIM', () => {
+  const { buildGroupMembers } = loadAppPure()
+  const evil = '<img src=x onerror=alert(1)>'
+  const g = {
+    groups: [],
+    nodes: [{ id: 'e@1', kind: 'package', name: evil, version: '<script>', group: 'g1', scope: evil }],
+    edges: [],
+  }
+  const rows = buildGroupMembers({ kind: 'group', id: 'g1' }, g).rows
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].name, evil, 'the raw string rides to the renderer (escText writes it as TEXT — pinned in the DOM test)')
+  assert.equal(rows[0].version, '<script>')
+  assert.equal(rows[0].scope, evil)
+})
+
 
 // ---------- pure: path back-stack + breadcrumb text ----------
 
@@ -2549,10 +2707,9 @@ function loadExitWiring() {
     'function renderDetails(id) { LOG.push("details") }\n',
     'function syncFocusCtl() { LOG.push("sync") }\n',
     'function paint(refit) { LOG.push("paint:" + (refit === false ? "keep" : "refit") + (state.focus ? ":focus" : ":nofocus")) }\n',
-    'function decideGranularity() { return null }\n',
-    'var LOD_T_IN = 1, LOD_T_OUT = 1, LOD_DEBOUNCE_MS = 120, PEEK_DEBOUNCE_MS = 250\n',
+    'var PEEK_DEBOUNCE_MS = 250\n',
     'var state = { graph: {}, cy: null, byId: new Map(), focus: null, selected: null, pathStack: [],\n'
-    + '  viewport: null, tableMode: false, granMode: "auto", view: { collapsedCats: new Set() } }\n',
+    + '  viewport: null, tableMode: false, view: { collapsedCats: new Set(), granularity: "groups" } }\n',
     'function coll(items) {\n'
     + '  return { length: items.length, items: items, filter: function (f) { return coll(items.filter(f)) } }\n'
     + '}\n',
@@ -2745,17 +2902,20 @@ test('V22b peek works WHILE a focus is active and never touches focus/selected (
 
 // ---------- grep guards for the wiring that the fake harnesses cannot reach ----------
 
-test('V22b wiring guards: LOD suspend in focus, dbl-click gates, paint mirrors focus into view, chip buttons', () => {
+test('V22b wiring guards: dbl-click gates, paint mirrors focus into view, chip buttons', () => {
   const src = readFileSync(join(WEB, 'app.js'), 'utf8')
-  // LOD suspends while a focus is active, and the zoom repaint is viewport-keeping
-  assert.match(src, /if \(state\.focus \|\| state\.granMode !== 'auto'\)/, 'the debounced zoom tick skips focus mode and pinned tiers')
-  assert.match(src, /decideGranularity\(state\.granMode, state\.cy\.zoom\(\), LOD_T_IN, LOD_T_OUT\)/, 'the zoom tick decides through the pure function')
-  assert.match(src, /if \(eff === null \|\| eff === state\.view\.granularity\) return/, 'only an EFFECTIVE change repaints (string compare)')
-  assert.match(src, /\}, LOD_DEBOUNCE_MS\)/, 'the zoom handler runs debounced')
-  // double-click gates: group collapse only at the pinned groups tier, never inside a path
+  // double-click gates: manual group collapse only makes sense on the 组级 tier —
+  // at 包级 every group is expanded BY DEFINITION (the model ignores collapsedGroups),
+  // and inside a live path it would repaint the structure the reader is reading.
   const dbl = src.slice(src.indexOf("cy.on('dbltap', 'node.group'"), src.indexOf("cy.on('tap', 'node, edge'"))
-  assert.match(dbl, /if \(state\.granMode !== 'groups' \|\| state\.focus\) return/,
-    'auto/packages tiers make group dbl-click a no-op (README); a live path ignores it too')
+  assert.match(dbl, /if \(state\.view\.granularity !== 'groups' \|\| state\.focus\) return/,
+    'the packages tier and a live path make group dbl-click a no-op (README); 组级 restores the toggle')
+  assert.match(dbl, /toggleGroup\(String\(evt\.target\.data\('id'\)\)\.replace\(\/\^g:\/, ''\)\)/,
+    'the groups tier routes the dbl-click to the real collapse toggle')
+  // the zone shell keeps its own gate: inert inside a path only (both tiers)
+  const zdbl = src.slice(src.indexOf("cy.on('dbltap', 'node.zone'"), src.indexOf("cy.on('dbltap', 'node.group'"))
+  assert.match(zdbl, /if \(state\.focus\) return/, 'zone dbl-click stays inert inside a path')
+  assert.doesNotMatch(zdbl, /granularity/, 'zone collapse is tier-independent (a collapsed zone is a collapsed zone)')
   // paint is the single place the focus mirror enters the model view
   assert.match(src, /state\.view\.focus = state\.focus/, 'paint mirrors state.focus into view.focus (view→paint flow)')
   assert.match(src, /built\.meta\.focus && typeof built\.meta\.focus === 'object'/,
@@ -2774,19 +2934,11 @@ test('V22b wiring guards: LOD suspend in focus, dbl-click gates, paint mirrors f
   assert.doesNotMatch(peekFn, /createElement/, 'showPeek creates nothing — the reusable card comes from peekCard()')
   assert.doesNotMatch(peekFn, /state\.focus\s*=[^=]|state\.selected\s*=[^=]|selectNode\(|exitFocus\(/,
     'hovering a member cannot disturb the focus/selection')
-  assert.match(src, /granMode: 'auto'/, 'the new UI defaults the granularity segment to auto')
-  assert.match(src, /granularity: 'groups'/, 'the model-level default stays groups until the zoom decides otherwise')
+  assert.match(src, /granularity: 'groups'/, 'the model-level default tier is groups')
 })
 
-test('V22b index.html: LOD segment control, back button, and the exit rename ship', () => {
+test('V22b index.html: granularity segment, back button, and the exit rename ship', () => {
   const html = readFileSync(join(WEB, 'index.html'), 'utf8')
-  assert.match(html, /<span id="lod-ctl"/, 'the three-way granularity control exists')
-  for (const seg of ['auto', 'groups', 'packages']) {
-    assert.ok(html.includes(`data-seg="${seg}"`), `segment ${seg} button declared`)
-  }
-  for (const key of ['lodAuto', 'lodGroups', 'lodPkgs']) {
-    assert.ok(html.includes(`data-i18n="${key}"`), `${key} label is bilingual`)
-  }
   assert.match(html, /<button id="path-back"[^>]*hidden/, 'the breadcrumb back button ships hidden inside #focus-ctl')
   const ctl = /<span id="focus-ctl"[\s\S]*?<\/span>/.exec(html)
   assert.ok(ctl, '#focus-ctl block')
@@ -2804,6 +2956,17 @@ test('V22b style.css: peek card, segment control, tier headers and breadcrumb ge
   assert.match(css, /#lod-ctl button\.on\b/, 'the active segment is marked')
   assert.match(css, /\.tier\s*\{[^}]*cursor:\s*pointer/, 'tier headers are clickable')
   assert.match(css, /#path-back\[hidden\]\s*\{[^}]*display:\s*none/, 'the breadcrumb hides via [hidden] like its siblings')
+})
+
+test('V2.3 style.css: the member-row 断链 flag rides the 未满足 treatment, no parallel row design', () => {
+  const css = readFileSync(join(WEB, 'style.css'), 'utf8')
+  const unsat = /#details \.jump \.unsat\s*\{([^}]*)\}/.exec(css)
+  const brk = /#details \.jump \.brk\s*\{([^}]*)\}/.exec(css)
+  assert.ok(unsat, 'the 未满足 flag rule is still there')
+  assert.ok(brk, 'V2.3: the member-row 断链 flag is styled (app.js writes .brk)')
+  assert.equal(brk[1].trim(), unsat[1].trim(), 'same red, same size — a second flag, not a second design')
+  assert.doesNotMatch(css, /\.member\b|\.memrow\b/, 'the member list reuses .jump/.badge — no parallel row CSS')
+  assert.match(css, /#lod-ctl button\.on\b/, 'the segment control still marks the lit tier (two states, same shell)')
 })
 
 // ---------- chip bar behaviour (fake DOM) ----------
@@ -2873,3 +3036,298 @@ test('V22b chip bar: click exclusion (V6) survives, dblclick solos, row-tail but
   assert.deepEqual([...dom2.state.view.filterCats], [], 'show-all clears the exclude set')
   assert.ok(dom2.PAINTS.length >= 8, 'every mutation repaints')
 })
+
+// =========================================================================
+// Task V2.3 — container member lists. The rows are DOM code wired straight into
+// the reveal/focus chain, so they run for real: the row builders AND
+// revealNode/expandPath/focusForId are extracted VERBATIM from app.js and
+// executed against a fake document + fake cytoscape. A row click that merely
+// "looks wired" fails here — state.focus has to end up rooted on the row.
+// =========================================================================
+
+function loadMembersDom() {
+  const src = readFileSync(join(WEB, 'app.js'), 'utf8')
+  const cap = /var GROUP_MEMBER_CAP = [^\n;]+/.exec(src)
+  assert.ok(cap, 'app.js must still declare `var GROUP_MEMBER_CAP = …`')
+  const body = [
+    'var LOG = []\n',
+    'var KEYS = { memberPkgsLabel: \x27MEMBERS({n})\x27, moreLabel: \x27+{n} MORE\x27, unsatLabel: \x27UNSAT\x27, brokenLabel: \x27BROKEN\x27 }\n',
+    'function t(k) { return Object.prototype.hasOwnProperty.call(KEYS, k) ? KEYS[k] : k }\n',
+    'function depthOfCtl() { return null }\n',
+    'function paint(refit) { LOG.push(\x27paint:\x27 + (refit === false ? \x27keep\x27 : \x27refit\x27) + (state.focus ? \x27:focus\x27 : \x27:nofocus\x27)) }\n',
+    'function renderDetails() { LOG.push(\x27details\x27) }\n',
+    'function syncFocusCtl() { LOG.push(\x27sync\x27) }\n',
+    'function flashReveal(id) { LOG.push(\x27flash:\x27 + id) }\n',
+    'function El(tag) {\n',
+    '  this.tag = tag; this.children = []; this.className = \x27\x27; this.text = \x27\x27; this.handlers = {}; this.hidden = false\n',
+    '  this.appendChild = function (c) { this.children.push(c); return c }\n',
+    '  this.addEventListener = function (k, fn) { this.handlers[k] = fn }\n',
+    '}\n',
+    'Object.defineProperty(El.prototype, \x27textContent\x27, {\n',
+    '  get: function () { return this.text },\n',
+    '  set: function (v) { this.text = String(v); this.children.length = 0 },\n',
+    '})\n',
+    'var document = {\n',
+    '  createElement: function (tag) { return new El(tag) },\n',
+    '  createTextNode: function (s) { return { tag: \x27#text\x27, text: String(s), children: [], className: \x27\x27 } },\n',
+    '}\n',
+    // fake cytoscape: revealNode's chain reads the viewport (snapshot) and animates
+    'var cy = {\n',
+    '  pan: function () { return { x: 11, y: 22 } }, zoom: function () { return 1.25 },\n',
+    '  animate: function () { LOG.push(\x27animate\x27) },\n',
+    '  getElementById: function () { return { length: 0 } },\n',
+    '}\n',
+    'var state = {\n',
+    '  graph: null, byId: new Map(), groupIds: new Set(), groupZone: new Map(), cy: cy, tableMode: false,\n',
+    '  focus: null, selected: null, pathStack: [], viewport: null, lang: \x27zh\x27,\n',
+    '  view: { collapsedCats: new Set(), collapsedGroups: null, filterCats: new Set(), granularity: \x27groups\x27, focus: null },\n',
+    '}\n',
+    cap[0] + '\n',
+    extractBalanced(src, 'function escText(el, s) {') + '\n',
+    extractBalanced(src, 'function kvRow(box, key, value) {') + '\n',
+    extractBalanced(src, 'function secTitle(box, text) {') + '\n',
+    extractBalanced(src, 'function groupZoneOf(graph, gid) {') + '\n',
+    extractBalanced(src, 'function buildGroupMembers(sel, graph) {') + '\n',
+    extractBalanced(src, 'function memberRow(box, row, onClick) {') + '\n',
+    extractBalanced(src, 'function memberSection(box, sel) {') + '\n',
+    extractBalanced(src, 'function gidOf(n) {') + '\n',
+    extractBalanced(src, 'function isFocusRoot(id) {') + '\n',
+    extractBalanced(src, 'function focusForId(id) {') + '\n',
+    extractBalanced(src, 'function expandPath(n) {') + '\n',
+    extractBalanced(src, 'function exitFocus() {') + '\n',
+    extractBalanced(src, 'function snapshotViewport() {') + '\n',
+    extractBalanced(src, 'function revealNode(n) {') + '\n',
+    'return { state: state, LOG: LOG, El: El, memberSection: memberSection, CAP: GROUP_MEMBER_CAP }',
+  ].join('')
+  return new Function(body)()
+}
+
+/** the member-list graph every V2.3 DOM test shares (attacker strings included) */
+function membersGraph() {
+  const evil = '<img src=x onerror=alert(1)>'
+  return {
+    evil: evil,
+    graph: {
+      categories: [{ id: 'kernel', zh: '内核', en: 'Kernel' }],
+      groups: [{ id: 'bundle', kind: 'official', category: 'kernel', packageCount: 3 }],
+      nodes: [
+        { id: 'a@1', kind: 'package', name: 'alpha', version: '1.0.0', group: 'bundle', category: 'kernel', scope: 'official' },
+        { id: evil, kind: 'package', name: evil, version: '<script>', group: 'bundle', category: 'kernel', scope: 'third-party' },
+        { id: 'brk', kind: 'broken', name: 'pkg-broken', version: '-', group: 'bundle', category: 'kernel', scope: 'official' },
+      ],
+      edges: [{ from: evil, to: 'a@1', kind: 'dep', unsatisfied: true }],
+    },
+  }
+}
+
+function membersDom(fixture) {
+  const dom = loadMembersDom()
+  dom.state.graph = fixture.graph
+  dom.state.byId = byIdMap(fixture.graph)
+  dom.state.groupIds = new Set(['bundle'])
+  dom.state.groupZone = new Map([['bundle', 'kernel']])
+  dom.state.view.collapsedCats = new Set(['kernel'])
+  dom.state.view.filterCats = new Set(['kernel'])
+  return dom
+}
+
+test('V2.3 member rows: header count, badges and flags — every string via textContent', () => {
+  const fx = membersGraph()
+  const dom = membersDom(fx)
+  const box = new dom.El('div')
+  dom.memberSection(box, { kind: 'group', id: 'bundle' })
+  // title + 3 rows (the unsatisfied edge touches a@1 AND the evil node)
+  assert.equal(box.children.length, 4, 'title + one row per member')
+  assert.equal(box.children[0].className, 'sec', 'section header via secTitle')
+  assert.equal(box.children[0].text, 'MEMBERS(3)', 'the header count is the TRUE total through t(memberPkgsLabel)')
+  const rows = box.children.filter((c) => c.className === 'jump')
+  const rowOf = (label) => rows.find((c) => c.children[0].text === label)
+  assert.deepEqual(rows.map((c) => c.children[0].text), [fx.evil + '@<script>', 'alpha@1.0.0', 'pkg-broken'],
+    'rows sort by NAME (the attacker name sorts first: \x27<\x27 < \x27a\x27) — no input-order leak')
+  const row = rowOf('alpha@1.0.0')
+  assert.ok(row, 'the plain package row is there')
+  assert.equal(row.children[0].text, 'alpha@1.0.0', 'name@version, verbatim')
+  assert.deepEqual(row.children.filter((c) => c.className === 'badge').map((c) => c.text), [],
+    'a plain official package is badge-free (quiet rows)')
+  assert.deepEqual(row.children.filter((c) => c.className === 'unsat').map((c) => c.text), [' ⚠ UNSAT'],
+    'the touched-by-an-unsatisfied-edge flag rides the existing .unsat span')
+  const evilRow = rowOf(fx.evil + '@<script>')
+  assert.equal(evilRow.children[0].text, fx.evil + '@<script>', 'attacker name@version survive VERBATIM as text')
+  assert.deepEqual(evilRow.children.filter((c) => c.className === 'badge').map((c) => c.text), ['third-party'],
+    'a third-party scope gets its badge (the interesting case), kind=package does not')
+  const brkRow = rowOf('pkg-broken')
+  assert.equal(brkRow.children[0].text, 'pkg-broken', 'version \x27-\x27 (the pseudo-node marker) never renders as @-')
+  assert.deepEqual(brkRow.children.filter((c) => c.className === 'badge').map((c) => c.text), ['broken'],
+    'the node kind badges only when it is not a plain package')
+  assert.deepEqual(brkRow.children.filter((c) => c.className === 'brk').map((c) => c.text), [' ⚠ BROKEN'],
+    'the broken flag has its own marker class (styled with .unsat in style.css)')
+  const texts = domTexts(box)
+  assert.equal(texts.filter((s) => s.includes(fx.evil)).length, 1,
+    'the attacker string reaches the tree exactly once, as TEXT — never composed as markup')
+  assert.equal(JSON.stringify(box).includes('innerHTML'), false, 'no innerHTML anywhere in the built tree')
+})
+
+test('V2.3 member list cap: 200 rows render, the +N tail reports what the header already counted', () => {
+  const nodes = []
+  for (let i = 0; i < 205; i++) {
+    nodes.push({ id: 'p' + i + '@1', kind: 'package', name: 'pkg-' + String(i).padStart(4, '0'), version: '1.0.0', group: 'big', category: 'kernel', scope: 'official' })
+  }
+  const dom = loadMembersDom()
+  const graph = { groups: [], nodes, edges: [] }
+  dom.state.graph = graph
+  dom.state.byId = byIdMap(graph)
+  const box = new dom.El('div')
+  dom.memberSection(box, { kind: 'group', id: 'big' })
+  assert.equal(box.children[0].text, 'MEMBERS(205)', 'the header never under-reports a truncated list')
+  assert.equal(box.children.filter((c) => c.className === 'jump').length, dom.CAP, 'exactly CAP rows')
+  const tail = box.children[box.children.length - 1]
+  assert.equal(tail.className, 'kv', 'the tail is the shared +N 更多 kv row')
+  assert.equal(tail.children[1].text, '+5 MORE', 'the tail counts what it hid (205-200)')
+})
+
+test('V2.3 member row click REVEALS the package: ancestors open and state.focus roots on the row', () => {
+  const fx = membersGraph()
+  const dom = membersDom(fx)
+  const box = new dom.El('div')
+  dom.memberSection(box, { kind: 'group', id: 'bundle' })
+  const rowOf = (label) => box.children.find((c) => c.className === 'jump' && c.children[0].text === label)
+  const alphaRow = rowOf('alpha@1.0.0')
+  assert.equal(alphaRow.handlers.click instanceof Function, true, 'rows are clickable')
+  alphaRow.handlers.click()
+  assert.equal(dom.state.selected, 'a@1', 'the reveal selects the row package')
+  assert.deepEqual(dom.state.focus, { rootId: 'a@1', depth: null },
+    'THE contract: a member-row click roots the path on the row (unlimited depth default)')
+  assert.deepEqual([...dom.state.view.collapsedCats], [], 'expandPath: its zone is un-collapsed…')
+  assert.deepEqual([...dom.state.view.filterCats], [], '…and un-filtered')
+  assert.deepEqual([...dom.state.view.collapsedGroups], [], '…and its group materialized + expanded')
+  assert.deepEqual(dom.state.viewport, { zoom: 1.25, pan: { x: 11, y: 22 } },
+    'entering the path arms the one-shot viewport snapshot (exit glides back)')
+  assert.deepEqual(dom.state.pathStack, [], 'a reveal is an authoritative re-root, not a walk')
+  assert.deepEqual(dom.LOG, ['paint:refit:focus', 'details', 'sync', 'flash:a@1'],
+    'paint (structural, so refit → center) → details → focus ctl → the flash on the revealed node')
+  // clicking a NON-package member (broken pseudo-node) is still a reveal, but R35
+  // declines it as a root: the path exits, the snapshot is spent, no glide.
+  dom.LOG.length = 0
+  const brkRow = rowOf('pkg-broken')
+  brkRow.handlers.click()
+  assert.equal(dom.state.selected, 'brk', 'the broken node is selected (its details open)')
+  assert.equal(dom.state.focus, null, 'a broken node is not a legal path root — the path exits')
+  assert.equal(dom.state.viewport, null, 'the stale entry snapshot is dropped (the reveal re-planted the camera)')
+  assert.deepEqual(dom.LOG, ['paint:refit:nofocus', 'details', 'sync', 'flash:brk'], 'the same chain, without a focus')
+})
+
+test('V2.3 member rows exist for a ZONE too, and both container details share the builder', () => {
+  const src = readFileSync(join(WEB, 'app.js'), 'utf8')
+  const zone = src.slice(src.indexOf('function detailsZone(box, cid) {'), src.indexOf('function detailsGroup(box, gid) {'))
+  const grp = src.slice(src.indexOf('function detailsGroup(box, gid) {'), src.indexOf('function detailsEdge(box, id) {'))
+  assert.ok(zone.length > 0 && grp.length > 0, 'both container detail builders are still there')
+  assert.match(zone, /memberSection\(box, \{ kind: 'zone', id: cid \}\)/, 'zone detail = every package of the zone')
+  assert.match(grp, /memberSection\(box, \{ kind: 'group', id: gid \}\)/, 'group detail = its own member packages')
+  assert.doesNotMatch(zone, /jumpButton/, 'the old group-name jump list is gone (one member surface, not two)')
+  assert.doesNotMatch(grp, /kvRow\(box, t\(\x27membersLabel\x27\)/,
+    'no duplicate count row — the 成员包（N） header IS the member count (V2.3)')
+  assert.doesNotMatch(zone, /t\(\x27pkgsLabel\x27\)/, '…and the zone count row retired with it (the key is gone from both locales)')
+  // the click target is the GRAPH NODE, not the row: revealNode needs group/category
+  const ms = src.slice(src.indexOf('function memberSection(box, sel) {'), src.indexOf('function detailsZone(box, cid) {'))
+  assert.match(ms, /state\.byId\.get\(String\(r\.id\)\)/, 'the row id is resolved back to its graph node')
+  assert.match(ms, /if \(n\) revealNode\(n\)/, '…and only a real node is revealed (a vanished rescan target no-ops)')
+  // zone-level render through the same harness (the pure resolver does the filtering)
+  const fx = membersGraph()
+  const dom = membersDom(fx)
+  dom.state.graph.groups = [{ id: 'bundle', kind: 'official', category: 'kernel' }]
+  const zbox = new dom.El('div')
+  dom.memberSection(zbox, { kind: 'zone', id: 'kernel' })
+  assert.equal(zbox.children[0].text, 'MEMBERS(3)', 'a zone lists its packages, not its group names')
+  assert.equal(zbox.children.filter((c) => c.className === 'jump').length, 3, 'one row per package in the zone')
+  const empty = new dom.El('div')
+  dom.memberSection(empty, { kind: 'zone', id: 'nowhere' })
+  assert.equal(empty.children.length, 1, 'an empty zone still shows its honest zero header')
+  assert.equal(empty.children[0].text, 'MEMBERS(0)')
+})
+
+// ---------- dbl-tap semantics through the REAL registered handlers ----------
+function loadGestureWiring() {
+  const src = readFileSync(join(WEB, 'app.js'), 'utf8')
+  const body = [
+    'var LOG = []\n',
+    'function t(k) { return k }\n',
+    'function hidePeek() { LOG.push(\x27peek-off\x27) }\n',
+    'function showPeek() {}\n',
+    'function selectNode(id) { LOG.push(\x27select:\x27 + id) }\n',
+    'function paint(refit) { LOG.push(\x27paint:\x27 + (refit === false ? \x27keep\x27 : \x27refit\x27)) }\n',
+    'var PEEK_DEBOUNCE_MS = 250\n',
+    'var state = {\n',
+    '  graph: {}, cy: null, byId: new Map(), groupIds: new Set([\x27fs\x27, \x27bundle\x27]),\n',
+    '  groupZone: new Map([[\'fs\', \'tools\']]), focus: null, selected: null, tableMode: false,\n',
+    '  view: { collapsedCats: new Set(), collapsedGroups: null, filterCats: new Set(), granularity: \x27groups\x27, focus: null },\n',
+    '}\n',
+    'function El(id, classes, data) {\n',
+    '  this.isElement = true; this.idStr = id; this.classes = new Set(classes); this.dataObj = data\n',
+    '}\n',
+    'El.prototype.id = function () { return this.idStr }\n',
+    'El.prototype.data = function (k) { return this.dataObj[k] }\n',
+    'El.prototype.hasClass = function (c) { return this.classes.has(c) }\n',
+    'var handlers = []\n',
+    'var cy = {\n',
+    '  on: function (evt, sel, fn) { if (typeof sel === \x27function\x27) { fn = sel; sel = null } handlers.push({ evt: evt, sel: sel, fn: fn }) },\n',
+    '  zoom: function () { return 1 }, pan: function () { return { x: 0, y: 0 } },\n',
+    '  animate: function () {},\n',
+    '  trigger: function (evt, target) {\n',
+    '    handlers.forEach(function (h) {\n',
+    '      if (h.evt !== evt) return\n',
+    '      if (h.sel == null) { if (target === cy) h.fn({ target: target }) }\n',
+    '      else if (target && target.isElement) h.fn({ target: target })\n',
+    '    })\n',
+    '  },\n',
+    '}\n',
+    extractBalanced(src, 'function toggleGroup(gid) {') + '\n',
+    extractBalanced(src, 'function bindCy() {') + '\n',
+    'state.cy = cy\n',
+    'return { state: state, cy: cy, LOG: LOG, bind: function () { bindCy() },\n',
+    '  trigger: function (evt, target) { cy.trigger(evt, target) },\n',
+    '  groupCard: function (gid) { return new El(\x27g:\x27 + gid, [\x27group\x27, \x27collapsed\x27], { id: \x27g:\x27 + gid, name: gid }) },\n',
+    '  zone: function (cid) { return new El(\x27cat:\x27 + cid, [\x27zone\x27], { id: \x27cat:\x27 + cid, name: cid }) },\n',
+    '  blank: function () { return cy } }',
+  ].join('')
+  return new Function(body)()
+}
+
+test('V2.3 group dbl-tap: 组级 restores the expand/collapse toggle; 包级 and a live path stay inert', () => {
+  const g = loadGestureWiring()
+  g.bind() // the real cy.on('dbltap', …) registrations, no hand-poked handlers
+  g.trigger('dbltap', g.groupCard('fs'))
+  assert.deepEqual([...g.state.view.collapsedGroups].sort(), ['bundle'],
+    'first dbl-tap materializes the all-collapsed default and opens THIS group (V2.2 inertness undone)')
+  assert.deepEqual(g.LOG, ['paint:refit'], 'the toggle repaints through paint() — the only structure path')
+  g.LOG.length = 0
+  g.trigger('dbltap', g.groupCard('fs'))
+  assert.deepEqual([...g.state.view.collapsedGroups].sort(), ['bundle', 'fs'], 'the same card again collapses it back')
+  // 包级: the model expands every group BY DEFINITION at that tier, so a fake
+  // collapse would be a lie the next repaint contradicts.
+  g.LOG.length = 0
+  g.state.view.granularity = 'packages'
+  g.trigger('dbltap', g.groupCard('fs'))
+  assert.deepEqual(g.LOG, [], '包级: group dbl-tap is the documented no-op')
+  assert.deepEqual([...g.state.view.collapsedGroups].sort(), ['bundle', 'fs'], '…and it touched no state')
+  // a live path is inert at either tier (unchanged V2.2 rule)
+  g.LOG.length = 0
+  g.state.view.granularity = 'groups'
+  g.state.focus = { rootId: 'a@1', depth: null }
+  g.trigger('dbltap', g.groupCard('fs'))
+  assert.deepEqual(g.LOG, [], 'inside a path a dbl-tap never re-cuts the structure under the reader')
+  // zone shells keep their own, tier-independent gate
+  g.state.focus = null
+  g.LOG.length = 0
+  g.trigger('dbltap', g.zone('tools'))
+  assert.deepEqual([...g.state.view.collapsedCats], ['tools'], 'zone dbl-tap still collapses the whole zone')
+  g.state.focus = { rootId: 'a@1', depth: null }
+  g.LOG.length = 0
+  g.trigger('dbltap', g.zone('tools'))
+  assert.deepEqual(g.LOG, [], '…and is inert inside a path')
+  // a single tap still selects (the dbl-tap handlers must not swallow it)
+  g.state.focus = null
+  g.LOG.length = 0
+  g.trigger('tap', g.groupCard('fs'))
+  assert.deepEqual(g.LOG, ['peek-off', 'select:g:fs'], 'tap = close the peek, then select')
+})
+

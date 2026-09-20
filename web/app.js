@@ -38,14 +38,17 @@
       edgeKindsLabel: '边型',
       focusLabel: '聚焦深度', focusUnlimited: '不限', focusOn: '聚焦上下游', focusOff: '退出路径',
       backLabel: '返回',
-      lodAuto: '自动', lodGroups: '组级', lodPkgs: '包级', lodLabel: '显示粒度（自动=按缩放切换）',
+      lodGroups: '组级', lodPkgs: '包级', lodLabel: '显示粒度（组级＝组卡片，双击组卡展开该区成员；包级＝全部展开）',
       peekDeps: '直接依赖', peekDependents: '直接被依赖', peekUnsat: '含未满足边', peekBroken: '断链包',
       chipShowAll: '全部显示', chipHideAll: '全部隐藏',
       legendTitle: '图例', legendShapes: '节点形状', legendEdges: '边类型', legendFocus: '聚焦路径',
       shOfficial: '官方包', shThirdParty: '第三方包', shProfile: 'Profile', shBroken: '断链包',
       egDep: '依赖 dep', egMount: '挂载 mount', egPeer: '对等 peer',
       egPeerOpt: '可选对等 peer-opt', egAgg: '聚合边（粗细∝计数）',
-      membersLabel: '成员', groupsLabel: '组', pkgsLabel: '包',
+      // V2.3: pkgsLabel retired with the zone COUNT row — the 成员包（N） header is
+      // that count now. membersLabel stays (the peek card's 成员 N row).
+      membersLabel: '成员', groupsLabel: '组',
+      memberPkgsLabel: '成员包（{n}）', brokenLabel: '断链包',
       // R35 path lists (depsLabel/dependentsLabel stay: the edge details panel uses them)
       pathDownLabel: '依赖路径 ↓', pathUpLabel: '被依赖路径 ↑',
       pathCountLabel: '{n} · 最深 {d} 层', pathNoneLabel: '无', pathDistLabel: 'd{n}',
@@ -64,14 +67,15 @@
       edgeKindsLabel: 'edge kinds',
       focusLabel: 'focus depth', focusUnlimited: 'unlimited', focusOn: 'focus paths', focusOff: 'exit path',
       backLabel: 'back',
-      lodAuto: 'auto', lodGroups: 'groups', lodPkgs: 'packages', lodLabel: 'display granularity (auto follows the zoom)',
+      lodGroups: 'groups', lodPkgs: 'packages', lodLabel: 'display granularity (groups = cards, dbl-click a card to open its members; packages = all expanded)',
       peekDeps: 'depends', peekDependents: 'depended by', peekUnsat: 'unsatisfied edges', peekBroken: 'broken package',
       chipShowAll: 'show all', chipHideAll: 'hide all',
       legendTitle: 'Legend', legendShapes: 'node shapes', legendEdges: 'edge kinds', legendFocus: 'focus paths',
       shOfficial: 'official pkg', shThirdParty: 'third-party', shProfile: 'profile', shBroken: 'broken',
       egDep: 'depends dep', egMount: 'mount', egPeer: 'peer',
       egPeerOpt: 'optional peer (peer-opt)', egAgg: 'aggregate (width ∝ count)',
-      membersLabel: 'members', groupsLabel: 'groups', pkgsLabel: 'packages',
+      membersLabel: 'members', groupsLabel: 'groups',
+      memberPkgsLabel: 'member packages ({n})', brokenLabel: 'broken',
       pathDownLabel: 'depends paths ↓', pathUpLabel: 'depended-on paths ↑',
       pathCountLabel: '{n} · {d} levels deep', pathNoneLabel: 'none', pathDistLabel: 'd{n}',
       mountsLabel: 'mounts ↓',
@@ -132,13 +136,10 @@
   // PER LAYER tier (see groupRowsByDist/tierBlock).
   var PATH_ROW_CAP = 60
 
-  // V22b LOD (auto granularity): zoom must reach T_IN to expand to packages and
-  // drop below T_OUT to collapse back — the band in between is DEAD ZONE and
-  // keeps the current effective tier (hysteresis, so scrolling near a threshold
-  // never flaps the layout). 120ms debounce keeps the repaint off the wheel.
-  var LOD_T_IN = 1.5
-  var LOD_T_OUT = 1.3
-  var LOD_DEBOUNCE_MS = 120
+  // V2.3 container member lists: the details panel caps the rows it PAINTS, but
+  // buildGroupMembers always reports the TRUE total next to them (an honest meta
+  // count is the whole point of the +N tail — a truncated header would lie).
+  var GROUP_MEMBER_CAP = 200
   var WHEEL_SENS = 2.5         // cytoscape CORE OPTION (not a style property)
   // Hover peek: a 250ms dwell keeps fly-over gestures silent.
   var PEEK_DEBOUNCE_MS = 250
@@ -155,17 +156,16 @@
     loading: false, // a graph fetch (+ its status poll) is in flight
     // AtlasModel `view` input. Defaults = the model defaults: every group collapsed
     // (collapsedGroups null), no zone excluded, all scopes/profiles/edge kinds pass.
-    // V22b: `granularity` carries the EFFECTIVE tier (the segment control below is
-    // the MODE); `focus` is mirrored from state.focus inside paint() — the model
-    // turns it into the path-mode subgraph (V2.2a).
+    // V2.3: `granularity` IS the displayed tier and the top-bar segment control
+    // writes it straight through (two states, 组级 default — the V2.2b auto-LOD
+    // that derived it from the zoom is gone); `focus` is mirrored from state.focus
+    // inside paint() — the model turns it into the path-mode subgraph (V2.2a).
     view: {
       collapsedCats: new Set(), collapsedGroups: null,
       filterCats: new Set(), filterScope: 'all', filterProfile: null,
       edgeKinds: null, showRealCross: false,
       granularity: 'groups', focus: null,
     },
-    // V22b granularity segment: 'auto' (the shipped default) | 'groups' | 'packages'.
-    granMode: 'auto',
     focus: null,   // null | {rootId, depth}  (R35: depth null = unlimited — the
                    // default; 1-3 via #focus-depth. Only kind=package nodes are roots.)
     // V22b path-mode back stack (walk history, newest last, cap PATH_STACK_CAP)
@@ -200,25 +200,6 @@
   // (applyClasses / focusNode / detailsNode). The V21 semantics suite runs
   // against the model export (render-smoke loadAppPure bridges it in-realm);
   // the consumption + no-copy guard is pinned there and in graph-model V22-00.
-
-  /**
-   * decideGranularity(mode, zoom, T_IN, T_OUT) → 'packages' | 'groups' | null
-   * (V22b LOD). `mode` is the top-bar SEGMENT value:
-   *  - 'groups' / 'packages' are PINNED tiers: pass through, zoom is ignored.
-   *  - anything else is the auto tier: zoom >= T_IN → 'packages', zoom < T_OUT →
-   *    'groups', INSIDE the band [T_OUT, T_IN) → null = KEEP the current
-   *    effective granularity (the hysteresis is the whole point: null is not
-   *    "no answer", it is "no change"). Junk zoom reads as fully zoomed-out.
-   */
-  function decideGranularity(mode, zoom, T_IN, T_OUT) {
-    if (mode === 'groups' || mode === 'packages') return mode
-    var tin = typeof T_IN === 'number' && isFinite(T_IN) ? T_IN : LOD_T_IN
-    var tout = typeof T_OUT === 'number' && isFinite(T_OUT) ? T_OUT : LOD_T_OUT
-    var z = typeof zoom === 'number' && isFinite(zoom) ? zoom : 0
-    if (z >= tin) return 'packages'
-    if (z < tout) return 'groups'
-    return null
-  }
 
   /**
    * catTitle(categories, catId, lang) → localized zone title, raw id fallback.
@@ -263,6 +244,74 @@
       if (ng === want && n.category) return String(n.category)
     }
     return 'ungrouped'
+  }
+
+  /**
+   * buildGroupMembers(sel, graph) → { total, rows, capped }  (V2.3).
+   * The details-panel data half for the two CONTAINER kinds. `sel` is
+   * { kind: 'group' | 'zone', id: <group id | category id> }:
+   *  - a GROUP lists the nodes whose `group` is that id (null == 'ungrouped' —
+   *    the identical keying AtlasModel and computeGroupUniverse use, and the
+   *    reason a declared `graph.groups` entry with no member node lists nothing:
+   *    the card renders, but there is genuinely nothing inside it);
+   *  - a ZONE lists every node whose GROUP maps into it through groupZoneOf
+   *    (declared groups[].category → else the first member carrying a
+   *    category → else 'ungrouped'), i.e. exactly what the zone shell contains.
+   * Row = { id, name, version, scope, kind, broken, unsat }. `kind` is the NODE
+   * kind ('package' | 'profile' | 'broken') and `broken` the convenience flag;
+   * `unsat` is the buildPathLists idiom (`!!e.unsatisfied`) applied to EVERY edge
+   * touching the node, either direction, any kind — a package whose only link is
+   * an unsatisfied one is exactly as broken as a path row that flags it.
+   * Every string comes off the graph node VERBATIM: names and versions are
+   * attacker-influenced third-party data and the renderer writes them with
+   * escText, never as markup. Sort name → version → id (nulls sort as '' so the
+   * order is total and independent of input order). `rows` is capped at
+   * GROUP_MEMBER_CAP, `total` is the TRUE count and `capped` tells the renderer
+   * to print the +N tail — a header that counted only the rows it painted would
+   * under-report the container, which is the one thing a count must never do.
+   */
+  function buildGroupMembers(sel, graph) {
+    var g = graph || {}
+    var s = sel || {}
+    var kind = String(s.kind == null ? '' : s.kind)
+    var want = String(s.id == null ? '' : s.id)
+    if (kind !== 'group' && kind !== 'zone') return { total: 0, rows: [], capped: false }
+    var nodes = Array.isArray(g.nodes) ? g.nodes : []
+    var edges = Array.isArray(g.edges) ? g.edges : []
+    var unsat = new Set()
+    for (var i = 0; i < edges.length; i++) {
+      var e = edges[i]
+      if (!e || !e.unsatisfied || e.from == null || e.to == null) continue
+      unsat.add(String(e.from)); unsat.add(String(e.to))
+    }
+    function cmp(a, b) { return a < b ? -1 : a > b ? 1 : 0 }
+    function key(v) { return v == null ? '' : String(v) }
+    var zoneCache = new Map()
+    var rows = []
+    for (var j = 0; j < nodes.length; j++) {
+      var n = nodes[j]
+      if (!n || n.id == null) continue
+      var gid = n.group == null ? 'ungrouped' : String(n.group)
+      if (kind === 'group') {
+        if (gid !== want) continue
+      } else {
+        // one groupZoneOf per distinct group, not per node: the zone answer is a
+        // property of the group, and this keeps a 200-package zone linear.
+        var z = zoneCache.get(gid)
+        if (z === undefined) { z = groupZoneOf(g, gid); zoneCache.set(gid, z) }
+        if (z !== want) continue
+      }
+      var nkind = key(n.kind)
+      rows.push({
+        id: String(n.id), name: n.name == null ? String(n.id) : String(n.name),
+        version: n.version == null ? null : String(n.version),
+        scope: n.scope == null ? null : String(n.scope),
+        kind: nkind, broken: nkind === 'broken', unsat: unsat.has(String(n.id)),
+      })
+    }
+    rows.sort(function (a, b) { return cmp(key(a.name), key(b.name)) || cmp(key(a.version), key(b.version)) || cmp(a.id, b.id) })
+    var max = typeof GROUP_MEMBER_CAP === 'number' && GROUP_MEMBER_CAP > 0 ? GROUP_MEMBER_CAP : 200
+    return { total: rows.length, rows: rows.slice(0, max), capped: rows.length > max }
   }
 
   /**
@@ -668,11 +717,19 @@
 
     // ---- packages: shape mapping R29 (ellipse/hexagon/rectangle/diamond) ----
     // classes from AtlasModel: pkg sk-<node.kind> sc-<node.scope>
+    // V2.3 LABEL CLAMP (the real fix for the browser-only label overlap): a pkg
+    // node's LABEL is part of its bbox and a compound sizes to its children's
+    // bboxes, so a label wider than the slot it sits in drags the group/zone box
+    // wider and the neighbouring row collides. The grid puts row centres
+    // CELL(46)+GAP(12)=58 apart (graph-model ZONE_LAYOUT), so 50 is the widest
+    // label that cannot reach past its own column — the 96 this shipped with was
+    // 1.66× that. Headless cytoscape has no font metrics, so no probe here can
+    // reproduce the overlap; the numeric pin in the tests is the guard.
     st.push({ selector: 'node.pkg', style: {
       shape: 'ellipse', width: 16, height: 16,
       label: 'data(label)', 'font-size': 8, color: text,
       'text-valign': 'bottom', 'text-halign': 'center', 'text-margin-y': 3,
-      'text-wrap': 'ellipsis', 'text-max-width': 96, 'background-opacity': 1,
+      'text-wrap': 'ellipsis', 'text-max-width': 50, 'background-opacity': 1,
     } })
     st.push({ selector: 'node.pkg.sc-official', style: { 'background-color': dark ? '#6da3d8' : '#4c7fb8' } })
     st.push({ selector: 'node.pkg.sc-third-party', style: { shape: 'hexagon', 'background-color': dark ? '#c194e8' : '#9a6ac2' } })
@@ -904,24 +961,12 @@
   // ---------- interaction (V5 Step 2 + V6 selection/focus + V22b path mode) ----------
   function bindCy() {
     var cy = state.cy
-    var zoomTimer = 0
     var peekTimer = 0
-    // V22b LOD: debounced (120ms) zoom ticks drive the AUTO segment; only an
-    // EFFECTIVE change repaints, and the repaint is viewport-KEEPING. Focus mode
-    // suspends the whole mechanism (the model ignores granularity in a path view;
-    // re-deciding mid-path would re-cut the structure under the reader's eyes).
-    // Pinned tiers pass through decideGranularity and string-compare to no-op.
-    cy.on('zoom', function () {
-      hidePeek()
-      clearTimeout(zoomTimer)
-      zoomTimer = setTimeout(function () {
-        if (state.focus || state.granMode !== 'auto') return
-        var eff = decideGranularity(state.granMode, state.cy.zoom(), LOD_T_IN, LOD_T_OUT)
-        if (eff === null || eff === state.view.granularity) return
-        state.view.granularity = eff
-        paint(false)
-      }, LOD_DEBOUNCE_MS)
-    })
+    // V2.3: NO auto-LOD. The displayed tier is whatever the segment control put in
+    // view.granularity, so a zoom never re-cuts the structure — the zoom event has
+    // exactly one job left, and it is dropping a peek that can no longer track the
+    // camera it was anchored to.
+    cy.on('zoom', hidePeek)
     // V22b hover peek: dwell 250ms on ANY node (member, card, zone) → the one
     // reusable card. pan/zoom/click/leave close it instantly.
     cy.on('pan', hidePeek)
@@ -947,12 +992,13 @@
     })
     // double-click group card → toggle that group. collapsedGroups defaults to
     // null = ALL collapsed, so materialize the full set on the first flip.
-    // V22b: manual collapse only makes sense on the PINNED groups tier — in auto
-    // or packages mode the zoom decides the granularity, and dbl-click is a
-    // documented no-op there (README). Inert inside a path (same reasoning).
+    // V2.3: the toggle is back where it means something — the 组级 tier. At 包级 the
+    // model expands EVERY group by definition (collapsedGroups is ignored there),
+    // so a collapse the next repaint contradicts is a lie: dbl-click stays the
+    // documented no-op. Inert inside a path (a re-cut layout is a surprise).
     cy.on('dbltap', 'node.group', function (evt) {
       if (!evt.target.hasClass('group')) return
-      if (state.granMode !== 'groups' || state.focus) return
+      if (state.view.granularity !== 'groups' || state.focus) return
       toggleGroup(String(evt.target.data('id')).replace(/^g:/, ''))
     })
     // single click → selection + details panel (V6 Step 4); V22b adds the path-
@@ -1173,10 +1219,12 @@
       } else back.hidden = true
     }
   }
-  // V22b LOD segment: mark the active tier (auto/groups/packages).
+  // V2.3 two-state granularity segment: mark the tier that IS in effect. There is
+  // no separate mode to track — view.granularity is the one source of truth, so
+  // the lit segment can never disagree with what is on screen.
   function syncLodCtl() {
     document.querySelectorAll('#lod-ctl button[data-seg]').forEach(function (b) {
-      b.classList.toggle('on', b.getAttribute('data-seg') === state.granMode)
+      b.classList.toggle('on', b.getAttribute('data-seg') === state.view.granularity)
     })
   }
 
@@ -1410,22 +1458,65 @@
     box.hidden = true
   }
 
+  // ---------- V2.3 container member lists ----------
+  // One row = `name@version · [kind] [third-party] · ⚠断链 · ⚠未满足`. The click is
+  // the SAME authoritative reveal a search hit / the retired group jump buttons
+  // used — revealNode(graph node): un-collapse the node's zone AND group, re-root
+  // the path, center + flash it (and the repaint closes any live peek). Rows reuse
+  // .jump/.badge/.unsat, so there is no new CSS surface; `name`/`version`/`scope`
+  // are attacker-influenced third-party data and leave through escText only.
+  function memberRow(box, row, onClick) {
+    var b = document.createElement('button'); b.className = 'jump'
+    var nm = document.createElement('span')
+    escText(nm, String(row.name) + (row.version && row.version !== '-' ? '@' + row.version : ''))
+    b.appendChild(nm)
+    if (row.kind && row.kind !== 'package') {
+      var k = document.createElement('span'); k.className = 'badge'
+      escText(k, row.kind)
+      b.appendChild(document.createTextNode(' ')); b.appendChild(k)
+    }
+    if (row.scope === 'third-party') {
+      var s = document.createElement('span'); s.className = 'badge'
+      escText(s, row.scope)
+      b.appendChild(document.createTextNode(' ')); b.appendChild(s)
+    }
+    if (row.broken) {
+      var br = document.createElement('span'); br.className = 'brk'
+      escText(br, ' ⚠ ' + t('brokenLabel'))
+      b.appendChild(br)
+    }
+    if (row.unsat) {
+      var u = document.createElement('span'); u.className = 'unsat'
+      escText(u, ' ⚠ ' + t('unsatLabel'))
+      b.appendChild(u)
+    }
+    b.addEventListener('click', onClick)
+    box.appendChild(b)
+  }
+  // The section both container details share: the header count is the TRUE total
+  // (buildGroupMembers caps the ROWS, never the count), and the tail says what the
+  // cap hid.
+  function memberSection(box, sel) {
+    var res = buildGroupMembers(sel, state.graph)
+    secTitle(box, t('memberPkgsLabel').replace('{n}', res.total))
+    res.rows.forEach(function (r) {
+      memberRow(box, r, function () {
+        var n = state.byId.get(String(r.id))
+        if (n) revealNode(n)
+      })
+    })
+    if (res.capped) kvRow(box, '', t('moreLabel').replace('{n}', res.total - res.rows.length))
+  }
+
   function detailsZone(box, cid) {
     head(box, zoneTitle(cid))
     var groups = []
     state.groupIds.forEach(function (gid) { if (state.groupZone.get(gid) === cid) groups.push(gid) })
     groups.sort()
-    var pkgCount = 0
-    state.graph.nodes.forEach(function (n) { if (!n || n.id == null) return; if ((state.groupZone.get(gidOf(n)) || String(n.category || 'ungrouped')) === cid) pkgCount++ })
+    // V2.3: the package COUNT row is gone — the 成员包（N） header below IS that
+    // count, sourced from the same rows the panel is about to paint.
     kvRow(box, t('groupsLabel'), groups.length)
-    kvRow(box, t('pkgsLabel'), pkgCount)
-    if (groups.length) {
-      secTitle(box, t('membersLabel'))
-      groups.slice(0, 100).forEach(function (gid) {
-        jumpButton(box, gid, function () { selectNode('g:' + gid) })
-      })
-      if (groups.length > 100) kvRow(box, '', t('moreLabel').replace('{n}', groups.length - 100))
-    }
+    memberSection(box, { kind: 'zone', id: cid })
   }
 
   function detailsGroup(box, gid) {
@@ -1434,14 +1525,10 @@
     if (zone) crumbs.appendChild(crumbButton(box, zoneTitle(zone), function () { selectNode('cat:' + zone) }))
     box.appendChild(crumbs)
     head(box, gid)
-    var members = state.graph.nodes.filter(function (n) { return n && n.id != null && gidOf(n) === gid })
-    members.sort(function (a, b) { return String(a.name) < String(b.name) ? -1 : String(a.name) > String(b.name) ? 1 : 0 })
-    kvRow(box, t('membersLabel'), members.length)
-    secTitle(box, t('membersLabel'))
-    members.slice(0, 100).forEach(function (m) {
-      jumpButton(box, shortName(m.name, m.kind) + (m.version && m.version !== '-' ? ' @' + m.version : ''), function () { revealNode(m) })
-    })
-    if (members.length > 100) kvRow(box, '', t('moreLabel').replace('{n}', members.length - 100))
+    // V2.3: the retired hand-rolled member loop (name-only rows, 100-cap, no
+    // scope/kind/unsat/broken signal) is now the shared memberSection — the same
+    // rows a zone shows, filtered to this group.
+    memberSection(box, { kind: 'group', id: gid })
   }
 
   function detailsEdge(box, id) {
@@ -1821,16 +1908,20 @@
       if (!prev) { syncFocusCtl(); return }
       focusNode(prev, state.focus.depth, prev)
     })
-    // V22b LOD segment control (自动 | 组级 | 包级): pinned tiers set the mode and
-    // apply immediately; 自动 re-decides from the CURRENT zoom (band → no change).
+    // V2.3 granularity segment (组级 | 包级): the segment value IS view.granularity.
+    // Two states, no zoom math, no third 「自动」 tier — and a junk data-seg cannot
+    // reach the model at all. Re-clicking the lit segment changes nothing (no
+    // pointless full rebuild). A tier switch is a STRUCTURAL change, so it repaints
+    // and refits like every other structural control: viewport-keeping belonged to
+    // the zoom-driven auto-LOD, which no longer exists.
     document.querySelectorAll('#lod-ctl button[data-seg]').forEach(function (b) {
       b.addEventListener('click', function () {
-        state.granMode = b.getAttribute('data-seg')
+        var seg = b.getAttribute('data-seg')
+        if (seg !== 'groups' && seg !== 'packages') return
+        if (seg === state.view.granularity) return
+        state.view.granularity = seg
         syncLodCtl()
-        var eff = decideGranularity(state.granMode, state.cy ? state.cy.zoom() : 1, LOD_T_IN, LOD_T_OUT)
-        if (eff === null || eff === state.view.granularity) return
-        state.view.granularity = eff
-        paint(false) // structural, but the reader is looking at THIS viewport
+        paint()
       })
     })
     syncLodCtl()
@@ -1928,9 +2019,8 @@
       state.view = freshView()
       state.focus = null
       state.selected = null
-      // V22b: a fresh load re-defaults the granularity segment to 自动 (and with
-      // it the LOD decision re-arms from the next zoom event).
-      state.granMode = 'auto'
+      // V2.3: a fresh load re-defaults the tier to 组级 — freshView() IS that reset
+      // (view.granularity is the tier, so there is no second mode to re-arm).
       state.pathStack = []
       state.viewport = null
     }

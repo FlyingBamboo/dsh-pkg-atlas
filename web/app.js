@@ -36,7 +36,11 @@
       scopeLabel: '类型', scopeAll: '全部', scopeOfficial: '官方', scopeThird: '第三方',
       profileLabel: 'Profile', profileAll: '全部', realCrossLabel: '真实跨包线',
       edgeKindsLabel: '边型',
-      focusLabel: '聚焦深度', focusUnlimited: '不限', focusOn: '聚焦上下游', focusOff: '取消聚焦',
+      focusLabel: '聚焦深度', focusUnlimited: '不限', focusOn: '聚焦上下游', focusOff: '退出路径',
+      backLabel: '返回',
+      lodAuto: '自动', lodGroups: '组级', lodPkgs: '包级', lodLabel: '显示粒度（自动=按缩放切换）',
+      peekDeps: '直接依赖', peekDependents: '直接被依赖', peekUnsat: '含未满足边', peekBroken: '断链包',
+      chipShowAll: '全部显示', chipHideAll: '全部隐藏',
       legendTitle: '图例', legendShapes: '节点形状', legendEdges: '边类型', legendFocus: '聚焦路径',
       shOfficial: '官方包', shThirdParty: '第三方包', shProfile: 'Profile', shBroken: '断链包',
       egDep: '依赖 dep', egMount: '挂载 mount', egPeer: '对等 peer',
@@ -58,7 +62,11 @@
       scopeLabel: 'scope', scopeAll: 'all', scopeOfficial: 'official', scopeThird: 'third-party',
       profileLabel: 'Profile', profileAll: 'all', realCrossLabel: 'real cross edges',
       edgeKindsLabel: 'edge kinds',
-      focusLabel: 'focus depth', focusUnlimited: 'unlimited', focusOn: 'focus paths', focusOff: 'clear focus',
+      focusLabel: 'focus depth', focusUnlimited: 'unlimited', focusOn: 'focus paths', focusOff: 'exit path',
+      backLabel: 'back',
+      lodAuto: 'auto', lodGroups: 'groups', lodPkgs: 'packages', lodLabel: 'display granularity (auto follows the zoom)',
+      peekDeps: 'depends', peekDependents: 'depended by', peekUnsat: 'unsatisfied edges', peekBroken: 'broken package',
+      chipShowAll: 'show all', chipHideAll: 'hide all',
       legendTitle: 'Legend', legendShapes: 'node shapes', legendEdges: 'edge kinds', legendFocus: 'focus paths',
       shOfficial: 'official pkg', shThirdParty: 'third-party', shProfile: 'profile', shBroken: 'broken',
       egDep: 'depends dep', egMount: 'mount', egPeer: 'peer',
@@ -120,8 +128,24 @@
     dark: { down: '#f59e0b', up: '#22d3ee', both: '#ec4899' },
   }
   // Path lists are unbounded in depth (R35: 完整路径列表); the row COUNT is
-  // capped like the retired dep blocks were (same +N 更多 tail).
+  // capped like the retired dep blocks were (same +N 更多 tail). V22b caps it
+  // PER LAYER tier (see groupRowsByDist/tierBlock).
   var PATH_ROW_CAP = 60
+
+  // V22b LOD (auto granularity): zoom must reach T_IN to expand to packages and
+  // drop below T_OUT to collapse back — the band in between is DEAD ZONE and
+  // keeps the current effective tier (hysteresis, so scrolling near a threshold
+  // never flaps the layout). 120ms debounce keeps the repaint off the wheel.
+  var LOD_T_IN = 1.5
+  var LOD_T_OUT = 1.3
+  var LOD_DEBOUNCE_MS = 120
+  var WHEEL_SENS = 2.5         // cytoscape CORE OPTION (not a style property)
+  // Hover peek: a 250ms dwell keeps fly-over gestures silent.
+  var PEEK_DEBOUNCE_MS = 250
+  var PEEK_DESC_CAP = 140
+  // Path-mode back stack + breadcrumb.
+  var PATH_STACK_CAP = 20
+  var CRUMB_MAX = 4
 
   // ---------- state (brief Interfaces) ----------
   var state = {
@@ -131,13 +155,23 @@
     loading: false, // a graph fetch (+ its status poll) is in flight
     // AtlasModel `view` input. Defaults = the model defaults: every group collapsed
     // (collapsedGroups null), no zone excluded, all scopes/profiles/edge kinds pass.
+    // V22b: `granularity` carries the EFFECTIVE tier (the segment control below is
+    // the MODE); `focus` is mirrored from state.focus inside paint() — the model
+    // turns it into the path-mode subgraph (V2.2a).
     view: {
       collapsedCats: new Set(), collapsedGroups: null,
       filterCats: new Set(), filterScope: 'all', filterProfile: null,
       edgeKinds: null, showRealCross: false,
+      granularity: 'groups', focus: null,
     },
+    // V22b granularity segment: 'auto' (the shipped default) | 'groups' | 'packages'.
+    granMode: 'auto',
     focus: null,   // null | {rootId, depth}  (R35: depth null = unlimited — the
                    // default; 1-3 via #focus-depth. Only kind=package nodes are roots.)
+    // V22b path-mode back stack (walk history, newest last, cap PATH_STACK_CAP),
+    // the viewport snapshot taken at ENTRY (deep copy — cytoscape's pan() object
+    // is live), and the one-shot restore arm for the exit animation.
+    pathStack: [], viewport: null, restore: false,
     selected: null,
   }
 
@@ -160,84 +194,225 @@
     return v >= 1 ? Math.min(3, v) : null
   }
 
+  // R35/R36 pathSets: the V2.2a-era duplicate lived here; AtlasModel.pathSets is
+  // the canonical implementation since V2.2a and this file now CONSUMES it
+  // (applyClasses / focusNode / detailsNode). The V21 semantics suite runs
+  // against the model export (render-smoke loadAppPure bridges it in-realm);
+  // the consumption + no-copy guard is pinned there and in graph-model V22-00.
+
   /**
-   * pathSets(graph, rootId, depth) →
-   *   { rootId, down:Set, up:Set, both:Set, downEdges:Set, upEdges:Set }
-   *
-   * R35/R36: the two directed path universes of one package, computed over the
-   * REAL scan edges (graph.edges `{from,to,kind[,unsatisfied]}`) — never over the
-   * rendered aggregates, which depend on the current collapse state.
-   *  - down: BFS over OUT-edges whose kind DOWN_EDGE_KINDS allows.
-   *  - up:   BFS over IN-edges whose kind UP_EDGE_KINDS allows (mount included,
-   *          traversed backwards → a member climbs to its bundle and on to
-   *          `profile:<name>` without special-casing).
-   *  - both: down ∩ up (cycle members).
-   * The root is in NONE of the three sets: it always paints `selected`.
-   * `depth` (normalizeDepth) limits the layers of EACH direction independently;
-   * null is unlimited. Cycle-safe via the visited set.
-   * Edge sets follow the INDUCED rule: the kind must be one this direction
-   * traverses AND both endpoints must sit in (that set ∪ root) — so an edge
-   * between two lit nodes with the wrong kind stays dark, and an edge that leaves
-   * the set stays dark. An edge present in BOTH sets paints with the `both`
-   * color. Edge keys are 'e:<from>|<to>|<kind>', AtlasModel's own real-cross edge
-   * id, so a rendered real edge carries the key verbatim.
-   * Deterministic (Sets built in graph.edges order, never hash order), defensive
-   * (malformed edges skipped, junk inputs → empty sets) and side-effect free:
-   * graph (and any view) is never written.
+   * decideGranularity(mode, zoom, T_IN, T_OUT) → 'packages' | 'groups' | null
+   * (V22b LOD). `mode` is the top-bar SEGMENT value:
+   *  - 'groups' / 'packages' are PINNED tiers: pass through, zoom is ignored.
+   *  - anything else is the auto tier: zoom >= T_IN → 'packages', zoom < T_OUT →
+   *    'groups', INSIDE the band [T_OUT, T_IN) → null = KEEP the current
+   *    effective granularity (the hysteresis is the whole point: null is not
+   *    "no answer", it is "no change"). Junk zoom reads as fully zoomed-out.
    */
-  function pathSets(graph, rootId, depth) {
-    var g = graph || {}
-    var list = Array.isArray(g.edges) ? g.edges : []
-    var root = String(rootId == null ? '' : rootId)
-    var max = normalizeDepth(depth)
-    var clean = [], out = new Map(), inc = new Map()
-    for (var i = 0; i < list.length; i++) {
-      var e = list[i]
-      if (!e || e.from == null || e.to == null) continue
-      var from = String(e.from), to = String(e.to), kind = String(e.kind)
-      clean.push({ from: from, to: to, kind: kind })
-      var ix = clean.length - 1
-      var la = out.get(from); if (!la) { la = []; out.set(from, la) }
-      la.push(ix)
-      var lb = inc.get(to); if (!lb) { lb = []; inc.set(to, lb) }
-      lb.push(ix)
-    }
-    function walk(adjacent, kinds, outward) {
-      var seen = new Set([root])
-      var frontier = [root]
-      for (var layer = 1; frontier.length && (max === null || layer <= max); layer++) {
-        var next = []
-        for (var f = 0; f < frontier.length; f++) {
-          var links = adjacent.get(frontier[f])
-          if (!links) continue
-          for (var k = 0; k < links.length; k++) {
-            var ce = clean[links[k]]
-            if (kinds.indexOf(ce.kind) < 0) continue
-            var other = outward ? ce.to : ce.from
-            if (seen.has(other)) continue
-            seen.add(other); next.push(other)
-          }
-        }
-        frontier = next
-      }
-      seen.delete(root)
-      return seen
-    }
-    var down = walk(out, DOWN_EDGE_KINDS, true)
-    var up = walk(inc, UP_EDGE_KINDS, false)
-    var both = new Set()
-    down.forEach(function (id) { if (up.has(id)) both.add(id) })
-    var downSide = new Set(down); downSide.add(root)
-    var upSide = new Set(up); upSide.add(root)
-    var downEdges = new Set(), upEdges = new Set()
-    for (var j = 0; j < clean.length; j++) {
-      var ce2 = clean[j]
-      var key = 'e:' + ce2.from + '|' + ce2.to + '|' + ce2.kind
-      if (DOWN_EDGE_KINDS.indexOf(ce2.kind) >= 0 && downSide.has(ce2.from) && downSide.has(ce2.to)) downEdges.add(key)
-      if (UP_EDGE_KINDS.indexOf(ce2.kind) >= 0 && upSide.has(ce2.from) && upSide.has(ce2.to)) upEdges.add(key)
-    }
-    return { rootId: root, down: down, up: up, both: both, downEdges: downEdges, upEdges: upEdges }
+  function decideGranularity(mode, zoom, T_IN, T_OUT) {
+    if (mode === 'groups' || mode === 'packages') return mode
+    var tin = typeof T_IN === 'number' && isFinite(T_IN) ? T_IN : LOD_T_IN
+    var tout = typeof T_OUT === 'number' && isFinite(T_OUT) ? T_OUT : LOD_T_OUT
+    var z = typeof zoom === 'number' && isFinite(zoom) ? zoom : 0
+    if (z >= tin) return 'packages'
+    if (z < tout) return 'groups'
+    return null
   }
+
+  /**
+   * catTitle(categories, catId, lang) → localized zone title, raw id fallback.
+   * Same resolution the state-level zoneTitle() wrapper applies (declared
+   * graph.categories entry; zh picks .zh, en picks .en, each falls back to the
+   * other, then to the id). Pure so the peek card can resolve titles without a
+   * state closure.
+   */
+  function catTitle(categories, catId, lang) {
+    var cats = Array.isArray(categories) ? categories : []
+    var want = String(catId == null ? 'ungrouped' : catId)
+    for (var i = 0; i < cats.length; i++) {
+      var c = cats[i]
+      if (!c || c.id == null || String(c.id) !== want) continue
+      var zh = c.zh == null ? null : String(c.zh)
+      var en = c.en == null ? null : String(c.en)
+      return (lang === 'zh' ? (zh || en) : (en || zh)) || want
+    }
+    return want
+  }
+
+  /**
+   * groupZoneOf(graph, gid) → the zone a group renders in, derived EXACTLY like
+   * AtlasModel.computeZoneMapping: declared groups[].category wins, else the
+   * first member node carrying a category, else 'ungrouped'.
+   */
+  function groupZoneOf(graph, gid) {
+    var g = graph || {}
+    var want = String(gid == null ? '' : gid)
+    var gs = Array.isArray(g.groups) ? g.groups : []
+    for (var i = 0; i < gs.length; i++) {
+      if (gs[i] && String(gs[i].id) === want) {
+        if (gs[i].category) return String(gs[i].category)
+        break
+      }
+    }
+    var ns = Array.isArray(g.nodes) ? g.nodes : []
+    for (var j = 0; j < ns.length; j++) {
+      var n = ns[j]
+      if (!n) continue
+      var ng = n.group == null ? 'ungrouped' : String(n.group)
+      if (ng === want && n.category) return String(n.category)
+    }
+    return 'ungrouped'
+  }
+
+  /**
+   * buildPeekCard(n, graph, byId, lang) → the hover-peek DATA object (V22b).
+   * `n` is the RENDERED element descriptor {id, kind, name, count} (kind is the
+   * cytoscape data.kind: 'zone' | 'group' | 'pkg' | 'profile'); graph supplies
+   * categories/edges, byId the graph node behind a package id. Returns
+   *   { kind, title, version, zone, group, desc, descCut,
+   *     deps, dependents, unsat, broken, members }
+   * with nulls marking rows the renderer must skip. Counts follow the R35 path
+   * algebra, not raw edge arithmetic: `deps` = DISTINCT packages reached by this
+   * node's OUT dep/peer/peer-optional edges (mount is not a dependency),
+   * `dependents` = DISTINCT sources of its IN edges of ALL kinds (mount counts —
+   * a bundle is depended-on through its mounts), self-loops never count, and two
+   * kinds on one pair count once. `unsat` = any direct edge (any kind, either
+   * direction) is unsatisfied. Names/versions/descriptions ride VERBATIM — the
+   * renderer writes them with escText (peek text is attacker-controlled data).
+   */
+  function buildPeekCard(n, graph, byId, lang) {
+    var g = graph || {}
+    var data = n || {}
+    var id = String(data.id == null ? '' : data.id)
+    var kind = String(data.kind == null ? '' : data.kind)
+    var out = {
+      kind: kind, title: String(data.name == null ? id : data.name), version: null,
+      zone: null, group: null, desc: null, descCut: false,
+      deps: null, dependents: null, unsat: false, broken: false, members: null,
+    }
+    if (kind === 'zone' || kind === 'group') {
+      out.zone = kind === 'zone'
+        ? catTitle(g.categories, data.name, lang)
+        : catTitle(g.categories, groupZoneOf(g, data.name), lang)
+      if (kind === 'zone') out.title = out.zone
+      else out.group = out.title
+      if (typeof data.count === 'number' && isFinite(data.count)) out.members = data.count
+      return out
+    }
+    var node = byId && typeof byId.get === 'function' ? byId.get(id) : null
+    if (node) {
+      out.title = String(node.name == null ? id : node.name)
+      out.version = node.version == null ? null : String(node.version)
+      out.group = node.group == null ? null : String(node.group)
+      out.zone = catTitle(g.categories, groupZoneOf(g, out.group == null ? 'ungrouped' : out.group), lang)
+      out.broken = String(node.kind) === 'broken'
+      if (node.description != null) {
+        var d = String(node.description)
+        var cap = typeof PEEK_DESC_CAP === 'number' ? PEEK_DESC_CAP : 140
+        if (d.length > cap) { d = d.slice(0, cap); out.descCut = true }
+        out.desc = d
+      }
+    }
+    var edges = Array.isArray(g.edges) ? g.edges : []
+    var deps = 0, ups = 0
+    var seenDown = new Set(), seenUp = new Set()
+    for (var i = 0; i < edges.length; i++) {
+      var e = edges[i]
+      if (!e || e.from == null || e.to == null || e.kind == null) continue
+      var from = String(e.from), to = String(e.to), k = String(e.kind)
+      if (from === to) continue // a package never (peeks at) depending on itself
+      if (e.unsatisfied && (from === id || to === id)) out.unsat = true
+      if (from === id) {
+        if (DOWN_EDGE_KINDS.indexOf(k) < 0) continue
+        if (!seenDown.has(to)) { seenDown.add(to); deps++ }
+      } else if (to === id) {
+        if (UP_EDGE_KINDS.indexOf(k) < 0) continue
+        if (!seenUp.has(from)) { seenUp.add(from); ups++ }
+      }
+    }
+    out.deps = deps
+    out.dependents = ups
+    return out
+  }
+
+  /**
+   * pushPathStack(stack, id, cap) → NEW array (V22b path-mode back stack).
+   * Consecutive same-root entries dedupe (walking a→b→a must not stack 'a'
+   * twice), the newest entry rides the tail, and the cap drops from the HEAD
+   * (oldest walk history dies first). null/undefined ids never enter.
+   */
+  function pushPathStack(stack, id, cap) {
+    var out = Array.isArray(stack) ? stack.slice() : []
+    if (id == null) return out
+    var s = String(id)
+    if (out.length && out[out.length - 1] === s) return out
+    out.push(s)
+    var max = typeof cap === 'number' && cap > 0 ? cap : PATH_STACK_CAP
+    while (out.length > max) out.shift()
+    return out
+  }
+
+  /**
+   * pathChainText(labels, sep) → breadcrumb chain text (V22b).
+   * `labels` arrives oldest-first with the CURRENT root last. At most CRUMB_MAX
+   * entries are shown; longer chains collapse to '… → newest…' (tail survives —
+   * the entries the user walked to most recently are the interesting ones).
+   */
+  function pathChainText(labels, sep) {
+    if (!Array.isArray(labels)) return ''
+    var ls = []
+    for (var i = 0; i < labels.length; i++) {
+      if (labels[i] != null && labels[i] !== '') ls.push(String(labels[i]))
+    }
+    if (!ls.length) return ''
+    var joiner = sep == null ? ' → ' : String(sep)
+    var cap = typeof CRUMB_MAX === 'number' ? CRUMB_MAX : 4
+    if (ls.length <= cap) return ls.join(joiner)
+    return '…' + joiner + ls.slice(ls.length - cap).join(joiner)
+  }
+
+  /**
+   * groupRowsByDist(rows) → [{dist, rows[]}] ascending (V22b tiered lists).
+   * Input order (buildPathLists: name asc) survives INSIDE a tier; out-of-order
+   * input still segments ascending (defensive). Rows without a numeric dist land
+   * in tier 0 (never produced by buildPathLists — mount rows never reach this).
+   */
+  function groupRowsByDist(rows) {
+    var out = []
+    if (!Array.isArray(rows) || !rows.length) return out
+    var map = new Map()
+    rows.forEach(function (r) {
+      var d = r && typeof r.dist === 'number' ? r.dist : 0
+      var t = map.get(d)
+      if (!t) { t = { dist: d, rows: [] }; map.set(d, t) }
+      t.rows.push(r)
+    })
+    Array.from(map.keys()).sort(function (a, b) { return a - b })
+      .forEach(function (d) { out.push(map.get(d)) })
+    return out
+  }
+
+  /**
+   * Chip state predicates (V22b): filterCats is the EXCLUDE set (R32 semantics
+   * survive every new gesture). soloToggleFor: a chip's dblclick hides every
+   * OTHER category; performing it again while already soloed restores all.
+   * hideAllCats/showAllCats drive the two row-tail buttons.
+   */
+  function soloToggleFor(allCats, current, id) {
+    var all = Array.isArray(allCats) ? allCats.map(String) : []
+    var cur = current && typeof current.has === 'function' ? current : new Set()
+    var s = String(id)
+    var solo = new Set()
+    all.forEach(function (c) { if (c !== s) solo.add(c) })
+    var already = !cur.has(s)
+    solo.forEach(function (c) { if (!cur.has(c)) already = false })
+    return already ? new Set() : solo
+  }
+  function hideAllCats(allCats) {
+    var all = Array.isArray(allCats) ? allCats.map(String) : []
+    return new Set(all)
+  }
+  function showAllCats() { return new Set() }
 
   /**
    * buildPathLists(sets, graph, byId) → { down: Row[], up: Row[] }
@@ -483,6 +658,12 @@
     Object.keys(gk).forEach(function (kind) {
       st.push({ selector: 'node.group.gk-' + kind, style: { 'background-color': gk[kind][0], 'border-color': gk[kind][1] } })
     })
+    // V22b ctx: in a path-mode view the member ancestors (zones + group frames)
+    // render as CONTEXT — a dashed, strongly faded outline that stays locatable
+    // without competing with the lit members inside it. Model rule: only zones
+    // and group containers carry `ctx` in a focus view, members never; the
+    // fit-to-path logic (pathFitEles) keys off that same shape.
+    st.push({ selector: 'node.ctx', style: { 'border-style': 'dashed', 'background-opacity': 0.05 } })
 
     // ---- packages: shape mapping R29 (ellipse/hexagon/rectangle/diamond) ----
     // classes from AtlasModel: pkg sk-<node.kind> sc-<node.scope>
@@ -546,6 +727,14 @@
     st.push({ selector: 'edge.f-e-down', style: { 'line-color': fc.down, 'target-arrow-color': fc.down } })
     st.push({ selector: 'edge.f-e-up', style: { 'line-color': fc.up, 'target-arrow-color': fc.up } })
     st.push({ selector: 'edge.f-e-both', style: { 'line-color': fc.both, 'target-arrow-color': fc.both } })
+    // V22b ek-off: the model's focus view keeps ALL induced edges (V2.2a data-
+    // layer ruling — edgeKinds is a UI intent, not a path fact), so the user's
+    // edge-kind filter is enforced UI-side: applyClasses tags a focused edge
+    // whose kind is unchecked. LAST so display:none beats every color/width rule
+    // (and it is NOT .dim: the kind filter hides, the focus never fades).
+    // display:none on edges is valid in this frozen dist (pinned by the V22b
+    // dist-validity test — 'none' is the enum default, the dist rejects others).
+    st.push({ selector: 'edge.ek-off', style: { display: 'none' } })
     return st
   }
 
@@ -555,11 +744,13 @@
   function paint(refit) {
     if (!state.graph) return // static chrome binds at boot; ignore interaction until first load
     if (state.tableMode) { renderTable(); return }
+    hidePeek() // the elements under a live peek are about to be destroyed
+    state.view.focus = state.focus // THE single place focus flows into the model (V22b)
     try {
       if (!state.cy) {
         if (typeof window.cytoscape !== 'function') throw new Error('cytoscape missing')
         if (!window.AtlasModel || typeof window.AtlasModel.buildView !== 'function') throw new Error('AtlasModel missing')
-        state.cy = window.cytoscape({ container: document.getElementById('graph'), elements: [], wheelSensitivity: 0.2 })
+        state.cy = window.cytoscape({ container: document.getElementById('graph'), elements: [], wheelSensitivity: WHEEL_SENS })
         bindCy()
       }
       var built = window.AtlasModel.buildView(state.graph, state.view)
@@ -584,7 +775,15 @@
       state.cy.add(cyEls)
       state.cy.style(styleFor(state.theme))
       applyClasses()
-      if (refit !== false) state.cy.fit(undefined, 24)
+      if (refit !== false) {
+        // V22b: meta.focus is THREE-STATE (absent = never requested | null =
+        // requested but fell back | object = the path subgraph is what renders).
+        // Only an ACTIVE path view refits to the path: the ctx zone/group frames
+        // span whole layout rows and would shrink the path into a corner.
+        var focusApplied = built.meta && built.meta.focus && typeof built.meta.focus === 'object'
+        if (focusApplied) state.cy.fit(pathFitEles(state.cy), 40)
+        else state.cy.fit(undefined, 24)
+      }
     } catch (err) {
       console.warn('atlas graph render failed, using table fallback', err)
       state.tableMode = true
@@ -596,7 +795,8 @@
   }
 
   // focus/selected classes — the ONLY element mutation inside paint's tail.
-  // V21: the sets come from the PURE pathSets() over the REAL graph.edges (not
+  // V21: the sets come from AtlasModel.pathSets (canonical since V2.2a; the app
+  // copy was deleted in V22b) over the REAL graph.edges (not
   // the rendered aggregate edges — those depend on the current collapse state and
   // would make focus collapse-dependent). Each hit maps onto whatever actually
   // renders: the pkg node itself, else its group card, else its zone shell; the
@@ -616,9 +816,14 @@
   function applyClasses() {
     var cy = state.cy
     if (!cy) return
-    cy.elements().removeClass('dim in-focus selected f-down f-up f-both f-e-down f-e-up f-e-both')
+    cy.elements().removeClass('dim in-focus selected f-down f-up f-both f-e-down f-e-up f-e-both ek-off')
     if (state.focus) {
-      var sets = pathSets(state.graph, state.focus.rootId, state.focus.depth)
+      var sets = AtlasModel.pathSets(state.graph, state.focus.rootId, state.focus.depth)
+      // V22b: the model's focus view ignores edgeKinds (data-layer ruling), so
+      // the user's kind filter is a UI-layer tag: ek-off → display:none. Never
+      // .dim — hiding a kind and fading a non-member are different statements.
+      var ek = state.view && state.view.edgeKinds
+      var ekHide = !!(ek && typeof ek.has === 'function')
       var rootRid = renderIdOf(String(state.focus.rootId))
       var keep = new Set()
       var dirOf = new Map() // rendered id -> { down, up }
@@ -656,6 +861,7 @@
         else if (f.up) el.addClass('f-up')
       })
       cy.edges().forEach(function (el) {
+        if (ekHide && !ek.has(String(el.data('kind')))) el.addClass('ek-off')
         var src = el.data('source'), tgt = el.data('target')
         if (!keep.has(src) || !keep.has(tgt)) { el.addClass('dim'); return }
         el.addClass('in-focus')
@@ -694,28 +900,65 @@
     }
   }
 
-  // ---------- interaction (V5 Step 2 + V6 selection/focus) ----------
+  // ---------- interaction (V5 Step 2 + V6 selection/focus + V22b path mode) ----------
   function bindCy() {
     var cy = state.cy
+    var zoomTimer = 0
+    var peekTimer = 0
+    // V22b LOD: debounced (120ms) zoom ticks drive the AUTO segment; only an
+    // EFFECTIVE change repaints, and the repaint is viewport-KEEPING. Focus mode
+    // suspends the whole mechanism (the model ignores granularity in a path view;
+    // re-deciding mid-path would re-cut the structure under the reader's eyes).
+    // Pinned tiers pass through decideGranularity and string-compare to no-op.
+    cy.on('zoom', function () {
+      hidePeek()
+      clearTimeout(zoomTimer)
+      zoomTimer = setTimeout(function () {
+        if (state.focus || state.granMode !== 'auto') return
+        var eff = decideGranularity(state.granMode, state.cy.zoom(), LOD_T_IN, LOD_T_OUT)
+        if (eff === null || eff === state.view.granularity) return
+        state.view.granularity = eff
+        paint(false)
+      }, LOD_DEBOUNCE_MS)
+    })
+    // V22b hover peek: dwell 250ms on ANY node (member, card, zone) → the one
+    // reusable card. pan/zoom/click/leave close it instantly.
+    cy.on('pan', hidePeek)
+    cy.on('dblclick', 'node', hidePeek)
+    cy.on('mouseover', 'node', function (evt) {
+      var target = evt.target
+      clearTimeout(peekTimer)
+      peekTimer = setTimeout(function () { showPeek(target) }, PEEK_DEBOUNCE_MS)
+    })
+    cy.on('mouseout', 'node', hidePeek)
     // double-click zone shell → toggle zone collapse. Zone data.name IS the raw
     // category id (contract); the label is the localized title (V5-M-5).
     // cytoscape bubbles child events to ancestor-matched handlers with the front
     // element kept in evt.target — only act when the FRONT element is the zone.
+    // V22b: a live path owns the view — collapsedCats would only bite AFTER the
+    // exit (a surprise layout change), so zone dbl-click is inert inside a path.
     cy.on('dbltap', 'node.zone', function (evt) {
       if (!evt.target.hasClass('zone')) return
+      if (state.focus) return
       var cid = evt.target.data('name')
       state.view.collapsedCats.has(cid) ? state.view.collapsedCats.delete(cid) : state.view.collapsedCats.add(cid)
       paint()
     })
     // double-click group card → toggle that group. collapsedGroups defaults to
     // null = ALL collapsed, so materialize the full set on the first flip.
+    // V22b: manual collapse only makes sense on the PINNED groups tier — in auto
+    // or packages mode the zoom decides the granularity, and dbl-click is a
+    // documented no-op there (README). Inert inside a path (same reasoning).
     cy.on('dbltap', 'node.group', function (evt) {
       if (!evt.target.hasClass('group')) return
+      if (state.granMode !== 'groups' || state.focus) return
       toggleGroup(String(evt.target.data('id')).replace(/^g:/, ''))
     })
-    // single click → selection + details panel (V6 Step 4)
-    cy.on('tap', 'node, edge', function (evt) { selectNode(evt.target.id()) })
-    cy.on('tap', function (evt) { if (evt.target === cy) selectNode(null) })
+    // single click → selection + details panel (V6 Step 4); V22b adds the path-
+    // mode walk/entry/exit flow and closes any peek (a click means the reader
+    // moved on — and the click's repaint would destroy the peeked element).
+    cy.on('tap', 'node, edge', function (evt) { hidePeek(); selectNode(evt.target.id()) })
+    cy.on('tap', function (evt) { if (evt.target === cy) { hidePeek(); selectNode(null) } })
   }
   function toggleGroup(gid) {
     if (!state.view.collapsedGroups) state.view.collapsedGroups = new Set(state.groupIds)
@@ -741,12 +984,54 @@
     }
     return isFocusRoot(s) ? { rootId: s, depth: depthOfCtl() } : null
   }
-  function selectNode(id) {
+  // V22b path mode — the ENTRY/WALK/EXIT decision for one selection. Every
+  // path-structure mutation flows through here (tap handlers) so the semantics
+  // stay in one place:
+  //   entry (plain → package): snapshot the live viewport ONCE, stack resets.
+  //   walk  (package → other package): the PREVIOUS root goes onto the back
+  //         stack (pushPathStack dedupes consecutive repeats, caps at 20).
+  //   exit  (package → blank/non-package): exitFocus() clears focus + stack and
+  //         arms the viewport restore; the CALLER paints(false) then
+  //         restoreViewport() animates the snapshot back.
+  // Returns {entered, walked, exited} so the caller can pick the animation.
+  function focusFlowAction(id) {
+    var prev = state.focus
     state.selected = id
     state.focus = focusForId(id)
+    var next = state.focus
+    if (prev && next) {
+      if (next.rootId !== prev.rootId) state.pathStack = pushPathStack(state.pathStack, prev.rootId)
+      return { entered: false, walked: next.rootId !== prev.rootId, exited: false }
+    }
+    if (next) {
+      state.pathStack = []
+      snapshotViewport()
+      return { entered: true, walked: false, exited: false }
+    }
+    if (prev) {
+      exitFocus()
+      return { entered: false, walked: false, exited: true }
+    }
+    return { entered: false, walked: false, exited: false }
+  }
+  // Exit half, shared by blank-tap, the Esc key and the 退出路径 button: focus
+  // gone, stack gone, and IF an entry snapshot exists it is armed for exactly
+  // one animate-back (restoreViewport spends both flags).
+  function exitFocus() {
+    state.focus = null
+    state.pathStack = []
+    state.restore = !!state.viewport
+    state.viewport = null
+  }
+  function selectNode(id) {
+    var act = focusFlowAction(id)
     renderDetails(id)
     syncFocusCtl()
     paint(false) // selection/focus-only repaint: keep the viewport
+    // V22b: entering/walking glides the camera onto the new path (cy.animate —
+    // the only viewport-animation API this app uses); exiting glides back.
+    if (act.entered || act.walked) animateFitPath()
+    else if (act.exited) restoreViewport()
   }
   // Expand the view so `n` renders: its zone un-collapsed AND un-filtered, its
   // group un-collapsed. (view mutations only — paint() renders the result.)
@@ -760,9 +1045,20 @@
   }
   function revealNode(n) {
     if (!n) return
+    var was = !!state.focus
     expandPath(n)
     state.selected = n.id
     state.focus = focusForId(n.id) // search reveal selects → R35 focus follows
+    // V22b: a REVEAL re-roots authoritatively (search/deep-link), it is not a
+    // walk — the back stack restarts; the viewport snapshot is only taken when
+    // this reveal is itself the entry into path mode.
+    if (state.focus) {
+      state.pathStack = []
+      if (!was) snapshotViewport()
+    } else if (was) {
+      exitFocus()
+      state.restore = false // the full refit below is the exit; no glide on top
+    }
     paint()
     renderDetails(n.id)
     syncFocusCtl()
@@ -784,21 +1080,57 @@
   // V6 Step 3 / V21 R35: structural focus reveal — expand the ROOT and every
   // path member's ancestors, repaint (applyClasses writes the f-* classes), then
   // pan+zoom + 1.2s flash on the root. Reached from the details 聚焦 button, the
-  // depth slider and the #node= deep link; a plain tap focuses through
-  // selectNode() without expanding anything (the tapped node is visible already).
+  // depth slider, the breadcrumb 返回 button and the #node= deep link; a plain
+  // tap focuses through selectNode()/focusFlowAction() without expanding anything
+  // (the tapped node is visible already). focusNode is an AUTHORITATIVE re-root:
+  // it never touches pathStack (the depth slider re-cuts IN PLACE, keeping the
+  // walk history), and it snapshots the viewport only when it IS the entry.
   function focusNode(rootId, depth, selectId) {
     var d = normalizeDepth(depth)
+    if (!state.focus) snapshotViewport()
     state.focus = { rootId: rootId, depth: d }
-    var sets = pathSets(state.graph, rootId, d)
+    var sets = AtlasModel.pathSets(state.graph, rootId, d)
     var rn = state.byId.get(String(rootId))
     if (rn) expandPath(rn)
     sets.down.forEach(function (id) { var n = state.byId.get(id); if (n) expandPath(n) })
     sets.up.forEach(function (id) { var n = state.byId.get(id); if (n) expandPath(n) })
     if (selectId) state.selected = selectId
-    paint()
+    paint() // focus-active refit inside paint: fits the path members (no ctx padding)
     syncFocusCtl()
     if (selectId) renderDetails(selectId)
     if (selectId) flashReveal(selectId)
+  }
+  // ---------- V22b viewport snapshots + path fit (cy.animate ONLY) ----------
+  // cytoscape's pan() hands back a LIVE object — the snapshot deep-copies.
+  function snapshotViewport() {
+    var cy = state.cy
+    if (!cy) { state.viewport = null; return }
+    var pan = cy.pan()
+    state.viewport = { zoom: cy.zoom(), pan: { x: pan.x, y: pan.y } }
+  }
+  function restoreViewport() {
+    var cy = state.cy
+    state.restore = false // one-shot: armed by exitFocus, spent here once
+    if (!cy || !state.viewport || state.tableMode) { state.viewport = null; return }
+    cy.animate({ zoom: state.viewport.zoom, pan: state.viewport.pan, duration: 250 })
+    state.viewport = null
+  }
+  // The path-fit selection: ONLY package/profile members take part in the fit
+  // bbox. ctx is exactly the zone/group shape (model rule), so kind ∈ {pkg,
+  // profile} excludes every context frame — the members fill the screen with
+  // sane padding instead of shrinking inside their zone outlines.
+  function pathFitEles(cy) {
+    return cy.nodes().filter(function (n) {
+      var k = n.data('kind')
+      return k === 'pkg' || k === 'profile'
+    })
+  }
+  function animateFitPath() {
+    var cy = state.cy
+    if (!cy || state.tableMode || !state.focus) return
+    var eles = pathFitEles(cy)
+    if (!eles.length) return
+    cy.animate({ fit: { eles: eles, padded: true }, duration: 250 })
   }
   function depthOfCtl() {
     var s = document.getElementById('focus-depth')
@@ -813,6 +1145,135 @@
     ctl.hidden = !state.focus
     var sel = document.getElementById('focus-depth')
     if (state.focus && sel) sel.value = String(state.focus.depth == null ? 0 : state.focus.depth)
+    // V22b breadcrumb: 「← 返回 (a → b → 当前)」 rides the pathStack; hidden
+    // with 0 history (nowhere to go back to). Truncation is pathChainText's.
+    var back = document.getElementById('path-back')
+    if (back) {
+      if (state.focus && state.pathStack && state.pathStack.length) {
+        back.hidden = false
+        escText(back, '← ' + t('backLabel') + ' (' +
+          pathChainText(state.pathStack.map(idToLabel).concat(idToLabel(state.focus.rootId))) + ')')
+      } else back.hidden = true
+    }
+  }
+  // V22b LOD segment: mark the active tier (auto/groups/packages).
+  function syncLodCtl() {
+    document.querySelectorAll('#lod-ctl button[data-seg]').forEach(function (b) {
+      b.classList.toggle('on', b.getAttribute('data-seg') === state.granMode)
+    })
+  }
+
+  // ---------- V22b global Esc (order per brief) ----------
+  // 1. open search results → close ONLY those (also from inside the input — the
+  //    one Esc semantics an input keeps). 2. typing anywhere else → hands-off.
+  // 3. live path → exit through the SAME exitFocus path as the button.
+  // 4. else no-op.
+  function onGlobalKey(e) {
+    if (!e || e.key !== 'Escape') return
+    var box = document.getElementById('search-results')
+    if (box && !box.hidden) { box.hidden = true; return }
+    var tg = e.target
+    var tag = tg && tg.tagName ? String(tg.tagName).toLowerCase() : ''
+    if (tag === 'input' || tag === 'textarea' || tag === 'select' || (tg && tg.isContentEditable === true)) return
+    if (state.focus) {
+      exitFocus()
+      renderDetails(state.selected)
+      syncFocusCtl()
+      paint(false)
+      restoreViewport()
+    }
+  }
+
+  // ---------- V22b hover peek card ----------
+  // ONE reusable div inside #graph (created on first hover, never rebuilt per
+  // hover), absolutely positioned from the element's RENDERED bbox (zoom/pan
+  // already baked in) with edge flips, pointer-events:none (style.css) so the
+  // card cannot generate its own mouseout/mouseover flicker loop. All text goes
+  // through escText — peek content is attacker-influenced (third-party names,
+  // descriptions, even zone labels).
+  function hidePeek() {
+    var card = document.getElementById('peek-card')
+    if (card) card.hidden = true
+  }
+  function peekCard() {
+    var card = document.getElementById('peek-card')
+    if (!card) {
+      var cont = document.getElementById('graph')
+      if (!cont) return null
+      card = document.createElement('div')
+      card.id = 'peek-card'
+      card.hidden = true
+      cont.appendChild(card)
+    }
+    return card
+  }
+  function showPeek(el) {
+    if (!el || !state.graph || state.tableMode) return
+    if (el.removed && el.removed()) return // the debounced fire raced a repaint
+    var card = peekCard()
+    if (!card) return
+    var p = buildPeekCard({
+      id: el.id(), kind: el.data('kind'), name: el.data('name'), count: el.data('count'),
+    }, state.graph, state.byId, state.lang)
+    renderPeek(card, p)
+    positionPeek(card, el)
+  }
+  function positionPeek(card, el) {
+    var cont = document.getElementById('graph')
+    card.hidden = false
+    if (!cont) return
+    var cw = cont.clientWidth || 0, chh = cont.clientHeight || 0
+    var bb = null
+    try { bb = el.renderedBoundingBox({ includeLabels: true, includeOverlays: false }) } catch (e) { bb = null }
+    if (!bb || !isFinite(bb.x1) || !isFinite(bb.y1)) return
+    var w = card.offsetWidth || 220, h = card.offsetHeight || 64
+    var x = bb.x2 + 10, y = bb.y2 + 10
+    if (x + w > cw) x = bb.x1 - w - 10 // flip left of the node
+    if (x < 2) x = 2
+    if (y + h > chh) y = bb.y1 - h - 10 // flip above the node
+    if (y < 2) y = 2
+    card.style.left = x + 'px'
+    card.style.top = y + 'px'
+  }
+  // renderPeek LAST on purpose: the XSS guard slices showPeek→positionPeek and
+  // asserts NO DOM creation happens there (the card is reused; row divs are
+  // (re)written here, every string via escText).
+  function renderPeek(card, p) {
+    card.textContent = ''
+    var t1 = document.createElement('div'); t1.className = 'pk-title'
+    escText(t1, p.title + (p.version && p.version !== '-' ? '@' + p.version : ''))
+    card.appendChild(t1)
+    var subBits = []
+    if (p.zone) subBits.push(p.zone)
+    if (p.group) subBits.push(p.group)
+    var sub = document.createElement('div'); sub.className = 'pk-sub'
+    escText(sub, subBits.join(' · '))
+    card.appendChild(sub)
+    if (p.desc) {
+      var d = document.createElement('div'); d.className = 'pk-desc'
+      escText(d, p.desc + (p.descCut ? '…' : ''))
+      card.appendChild(d)
+    }
+    if (p.deps != null || p.dependents != null) {
+      var c = document.createElement('div'); c.className = 'pk-counts'
+      escText(c, t('peekDeps') + ' ' + p.deps + ' · ' + t('peekDependents') + ' ' + p.dependents)
+      card.appendChild(c)
+    }
+    if (p.members != null) {
+      var m = document.createElement('div'); m.className = 'pk-counts'
+      escText(m, t('membersLabel') + ' ' + p.members)
+      card.appendChild(m)
+    }
+    if (p.unsat) {
+      var u = document.createElement('div'); u.className = 'pk-flags'
+      escText(u, '⚠ ' + t('peekUnsat'))
+      card.appendChild(u)
+    }
+    if (p.broken) {
+      var b = document.createElement('div'); b.className = 'pk-flags'
+      escText(b, t('peekBroken'))
+      card.appendChild(b)
+    }
   }
 
   // ---------- search (V6 Step 2: pure matcher + Enter selects the top hit) ----------
@@ -1001,7 +1462,7 @@
     // R35: the two path lists replace the old 挂载方 block and the kind-grouped
     // deps/dependents counts — they carry everything those did (mounted-by is the
     // `mount` row of the up list) plus the whole transitive chain.
-    var lists = buildPathLists(pathSets(state.graph, n.id, null), state.graph, state.byId)
+    var lists = buildPathLists(AtlasModel.pathSets(state.graph, n.id, null), state.graph, state.byId)
     pathListSection(box, t('pathDownLabel'), lists.down)
     pathListSection(box, t('pathUpLabel'), lists.up)
     // `mount` is not a DOWN path kind (R35: X→mount→Y means Y's path runs UP to
@@ -1094,15 +1555,30 @@
   }
   // Header carries the count and the deepest layer (「N · 最深 M 层」); an empty
   // list still renders its title with 「无」 so the two sections never disappear.
+  // V22b: the rows are TIERED by BFS layer — d1 (direct hits) ships open, every
+  // deeper tier starts collapsed behind a 「d2 (N)」 header. The PATH_ROW_CAP now
+  // applies PER TIER (was global): a long d1 can no longer hide all of d2.
   function pathListSection(box, title, rows) {
     if (!rows.length) { secTitle(box, title + ' · ' + t('pathNoneLabel')); return }
     var deepest = 0
     rows.forEach(function (r) { if (r.dist > deepest) deepest = r.dist })
     secTitle(box, title + ' · ' + t('pathCountLabel').replace('{n}', rows.length).replace('{d}', deepest))
-    rows.slice(0, PATH_ROW_CAP).forEach(function (r) {
-      pathRow(box, r, function () { selectNode(r.id) })
+    groupRowsByDist(rows).forEach(function (tier, ix) { tierBlock(box, tier, ix === 0) })
+  }
+  function tierBlock(box, tier, open) {
+    var head = document.createElement('button'); head.className = 'tier'
+    var holder = document.createElement('div'); holder.className = 'tier-body'
+    holder.hidden = !open
+    var label = t('pathDistLabel').replace('{n}', tier.dist) + ' (' + tier.rows.length + ')'
+    function headLabel() { escText(head, (holder.hidden ? '▸ ' : '▾ ') + label) }
+    headLabel()
+    head.addEventListener('click', function () { holder.hidden = !holder.hidden; headLabel() })
+    box.appendChild(head)
+    box.appendChild(holder)
+    tier.rows.slice(0, PATH_ROW_CAP).forEach(function (r) {
+      pathRow(holder, r, function () { selectNode(r.id) })
     })
-    if (rows.length > PATH_ROW_CAP) kvRow(box, '', t('moreLabel').replace('{n}', rows.length - PATH_ROW_CAP))
+    if (tier.rows.length > PATH_ROW_CAP) kvRow(holder, '', t('moreLabel').replace('{n}', tier.rows.length - PATH_ROW_CAP))
   }
   // What this node MOUNTS (its bundle surface). R35's down kinds exclude `mount`
   // (correct for the highlight), so these packages are not path rows — they get
@@ -1196,8 +1672,34 @@
         b.classList.toggle('off', state.view.filterCats.has(id))
         paint()
       })
+      // V22b chip SOLO (dblclick): hide every OTHER category; the two clicks that
+      // co-fire before dblclick toggle this chip off-then-on, so the net state is
+      // deterministic: exactly this zone visible. Same chip again restores all.
+      // The bar rebuild re-derives every chip's .off state from filterCats.
+      b.addEventListener('dblclick', function () {
+        state.view.filterCats = soloToggleFor(cats, state.view.filterCats, id)
+        buildZoneChips()
+        paint()
+      })
       box.appendChild(b)
     })
+    // V22b row-tail buttons: bulk visibility without twelve lonely clicks.
+    var showAll = document.createElement('button'); showAll.className = 'chip chip-all'
+    escText(showAll, t('chipShowAll'))
+    showAll.addEventListener('click', function () {
+      state.view.filterCats = showAllCats()
+      buildZoneChips()
+      paint()
+    })
+    box.appendChild(showAll)
+    var hideAll = document.createElement('button'); hideAll.className = 'chip chip-all'
+    escText(hideAll, t('chipHideAll'))
+    hideAll.addEventListener('click', function () {
+      state.view.filterCats = hideAllCats(cats)
+      buildZoneChips()
+      paint()
+    })
+    box.appendChild(hideAll)
   }
 
   // ---------- top-bar filter controls (V6 Step 5: all drive state.view → paint) ----------
@@ -1281,9 +1783,42 @@
     var focusClear = document.getElementById('focus-clear')
     if (focusClear) focusClear.addEventListener('click', function () {
       state.focus = null
+      exitFocus() // V22b: also clears the back-stack and arms the viewport restore
       syncFocusCtl()
       paint(false) // class-only change: no structural repaint, keep the viewport
+      restoreViewport() // …then glide back to the entry snapshot
     })
+    // V22b breadcrumb: 返回 walks back to the previous root (skipping entries
+    // that died in a rescan), staying AT the current depth.
+    var pathBack = document.getElementById('path-back')
+    if (pathBack) pathBack.addEventListener('click', function () {
+      if (!state.focus) return
+      var stack = state.pathStack
+      var prev = null
+      while (stack.length) {
+        var cand = stack[stack.length - 1]
+        stack = stack.slice(0, -1)
+        if (isFocusRoot(cand)) { prev = cand; break }
+      }
+      state.pathStack = stack
+      if (!prev) { syncFocusCtl(); return }
+      focusNode(prev, state.focus.depth, prev)
+    })
+    // V22b LOD segment control (自动 | 组级 | 包级): pinned tiers set the mode and
+    // apply immediately; 自动 re-decides from the CURRENT zoom (band → no change).
+    document.querySelectorAll('#lod-ctl button[data-seg]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        state.granMode = b.getAttribute('data-seg')
+        syncLodCtl()
+        var eff = decideGranularity(state.granMode, state.cy ? state.cy.zoom() : 1, LOD_T_IN, LOD_T_OUT)
+        if (eff === null || eff === state.view.granularity) return
+        state.view.granularity = eff
+        paint(false) // structural, but the reader is looking at THIS viewport
+      })
+    })
+    syncLodCtl()
+    // V22b Esc: window-level, ordered (search results → path exit → no-op).
+    try { window.addEventListener('keydown', onGlobalKey) } catch (e) { /* non-browser */ }
     var scope = document.getElementById('scope-filter')
     if (scope) scope.addEventListener('change', function () { state.view.filterScope = scope.value || 'all'; paint() })
     var prof = document.getElementById('profile-filter')
@@ -1327,6 +1862,7 @@
       collapsedCats: new Set(), collapsedGroups: null,
       filterCats: new Set(), filterScope: 'all', filterProfile: null,
       edgeKinds: null, showRealCross: false,
+      granularity: 'groups', focus: null,
     }
   }
 
@@ -1368,16 +1904,26 @@
       // a focus root that vanished OR stopped being a package cannot anchor R35
       if (state.focus && !isFocusRoot(state.focus.rootId)) state.focus = null
       if (state.selected && state.selected.indexOf(':') < 0 && !state.byId.has(state.selected)) state.selected = null
+      // V22b: with the focus gone the walk history is dead weight; the viewport
+      // snapshot too (the graph under it just changed shape).
+      if (!state.focus) { state.pathStack = []; state.viewport = null; state.restore = false }
     } else {
       state.view = freshView()
       state.focus = null
       state.selected = null
+      // V22b: a fresh load re-defaults the granularity segment to 自动 (and with
+      // it the LOD decision re-arms from the next zoom event).
+      state.granMode = 'auto'
+      state.pathStack = []
+      state.viewport = null
+      state.restore = false
     }
     rebuildFilterControls()
     buildZoneChips()
     buildLegend()
     renderMetaAndWarnings()
     syncFocusCtl()
+    syncLodCtl()
     if (!keepView) {
       var hash = ''
       try { hash = decodeURIComponent(location.hash) } catch (e) { hash = location.hash }

@@ -12,6 +12,11 @@
     <span class="grow"></span>
     <input id="search" type="search" data-i18n-ph="search" autocomplete="off">
     <span id="zone-chips" class="chips"></span>
+    <span id="lod-ctl" data-i18n-title="lodLabel">
+      <button data-seg="auto" data-i18n="lodAuto">自动</button>
+      <button data-seg="groups" data-i18n="lodGroups">组级</button>
+      <button data-seg="packages" data-i18n="lodPkgs">包级</button>
+    </span>
     <label class="ctl"><span data-i18n="scopeLabel">类型</span><select id="scope-filter"></select></label>
     <label class="ctl"><span data-i18n="profileLabel">Profile</span><select id="profile-filter"></select></label>
     <span id="edge-kinds" class="chips" data-i18n-title="edgeKindsLabel">
@@ -21,7 +26,7 @@
       <label><input type="checkbox" data-kind="peer-optional" checked>peer-opt</label>
     </span>
     <label class="ctl"><input id="show-real-cross" type="checkbox"><span data-i18n="realCrossLabel">真实跨包线</span></label>
-    <span id="focus-ctl" hidden><span data-i18n="focusLabel">聚焦深度</span><select id="focus-depth"><option value="0" data-i18n="focusUnlimited" selected>不限</option><option value="1">1</option><option value="2">2</option><option value="3">3</option></select><button id="focus-clear" data-i18n="focusOff">取消聚焦</button></span>
+    <span id="focus-ctl" hidden><button id="path-back" hidden></button><span data-i18n="focusLabel">聚焦深度</span><select id="focus-depth"><option value="0" data-i18n="focusUnlimited" selected>不限</option><option value="1">1</option><option value="2">2</option><option value="3">3</option></select><button id="focus-clear" data-i18n="focusOff">退出路径</button></span>
     <button id="refresh" data-i18n="refresh"></button>
     <button id="lang-btn" data-i18n="langSwitch">EN</button>
     <span id="meta"></span>

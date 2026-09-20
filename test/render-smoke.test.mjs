@@ -348,6 +348,8 @@ test('STYLE↔MODEL: every class AtlasModel emits has an app.js selector (derive
     { collapsedGroups: new Set(), showRealCross: true }, // real pkg↔pkg edges
     { filterScope: 'third-party' },
     { filterProfile: 'web' },
+    // V22b: the focus subgraph emits the ctx class — its STYLE rule must exist
+    { focus: { rootId: A1, depth: null } },
   ]
   const emitted = new Set()
   let nodesSeen = 0
@@ -611,19 +613,48 @@ test('http: /graph-model.js is served as a first-class asset', () => {
 // anchor must END at the body's opening brace — full signature required.
 // =========================================================================
 
+/**
+ * V22b: pathSets is no longer extracted from app.js — the copy was deleted and
+ * the app consumes AtlasModel.pathSets. The model source is therefore eval'd
+ * INTO THIS REALM (its IIFE receives a sandbox object shadowing `globalThis`)
+ * so host-realm buildPathLists instanceof-Set checks keep passing and the V21
+ * suite runs against the canonical implementation with zero other edits.
+ */
 function loadAppPure() {
   const src = readFileSync(join(WEB, 'app.js'), 'utf8')
+  const model = readFileSync(join(WEB, 'graph-model.js'), 'utf8')
+  // bare numeric consts have no brace to balance on: capture the statements
+  const consts = {}
+  for (const name of ['LOD_T_IN', 'LOD_T_OUT', 'PEEK_DESC_CAP', 'PATH_STACK_CAP', 'CRUMB_MAX']) {
+    const m = new RegExp('var ' + name + ' = [^\\n;]+').exec(src)
+    assert.ok(m, `app.js must still declare \`var ${name} = …\``)
+    consts[name] = m[0] + '\n'
+  }
   const body = [
     extractBalanced(src, 'var EDGE_KINDS_ALL = [') + '\n',
     extractBalanced(src, 'var DOWN_EDGE_KINDS = [') + '\n',
     extractBalanced(src, 'var UP_EDGE_KINDS = [') + '\n',
+    consts.LOD_T_IN, consts.LOD_T_OUT, consts.PEEK_DESC_CAP, consts.PATH_STACK_CAP, consts.CRUMB_MAX,
     extractBalanced(src, 'function normalizeDepth(depth) {') + '\n',
-    extractBalanced(src, 'function pathSets(graph, rootId, depth) {') + '\n',
     extractBalanced(src, 'function buildPathLists(sets, graph, byId) {') + '\n',
     extractBalanced(src, 'function matchNodes(graph, query, limit) {') + '\n',
     extractBalanced(src, 'function progressFor(status) {') + '\n',
     extractBalanced(src, 'function edgeKindsFor(checked) {') + '\n',
-    'return { EDGE_KINDS_ALL, normalizeDepth, pathSets, buildPathLists, matchNodes, progressFor, edgeKindsFor }',
+    extractBalanced(src, 'function decideGranularity(mode, zoom, T_IN, T_OUT) {') + '\n',
+    extractBalanced(src, 'function catTitle(categories, catId, lang) {') + '\n',
+    extractBalanced(src, 'function groupZoneOf(graph, gid) {') + '\n',
+    extractBalanced(src, 'function buildPeekCard(n, graph, byId, lang) {') + '\n',
+    extractBalanced(src, 'function pushPathStack(stack, id, cap) {') + '\n',
+    extractBalanced(src, 'function pathChainText(labels, sep) {') + '\n',
+    extractBalanced(src, 'function groupRowsByDist(rows) {') + '\n',
+    extractBalanced(src, 'function soloToggleFor(allCats, current, id) {') + '\n',
+    extractBalanced(src, 'function hideAllCats(allCats) {') + '\n',
+    extractBalanced(src, 'function showAllCats() {') + '\n',
+    'var __sb = {};(function (globalThis) {' + model + '\n}).call(__sb, __sb)\n',
+    'return { EDGE_KINDS_ALL, normalizeDepth, pathSets: __sb.AtlasModel.pathSets, buildPathLists, matchNodes, progressFor, edgeKindsFor,\n'
+    + '  LOD_T_IN, LOD_T_OUT, decideGranularity, catTitle, groupZoneOf, PEEK_DESC_CAP, buildPeekCard,\n'
+    + '  PATH_STACK_CAP, pushPathStack, CRUMB_MAX, pathChainText, groupRowsByDist,\n'
+    + '  soloToggleFor, hideAllCats, showAllCats }',
   ].join('')
   return new Function(body)()
 }
@@ -639,15 +670,14 @@ function loadFocusLogic() {
   const body = [
     extractBalanced(src, 'var DOWN_EDGE_KINDS = [') + '\n',
     extractBalanced(src, 'var UP_EDGE_KINDS = [') + '\n',
-    extractBalanced(src, 'function normalizeDepth(depth) {') + '\n',
-    extractBalanced(src, 'function pathSets(graph, rootId, depth) {') + '\n',
     extractBalanced(src, 'function gidOf(n) {') + '\n',
     extractBalanced(src, 'function renderIdOf(id) {') + '\n',
     extractBalanced(src, 'function applyClasses() {') + '\n',
-    'var state = { cy: null, graph: null, byId: new Map(), groupZone: new Map(), focus: null, selected: null }\n',
-    'return { pathSets: pathSets, apply: function (o) { Object.assign(state, o); applyClasses() } }',
+    // V22b: applyClasses consumes AtlasModel.pathSets; view.edgeKinds drives ek-off
+    'var state = { cy: null, graph: null, byId: new Map(), groupZone: new Map(), focus: null, selected: null, view: { edgeKinds: null } }\n',
+    'return { pathSets: AtlasModel.pathSets, apply: function (o) { Object.assign(state, o); applyClasses() } }',
   ].join('')
-  return new Function(body)()
+  return new Function('AtlasModel', body)(loadModel())
 }
 
 /**
@@ -734,11 +764,12 @@ function loadDetailsDom() {
   assert.ok(capDecl, 'app.js must still declare `var PATH_ROW_CAP = …`')
   const body = [
     'var CLICKS = [], SELECTED = []\n',
-    'var KEYS = { pathCountLabel: \x27{n}·{d}\x27, pathNoneLabel: \x27NONE\x27, pathDistLabel: \x27d{n}\x27, unsatLabel: \x27UNSAT\x27, mountsLabel: \x27MOUNTS\x27, moreLabel: \x27+{n} MORE\x27 }\n',
+    'var KEYS = { pathCountLabel: \x27{n}·{d}\x27, pathNoneLabel: \x27NONE\x27, pathDistLabel: \x27d{n}\x27, unsatLabel: \x27UNSAT\x27, mountsLabel: \x27MOUNTS\x27, moreLabel: \x27+{n} MORE\x27,\n'
+    + '  peekDeps: \x27PEEK-DEPS\x27, peekDependents: \x27PEEK-UP\x27, peekUnsat: \x27PEEK-UNSAT\x27, peekBroken: \x27PEEK-BROKEN\x27, membersLabel: \x27PEEK-MEMBERS\x27 }\n',
     'function t(k) { return Object.prototype.hasOwnProperty.call(KEYS, k) ? KEYS[k] : k }\n',
     'function selectNode(id) { SELECTED.push(id) }\n',
     'function El(tag) {\n',
-    '  this.tag = tag; this.children = []; this.className = \x27\x27; this.text = \x27\x27; this.handlers = {}\n',
+    '  this.tag = tag; this.children = []; this.className = \x27\x27; this.text = \x27\x27; this.handlers = {}; this.hidden = false\n',
     '  this.appendChild = function (c) { this.children.push(c); return c }\n',
     '  this.addEventListener = function (k, fn) { this.handlers[k] = fn; CLICKS.push({ el: this, kind: k, fn: fn }) }\n',
     '}\n',
@@ -756,10 +787,13 @@ function loadDetailsDom() {
     extractBalanced(src, 'function kvRow(box, key, value) {') + '\n',
     extractBalanced(src, 'function secTitle(box, text) {') + '\n',
     extractBalanced(src, 'function pathRow(box, row, onClick) {') + '\n',
+    extractBalanced(src, 'function groupRowsByDist(rows) {') + '\n',
+    extractBalanced(src, 'function tierBlock(box, tier, open) {') + '\n',
     extractBalanced(src, 'function pathListSection(box, title, rows) {') + '\n',
     extractBalanced(src, 'function mountOutSection(box, id) {') + '\n',
+    extractBalanced(src, 'function renderPeek(card, p) {') + '\n',
     'return { El: El, state: state, CLICKS: CLICKS, SELECTED: SELECTED, t: t,\n',
-    '  pathListSection: pathListSection, mountOutSection: mountOutSection, CAP: PATH_ROW_CAP }',
+    '  pathListSection: pathListSection, mountOutSection: mountOutSection, renderPeek: renderPeek, CAP: PATH_ROW_CAP }',
   ].join('')
   return new Function(body)()
 }
@@ -1135,18 +1169,30 @@ test('V21 details DOM: path rows are built with textContent only, click re-roots
 
   const box = new dom.El('div')
   dom.pathListSection(box, 'DOWN', lists.down)
-  assert.equal(box.children.length, 4, 'title + one row per member')
+  // V22b tiering: title + (header + body) per layer; d1 open, d2+ collapsed.
+  assert.equal(box.children.length, 5, 'title + two tiers × (header + body) — [x d1, b d1, y d2]')
   assert.equal(box.children[0].className, 'sec', 'title row')
   assert.equal(box.children[0].text, 'DOWN · 3·2', 'header = title · {n} rows · deepest {d} layer')
-  const row = box.children[1]
+  const head1 = box.children[1]
+  assert.equal(head1.className, 'tier', 'V22b: per-layer segment header')
+  assert.equal(head1.text, '▾ d1 (2)', 'd1 is the one tier expanded by default; header shows d{layer} (N)')
+  const body1 = box.children[2]
+  assert.equal(body1.className, 'tier-body'); assert.equal(body1.hidden, false, 'd1 open by default')
+  assert.equal(body1.children.length, 2, 'the two layer-1 rows')
+  const head2 = box.children[3]
+  assert.equal(head2.text, '▸ d2 (1)', 'd2 starts collapsed (▸)')
+  const body2 = box.children[4]
+  assert.equal(body2.hidden, true, 'V22b: d2+ tiers default-collapsed')
+  assert.equal(body2.children.length, 1, 'the single layer-2 row sits inside the collapsed body')
+  const row = body1.children[0]
   assert.equal(row.className, 'jump', 'rows reuse the .jump row class (no new CSS surface)')
   assert.equal(row.children[0].text, evil + '@<script>', 'attacker name@version survive VERBATIM as text')
   assert.equal(row.children[1].className, 'dist')
   assert.equal(row.children[1].text, ' · d1', 'the BFS layer token renders through t(pathDistLabel)')
   assert.deepEqual(row.children.filter((c) => c.className === 'badge').map((c) => c.text), ['dep'], 'kind badge')
-  assert.deepEqual(box.children[2].children.filter((c) => c.className === 'badge').map((c) => c.text),
+  assert.deepEqual(body1.children[1].children.filter((c) => c.className === 'badge').map((c) => c.text),
     ['dep', 'peer'], 'a second kind reaches the same row as its own badge, in EDGE_KINDS order')
-  assert.equal(box.children[2].children.slice(2).map((c) => [c.className, c.text]).slice(-1)[0][1], ' ⚠ UNSAT',
+  assert.equal(body1.children[1].children.slice(2).map((c) => [c.className, c.text]).slice(-1)[0][1], ' ⚠ UNSAT',
     'the unsatisfied flag rides the existing .unsat span')
 
   const texts = domTexts(box)
@@ -1154,10 +1200,16 @@ test('V21 details DOM: path rows are built with textContent only, click re-roots
     'the attacker string reaches the tree exactly once, as TEXT — never composed as markup')
   assert.equal(JSON.stringify(box).includes('innerHTML'), false, 'no innerHTML anywhere in the built tree')
 
-  const betaBtn = box.children[2]
+  const betaBtn = body1.children[1]
   assert.equal(betaBtn.handlers.click instanceof Function, true, 'rows are clickable')
   betaBtn.handlers.click()
   assert.deepEqual(dom.SELECTED, ['b'], 'clicking a row calls selectNode(row.id) → the focus re-roots there')
+
+  head2.handlers.click()
+  assert.equal(body2.hidden, false, 'V22b: clicking the d2 header opens the tier')
+  assert.equal(head2.text, '▾ d2 (1)', '…and the arrow flips')
+  head2.handlers.click()
+  assert.equal(body2.hidden, true, '…and closes again')
 
   const empty = new dom.El('div')
   dom.pathListSection(empty, 'UP', [])
@@ -1185,8 +1237,11 @@ test('V21 details DOM: path rows are built with textContent only, click re-roots
   dom.state.byId = byIdMap(wide)
   const bigBox = new dom.El('div')
   dom.pathListSection(bigBox, 'DOWN', buildPathLists(pathSets(wide, 'r', null), wide, dom.state.byId).down)
-  assert.equal(bigBox.children.length, dom.CAP + 2, 'title + capped rows + the +N 更多 tail')
-  assert.equal(bigBox.children[bigBox.children.length - 1].children[1].text, '+1 MORE',
+  assert.equal(bigBox.children.length, 3, 'title + one tier (header + body) — all rows are layer 1')
+  assert.equal(bigBox.children[1].text, '▾ d1 (' + (dom.CAP + 1) + ')', 'the tier header counts every row it holds')
+  const tierBody = bigBox.children[2]
+  assert.equal(tierBody.children.length, dom.CAP + 1, 'per-tier cap: rows + the +N 更多 tail')
+  assert.equal(tierBody.children[tierBody.children.length - 1].children[1].text, '+1 MORE',
     'the cap tail counts what it hid')
 })
 
@@ -1884,4 +1939,787 @@ test('V21 details data: attacker-controlled names survive verbatim and never bec
     'the row carries the raw string — the renderer writes it through escText (pinned above)')
   assert.equal(rows[0].version, evil)
   assert.deepEqual(rows[0].kinds, ['dep'])
+})
+
+// =========================================================================
+// Task V2.2b — path mode UI + LOD + peek + tiered lists + chip solo/all.
+// The pure helpers live in app.js's PURE HELPERS section and run through the
+// same extract seam; the DOM-ish half runs through the fake-DOM harnesses
+// below; the frozen dist decides ctx/ek-off validity; real headless
+// cytoscape pins the fit-to-path selection numerically.
+// =========================================================================
+
+// ---------- pure: LOD / decideGranularity ----------
+
+test('V22b decideGranularity: pinned tiers pass through; auto uses the hysteresis band [T_OUT, T_IN)', () => {
+  const { decideGranularity, LOD_T_IN, LOD_T_OUT } = loadAppPure()
+  assert.equal(LOD_T_IN, 1.5, 'T_IN ships at 1.5 (report: LOD threshold notes)')
+  assert.equal(LOD_T_OUT, 1.3, 'T_OUT ships at 1.3')
+  assert.equal(decideGranularity('groups', 99), 'groups', 'pinned groups ignores zoom entirely')
+  assert.equal(decideGranularity('packages', 0.01), 'packages', 'pinned packages ignores zoom entirely')
+  // auto, above / inside / below the band — the boundary equality is pinned:
+  assert.equal(decideGranularity('auto', 2.4), 'packages', 'zoom above T_IN expands')
+  assert.equal(decideGranularity('auto', LOD_T_IN), 'packages', 'zoom === T_IN counts as packages (>= T_IN)')
+  assert.equal(decideGranularity('auto', 0.4), 'groups', 'zoom below T_OUT collapses')
+  assert.equal(decideGranularity('auto', LOD_T_OUT), null, 'zoom === T_OUT is INSIDE the band -> keep (only < T_OUT drops)')
+  assert.equal(decideGranularity('auto', (LOD_T_IN + LOD_T_OUT) / 2), null, 'inside the band -> null (keep current)')
+  // junk zoom reads as fully zoomed-out (groups), junk mode keeps the groups default
+  for (const junk of [null, undefined, NaN, Infinity, 'x', {}]) {
+    assert.equal(decideGranularity('auto', junk), 'groups', `junk zoom ${JSON.stringify(junk)} -> groups`)
+  }
+  assert.equal(decideGranularity('nonsense', 99), 'packages', 'unknown mode behaves like auto (defensive, never a silent pin)')
+  assert.equal(decideGranularity('nonsense', (LOD_T_IN + LOD_T_OUT) / 2), null, 'unknown mode in the band -> keep')
+})
+
+test('V22b LOD constants: debounce timings + wheel sensitivity ship as named constants', () => {
+  const src = readFileSync(join(WEB, 'app.js'), 'utf8')
+  assert.match(src, /var LOD_DEBOUNCE_MS = 120/, 'zoom debounce 120ms')
+  assert.match(src, /var PEEK_DEBOUNCE_MS = 250/, 'peek debounce 250ms')
+  assert.match(src, /var WHEEL_SENS = 2\.5/, 'wheel sensitivity constant')
+  // wheelSensitivity is a CYTOSCAPE OPTION (init), not a style property
+  assert.match(src, /window\.cytoscape\(\{ container: document\.getElementById\('graph'\), elements: \[\], wheelSensitivity: WHEEL_SENS \}\)/,
+    'cy init carries wheelSensitivity: WHEEL_SENS')
+})
+
+// ---------- pure: path back-stack + breadcrumb text ----------
+
+test('V22b pushPathStack: dedupes consecutive same-root, caps at 20 dropping the oldest, never mutates', () => {
+  const { pushPathStack, PATH_STACK_CAP } = loadAppPure()
+  assert.equal(PATH_STACK_CAP, 20)
+  assert.deepEqual(pushPathStack([], 'a'), ['a'], 'push onto empty')
+  assert.deepEqual(pushPathStack(['x'], 'a'), ['x', 'a'], 'distinct roots stack')
+  assert.deepEqual(pushPathStack(['x', 'a'], 'a'), ['x', 'a'], 'consecutive same root dedupes (walk a->x->a then a again)')
+  assert.deepEqual(pushPathStack(['a', 'b', 'a'], 'a'), ['a', 'b', 'a'], 'same id deeper in the stack still pushes (only CONSECUTIVE dedupes)')
+  const src = ['a', 'b']
+  const out = pushPathStack(src, 'c')
+  assert.notEqual(out, src, 'pure: a new array comes back')
+  assert.deepEqual(src, ['a', 'b'], 'input untouched')
+  let stack = []
+  for (let i = 0; i < 30; i += 2) { stack = pushPathStack(stack, 'r' + i); stack = pushPathStack(stack, 'r' + (i + 1)) }
+  assert.equal(stack.length, PATH_STACK_CAP, 'cap holds no matter how deep the walk goes')
+  assert.equal(stack[0], 'r10', 'the OLDEST entries dropped (r0..r9)')
+  assert.equal(stack[PATH_STACK_CAP - 1], 'r29', 'newest kept at the tail')
+  assert.deepEqual(pushPathStack([], null), [], 'null root never enters the stack')
+})
+
+test('V22b pathChainText: joins with arrows; over CRUMB_MAX entries truncates with a leading ellipsis', () => {
+  const { pathChainText, CRUMB_MAX } = loadAppPure()
+  assert.equal(CRUMB_MAX, 4, 'breadcrumb shows at most 4 entries')
+  assert.equal(pathChainText([]), '', 'empty stack -> empty text (button stays hidden)')
+  assert.equal(pathChainText(['a']), 'a')
+  assert.equal(pathChainText(['a', 'b', 'c', 'd']), 'a \u2192 b \u2192 c \u2192 d', 'exactly CRUMB_MAX stays whole')
+  assert.equal(pathChainText(['a', 'b', 'c', 'd', 'e']), '\u2026 \u2192 b \u2192 c \u2192 d \u2192 e',
+    'over the cap: the tail survives, the head collapses to \u2026')
+  assert.equal(pathChainText(['a', 'b'], ' | '), 'a | b', 'separator injectable')
+  assert.equal(pathChainText(null), '', 'junk -> empty, never a throw')
+})
+
+// ---------- pure: tiered detail rows + chip state predicates ----------
+
+test('V22b groupRowsByDist: ascending layer segments, input order inside a layer, empty stays empty', () => {
+  const { groupRowsByDist } = loadAppPure()
+  assert.deepEqual(groupRowsByDist([]), [], 'empty in, empty out (the caller owns the empty heading)')
+  const rows = [
+    { id: 'x', dist: 1 }, { id: 'b', dist: 1 }, { id: 'y', dist: 2 }, { id: 'z', dist: 3 },
+  ]
+  const tiers = groupRowsByDist(rows)
+  assert.deepEqual(tiers.map((t) => t.dist), [1, 2, 3], 'segments ascend by layer')
+  assert.deepEqual(tiers[0].rows.map((r) => r.id), ['x', 'b'], 'input (name) order survives inside a layer')
+  assert.equal(tiers[1].rows.length, 1)
+  // out-of-order input still segments ascending (defensive — buildPathLists sorts, but tiering must not assume)
+  const t2 = groupRowsByDist([{ id: 'd', dist: 2 }, { id: 'a', dist: 1 }, { id: 'd2', dist: 2 }])
+  assert.deepEqual(t2.map((t) => t.dist), [1, 2])
+  assert.deepEqual(t2[1].rows.map((r) => r.id), ['d', 'd2'], 'rows of a segment keep their relative order')
+})
+
+test('V22b chip predicates: dblclick solo toggles, hide-all excludes every category, show-all clears', () => {
+  const { soloToggleFor, hideAllCats, showAllCats } = loadAppPure()
+  const all = ['kernel', 'tools', 'plugin']
+  const s1 = soloToggleFor(all, new Set(), 'tools')
+  assert.deepEqual([...s1].sort(), ['kernel', 'plugin'], 'solo tools = every OTHER category excluded (filterCats is the EXCLUDE set)')
+  const s2 = soloToggleFor(all, s1, 'tools')
+  assert.deepEqual([...s2], [], 'same chip again = restore (everything visible)')
+  const s3 = soloToggleFor(all, new Set(['tools']), 'tools')
+  assert.deepEqual([...s3].sort(), ['kernel', 'plugin'], 'chip was hidden -> solo makes it the only one shown')
+  const s4 = soloToggleFor(all, new Set(['kernel']), 'tools')
+  assert.deepEqual([...s4].sort(), ['kernel', 'plugin'], 'a partial filter is replaced by the solo, not merged')
+  const hidden = hideAllCats(all)
+  assert.deepEqual([...hidden].sort(), ['kernel', 'plugin', 'tools'], 'hide-all excludes every category')
+  assert.equal(hideAllCats(all) === hideAllCats(all), false, 'fresh Sets every call (no shared mutable state)')
+  assert.deepEqual([...showAllCats()], [], 'show-all = the empty exclude set')
+  assert.deepEqual([...soloToggleFor([], new Set(), 'x')], [], 'no categories -> empty set, never a throw')
+})
+
+// ---------- pure: peek card data ----------
+
+function peekFixture() {
+  return {
+    categories: [
+      { id: 'kernel', zh: 'NEIKER', en: 'KernelEN' },
+      { id: 'tools', zh: 'GONGJU', en: 'ToolsEN' },
+    ],
+    groups: [
+      { id: 'bundle', kind: 'official', category: 'kernel', packageCount: 2 },
+      { id: 'fs', kind: 'official', category: 'tools', packageCount: 1 },
+    ],
+    nodes: [
+      { id: 'a@1', kind: 'package', name: 'alpha', version: '1.0.0', group: 'bundle', category: 'kernel', description: 'x'.repeat(200) },
+      { id: 'b@1', kind: 'package', name: 'beta', version: '2.0.0', group: 'bundle', category: 'kernel', description: null },
+      { id: 'c@1', kind: 'package', name: 'gamma', version: '3.0.0', group: 'fs', category: 'tools', description: 'small' },
+      { id: 'brk', kind: 'broken', name: 'pkg-broken', version: '-', group: 'fs', category: 'tools', description: null },
+    ],
+    edges: [
+      { from: 'a@1', to: 'b@1', kind: 'dep' },
+      { from: 'a@1', to: 'b@1', kind: 'peer' },   // same pair again: still ONE dependency
+      { from: 'a@1', to: 'a@1', kind: 'dep' },    // self-loop never counts
+      { from: 'c@1', to: 'a@1', kind: 'mount', unsatisfied: true },
+      { from: 'brk', to: 'a@1', kind: 'dep' },
+    ],
+  }
+}
+
+test('V22b buildPeekCard: package counts, deduped pair counting, bilingual titles, truncation, flags', () => {
+  const { buildPeekCard, PEEK_DESC_CAP } = loadAppPure()
+  const g = peekFixture()
+  const byId = byIdMap(g)
+  const zh = buildPeekCard({ id: 'a@1', kind: 'pkg', name: 'a@1' }, g, byId, 'zh')
+  assert.equal(zh.title, 'alpha', 'the graph node name wins over the element data name')
+  assert.equal(zh.version, '1.0.0')
+  assert.equal(zh.deps, 1, 'a→b over TWO kinds still counts as one dependency (pair-deduped)')
+  assert.equal(zh.dependents, 2, 'c mounts a, broken depends on a -> two dependents')
+  assert.equal(zh.unsat, true, 'the unsatisfied mount rides the ⚠ flag')
+  assert.equal(zh.broken, false)
+  assert.equal(zh.zone, 'NEIKER', 'zh picks the zh category title')
+  assert.equal(zh.group, 'bundle')
+  assert.equal(zh.desc, 'x'.repeat(PEEK_DESC_CAP), 'description truncated at PEEK_DESC_CAP')
+  assert.equal(zh.descCut, true, 'the renderer learns truncation happened (adds the ellipsis)')
+  const en = buildPeekCard({ id: 'c@1', kind: 'pkg', name: 'c@1' }, g, byId, 'en')
+  assert.equal(en.zone, 'ToolsEN', 'en picks the en title')
+  assert.equal(en.desc, 'small'); assert.equal(en.descCut, false)
+  assert.equal(en.unsat, true, 'the unsatisfied edge touches c, so c flags it too (direct-edge semantics)')
+  assert.equal(en.deps, 0)
+  const brk = buildPeekCard({ id: 'brk', kind: 'pkg', name: 'brk' }, g, byId, 'zh')
+  assert.equal(brk.broken, true, 'kind=broken nodes carry the broken flag')
+  const prof = buildPeekCard({ id: 'nope@9', kind: 'pkg', name: 'nope@9' }, g, byId, 'zh')
+  assert.equal(prof.title, 'nope@9', 'an unknown node falls back to the raw id everywhere, never a throw')
+  assert.deepEqual([prof.deps, prof.dependents, prof.unsat], [0, 0, false])
+})
+
+test('V22b buildPeekCard: group cards and zone shells get title/zone/members without counts', () => {
+  const { buildPeekCard } = loadAppPure()
+  const g = peekFixture()
+  const byId = byIdMap(g)
+  const grp = buildPeekCard({ id: 'g:fs', kind: 'group', name: 'fs', count: 2 }, g, byId, 'zh')
+  assert.equal(grp.title, 'fs', 'group card titles are the group id')
+  assert.equal(grp.zone, 'GONGJU', 'the group zone derives like the model: declared groups[].category')
+  assert.equal(grp.members, 2, 'the rendered data.count rides through')
+  assert.equal(grp.deps, null, 'cards have no package-level counts — the renderer drops those rows')
+  const zone = buildPeekCard({ id: 'cat:kernel', kind: 'zone', name: 'kernel', count: 7 }, g, byId, 'zh')
+  assert.equal(zone.title, 'NEIKER', 'zone title comes out bilingual-resolved')
+  assert.equal(zone.members, 7)
+  const unknown = buildPeekCard({ id: 'g:ghost', kind: 'group', name: 'ghost', count: 1 }, g, byId, 'zh')
+  assert.equal(unknown.zone, 'ungrouped', 'a group no category claim resolves ungrouped, never a throw')
+})
+
+test('V22b renderPeek: attacker-controlled peek strings reach the DOM as TEXT only', () => {
+  const { buildPeekCard } = loadAppPure()
+  const dom = loadDetailsDom()
+  const evil = '<img src=x onerror=alert(1)>'
+  const graph = {
+    categories: [{ id: 'k', zh: evil, en: evil }],
+    groups: [{ id: evil, kind: 'official', category: 'k', packageCount: 1 }],
+    nodes: [{ id: 'p', kind: 'package', name: evil, version: evil, group: evil, category: 'k', description: evil + evil + evil }],
+    edges: [{ from: 'p', to: 'q', kind: 'dep', unsatisfied: true }],
+  }
+  const p = buildPeekCard({ id: 'p', kind: 'pkg', name: 'p' }, graph, new Map([['p', graph.nodes[0]]]), 'zh')
+  const card = new dom.El('div')
+  dom.renderPeek(card, p)
+  const texts = domTexts(card)
+  assert.ok(texts.some((s) => s.includes(evil)), 'the strings are THERE (rendered)')
+  assert.equal(texts.filter((s) => s.includes(evil)).length >= 1, true)
+  assert.equal(JSON.stringify(card).includes('innerHTML'), false, 'no markup composition in the peek card')
+  const json = JSON.stringify(card)
+  assert.equal(json.includes('<img'), true, 'the raw text is visible as text (an HTML sink would have escaped/parsed it away differently)')
+  // a group card peek renders no deps/dependents row at all
+  const gp = buildPeekCard({ id: 'g:x', kind: 'group', name: 'x', count: 3 }, graph, new Map(), 'en')
+  const card2 = new dom.El('div')
+  dom.renderPeek(card2, gp)
+  const t2 = domTexts(card2)
+  assert.equal(t2.some((s) => s.includes('PEEK-DEPS')), false, 'cards skip the count row (deps === null)')
+  assert.ok(t2.some((s) => s.includes('PEEK-MEMBERS 3')), 'cards carry the members row')
+})
+
+// ---------- fake DOM: focus-ctl breadcrumb ----------
+
+function loadFocusCtlDom() {
+  const src = readFileSync(join(WEB, 'app.js'), 'utf8')
+  const crumbCap = /var CRUMB_MAX = [^\n;]+/.exec(src)
+  assert.ok(crumbCap, 'app.js must still declare `var CRUMB_MAX = …`')
+  const body = [
+    'var CTL = { hidden: true }, SEL = { value: \x27\x27 }, BACK = { hidden: true, textContent: \x27\x27 }\n',
+    'var document = { getElementById: function (id) {\n',
+    '  return id === \x27focus-ctl\x27 ? CTL : id === \x27focus-depth\x27 ? SEL : id === \x27path-back\x27 ? BACK : null\n',
+    '} }\n',
+    'function t(k) { return k === \x27backLabel\x27 ? \x27BACK\x27 : k }\n',
+    'function escText(el, s) { el.textContent = s == null ? \x27\x27 : String(s) }\n',
+    'var state = { focus: null, pathStack: [], byId: new Map() }\n',
+    crumbCap[0] + '\n',
+    extractBalanced(src, 'function shortName(name, kind) {') + '\n',
+    extractBalanced(src, 'function pathChainText(labels, sep) {') + '\n',
+    extractBalanced(src, 'function idToLabel(id) {') + '\n',
+    extractBalanced(src, 'function syncFocusCtl() {') + '\n',
+    'return { state: state, CTL: CTL, SEL: SEL, BACK: BACK, sync: syncFocusCtl }',
+  ].join('')
+  return new Function(body)()
+}
+
+test('V22b syncFocusCtl breadcrumb: hidden without a stack, ← BACK (a → b → c) with one, truncates past the cap', () => {
+  const dom2 = loadFocusCtlDom()
+  const byId = new Map([
+    ['a@1', { id: 'a@1', kind: 'package', name: '@deepseek-ai/a' }],
+    ['b@1', { id: 'b@1', kind: 'package', name: 'b' }],
+    ['c@1', { id: 'c@1', kind: 'package', name: 'c' }],
+  ])
+  dom2.state.byId = byId
+  dom2.sync()
+  assert.equal(dom2.CTL.hidden, true, 'no focus -> the whole control hides')
+  assert.equal(dom2.BACK.hidden, true, 'no stack -> no back button')
+  dom2.state.focus = { rootId: 'a@1', depth: null }
+  dom2.sync()
+  assert.equal(dom2.CTL.hidden, false)
+  assert.equal(dom2.BACK.hidden, true, 'a fresh root has nowhere to go back to')
+  dom2.state.pathStack = ['b@1', 'c@1']
+  dom2.sync()
+  assert.equal(dom2.BACK.hidden, false)
+  assert.equal(dom2.BACK.textContent, '\u2190 BACK (b \u2192 c \u2192 a)',
+    'labels ride idToLabel (the @deepseek-ai/ prefix is stripped by shortName), current root last')
+  assert.equal(dom2.SEL.value, '0', 'depth null still round-trips to the unlimited option')
+  dom2.state.focus = { rootId: 'a@1', depth: 2 }
+  dom2.sync()
+  assert.equal(dom2.SEL.value, '2')
+  dom2.state.pathStack = ['x1', 'x2', 'x3', 'x4', 'x5']
+  dom2.state.focus = { rootId: 'x6', depth: null }
+  dom2.sync()
+  assert.equal(dom2.BACK.textContent, '\u2190 BACK (\u2026 \u2192 x3 \u2192 x4 \u2192 x5 \u2192 x6)',
+    'over CRUMB_MAX the oldest entries collapse to \u2026')
+})
+
+// ---------- fake cytoscape: focus-flow stack/snapshot semantics ----------
+
+function loadFocusFlow() {
+  const src = readFileSync(join(WEB, 'app.js'), 'utf8')
+  const stackCap = /var PATH_STACK_CAP = [^\n;]+/.exec(src)
+  assert.ok(stackCap, 'app.js must still declare `var PATH_STACK_CAP = …`')
+  const body = [
+    'var CALLS = [], DEPTH = null\n',
+    'function depthOfCtl() { return DEPTH }\n',
+    'function snapshotViewport() { CALLS.push(\x27snapshot\x27); state.viewport = { zoom: 3.3, pan: { x: 1, y: 2 } } }\n',
+    'var state = { byId: new Map(), focus: null, selected: null, pathStack: [], viewport: null, restore: false }\n',
+    stackCap[0] + '\n',
+    extractBalanced(src, 'function pushPathStack(stack, id, cap) {') + '\n',
+    extractBalanced(src, 'function isFocusRoot(id) {') + '\n',
+    extractBalanced(src, 'function focusForId(id) {') + '\n',
+    extractBalanced(src, 'function exitFocus() {') + '\n',
+    extractBalanced(src, 'function focusFlowAction(id) {') + '\n',
+    'return { state: state, CALLS: CALLS,\n'
+    + '  reset: function (o) { state.byId = new Map(); state.focus = null; state.selected = null; state.pathStack = [];\n'
+    + '    state.viewport = null; state.restore = false; CALLS.length = 0; Object.assign(state, o || {}) },\n'
+    + '  depth: function (d) { DEPTH = d }, act: function (sel) { return focusFlowAction(sel) } }',
+  ].join('')
+  return new Function(body)()
+}
+
+const PKG = (id) => ({ id, kind: 'package', name: id })
+
+test('V22b focus flow: entry snapshots once, walking pushes the previous root, repeat-tap pushes nothing', () => {
+  const flow = loadFocusFlow()
+  const byId = new Map([['a@1', PKG('a')], ['b@1', PKG('b')], ['c@1', PKG('c')]])
+  flow.reset({ byId })
+  let act = flow.act('a@1')
+  assert.deepEqual([act.entered, act.walked, act.exited], [true, false, false], 'package tap from plain view = ENTRY')
+  assert.deepEqual(flow.state.focus, { rootId: 'a@1', depth: null })
+  assert.deepEqual(flow.CALLS, ['snapshot'], 'entry saves the viewport exactly once')
+  assert.deepEqual(flow.state.pathStack, [], 'a fresh root starts with an empty stack')
+  act = flow.act('a@1')
+  assert.deepEqual([act.entered, act.walked], [false, false], 'tapping the current root again is inert')
+  assert.deepEqual(flow.CALLS, ['snapshot'], '…and never re-snapshots')
+  act = flow.act('b@1')
+  assert.deepEqual([act.entered, act.walked], [false, true], 'WALK inside the path')
+  assert.equal(flow.state.focus.rootId, 'b@1')
+  assert.deepEqual(flow.state.pathStack, ['a@1'], 'the previous root entered the stack')
+  assert.deepEqual(flow.CALLS, ['snapshot'], 'walking does NOT overwrite the entry snapshot')
+  act = flow.act('c@1')
+  assert.deepEqual(flow.state.pathStack, ['a@1', 'b@1'])
+  act = flow.act('b@1')
+  assert.deepEqual(flow.state.pathStack, ['a@1', 'b@1', 'c@1'], 'back-and-forth walks stack (the user can walk back)')
+})
+
+test('V22b focus flow: exit clears focus+stack and arms the viewport restore; edge taps keep the path', () => {
+  const flow = loadFocusFlow()
+  flow.reset({ byId: new Map([['a@1', PKG('a')], ['b@1', PKG('b')]]) })
+  flow.act('a@1')
+  flow.act('b@1')
+  let act = flow.act(null)
+  assert.deepEqual([act.entered, act.walked, act.exited], [false, false, true], 'blank tap = EXIT')
+  assert.equal(flow.state.focus, null, 'focus cleared')
+  assert.deepEqual(flow.state.pathStack, [], 'the stack empties with the focus')
+  assert.equal(flow.state.restore, true, 'the saved viewport is armed for the animate-back')
+  assert.equal(flow.state.viewport, null, 'the snapshot itself is consumed')
+  // an edge tap keeps the current focus (edges are not roots, R35)
+  flow.reset({ byId: new Map([['a@1', PKG('a')]]) })
+  flow.act('a@1')
+  act = flow.act('agg:g:x|g:y')
+  assert.deepEqual([act.entered, act.walked, act.exited], [false, false, false], 'an edge tap is inert for the path')
+  assert.equal(flow.state.focus.rootId, 'a@1', 'focus survives')
+  assert.deepEqual(flow.state.pathStack, [], 'no phantom push from the same root')
+  // a non-package node (profile / group card / zone) exits
+  act = flow.act('profile:web')
+  assert.equal(act.exited, true, 'profile tap exits the path (only packages root)')
+  // exit while no snapshot exists (focus installed by reveal/deep-link): exits without a restore
+  flow.reset({ byId: new Map([['a@1', PKG('a')]]) })
+  flow.state.focus = { rootId: 'a@1', depth: null } // installed WITHOUT the entry snapshot
+  act = flow.act(null)
+  assert.equal(act.exited, true)
+  assert.equal(flow.state.restore, false, 'nothing to restore to — plain repaint instead')
+})
+
+test('V22b focus flow: the depth control flows through focusForId with the ctl value', () => {
+  const flow = loadFocusFlow()
+  flow.reset({ byId: new Map([['a@1', PKG('a')]]) })
+  flow.depth(2)
+  const act = flow.act('a@1')
+  assert.equal(act.entered, true)
+  assert.deepEqual(flow.state.focus, { rootId: 'a@1', depth: 2 }, 'the slider value rides the entry')
+})
+
+// ---------- fake cytoscape: ek-off (UI-layer edgeKinds in focus mode) ----------
+
+test('V22b ek-off: focus edges whose kind the user unchecked get ek-off; the class clears on every run', () => {
+  const Model = loadModel()
+  const logic = loadFocusLogic()
+  const graph = fixture()
+  const els = paintElements(Model, graph, { focus: { rootId: A1, depth: null } })
+  const cy = makeFakeCy(els)
+  const real = (s, t, k) => `e:${s}|${t}|${k}`
+  // fixture focus of A1 induces: A1→U1 dep, A1→X1 peer, X1→U1 dep, X1→A1
+  // peer-optional, B1→A1 dep, WB→A1 mount. Only dep stays checked.
+  logic.apply({
+    cy, graph, byId: byIdMap(graph), groupZone: zoneTable(graph),
+    focus: { rootId: A1, depth: null }, selected: A1, view: { edgeKinds: new Set(['dep']) },
+  })
+  for (const dep of [real(A1, U1, 'dep'), real(X1, U1, 'dep'), real(B1, A1, 'dep')]) {
+    assert.ok(cy.getElementById(dep).length, `the focus view carries ${dep}`)
+    assert.ok(!cy.classesOf(dep).includes('ek-off'), `${dep} is checked -> stays visible`)
+  }
+  for (const off of [real(WB, A1, 'mount'), real(A1, X1, 'peer'), real(X1, A1, 'peer-optional')]) {
+    assert.ok(cy.getElementById(off).length, `the focus view carries ${off}`)
+    assert.ok(cy.classesOf(off).includes('ek-off'), `${off} unchecked -> ek-off (display:none rule hides it)`)
+    assert.ok(!cy.classesOf(off).includes('dim'), 'ek-off is NOT dim: the kind filter hides, the focus does not fade')
+  }
+  // edgeKinds: null (all checked) hides nothing
+  logic.apply({
+    cy, graph, byId: byIdMap(graph), groupZone: zoneTable(graph),
+    focus: { rootId: A1, depth: null }, selected: A1, view: { edgeKinds: null },
+  })
+  for (const el of els) assert.ok(!cy.classesOf(el.data.id).includes('ek-off'), 'all kinds checked -> no ek-off anywhere')
+  // a cleared run strips ek-off everywhere (same removeClass sweep as the f-* nine)
+  logic.apply({
+    cy, graph, byId: byIdMap(graph), groupZone: zoneTable(graph),
+    focus: null, selected: null, view: { edgeKinds: new Set(['dep']) },
+  })
+  for (const el of els) assert.ok(!cy.classesOf(el.data.id).includes('ek-off'), `no stale ek-off on ${el.data.id}`)
+})
+
+// ---------- real dist: ctx + ek-off are VALID (and do what they claim) ----------
+
+test('V22b dist validity: node.ctx dashed outline + edge.ek-off display:none parse and compute in 3.34.1', () => {
+  const Model = loadModel()
+  const Cytoscape = loadVendoredCytoscape()
+  const graph = fixture()
+  const els = paintElements(Model, graph, { focus: { rootId: A1, depth: null } })
+  // the app applies ek-off at runtime; replay it on one edge for the probe
+  const edgeId = els.find((e) => e.group === 'edges').data.id
+  els.forEach((e) => { if (e.data.id === edgeId) e.classes = [...e.classes, 'ek-off'] })
+  const mod = loadAppStyle(graph)
+  for (const theme of ['light', 'dark']) {
+    let cy
+    const warns = captureWarnings(() => {
+      cy = Cytoscape({ headless: true, styleEnabled: true, elements: els })
+      cy.style(mod.styleFor(theme))
+    })
+    try {
+      assert.deepEqual(warns, [], `${theme}: the frozen dist rejected the V22b style rules:\n  ${warns.join('\n  ')}`)
+      const zone = cy.getElementById('cat:kernel')
+      assert.ok(zone.length && zone.hasClass('ctx'), 'the focus view zones carry ctx')
+      assert.equal(pstr(zone, 'border-style'), 'dashed', 'ctx paints the dashed outline')
+      assert.ok(pnum(zone, 'background-opacity') <= 0.08,
+        `ctx containers fade to background-opacity <= 0.08 (got ${pnum(zone, 'background-opacity')})`)
+      const card = cy.getElementById('g:bundle')
+      assert.equal(pstr(card, 'border-style'), 'dashed', 'ctx also restyles the group containers')
+      const hidden = cy.getElementById(edgeId)
+      assert.equal(pstr(hidden, 'display'), 'none', 'ek-off hides the edge — display:none is VALID for edges in this dist')
+    } finally {
+      if (cy) cy.destroy()
+    }
+  }
+})
+
+// ---------- real headless cytoscape: fit-to-path excludes ctx numerically ----------
+
+function loadViewportLogic() {
+  const src = readFileSync(join(WEB, 'app.js'), 'utf8')
+  const body = [
+    extractBalanced(src, 'function pathFitEles(cy) {') + '\n',
+    extractBalanced(src, 'function snapshotViewport() {') + '\n',
+    extractBalanced(src, 'function restoreViewport() {') + '\n',
+    extractBalanced(src, 'function animateFitPath() {') + '\n',
+    'var state = { cy: null, graph: null, tableMode: false, focus: null, viewport: null, restore: false }\n',
+    'return { state: state, pathFitEles: pathFitEles, snapshot: snapshotViewport, restoreVp: restoreViewport, animateFit: animateFitPath }',
+  ].join('')
+  return new Function(body)()
+}
+
+test('V22b fit-to-path: the fit selection holds only pkg/profile nodes and zooms in tighter than the ctx-padded fit', () => {
+  const Model = loadModel()
+  const Cytoscape = loadVendoredCytoscape()
+  const graph = fixture()
+  const els = paintElements(Model, graph, { focus: { rootId: A1, depth: null } })
+  const mod = loadAppStyle(graph)
+  const vp = loadViewportLogic()
+  let cy
+  captureWarnings(() => {
+    cy = Cytoscape({ headless: true, styleEnabled: true, elements: els })
+    cy.style(mod.styleFor('light'))
+  })
+  try {
+    vp.state.cy = cy
+    vp.state.focus = { rootId: A1, depth: null }
+    const pathEles = vp.pathFitEles(cy)
+    const pathIds = pathEles.map((e) => e.id())
+    const want = els.filter((e) => e.group === 'nodes' && (e.data.kind === 'pkg' || e.data.kind === 'profile')).map((e) => e.data.id)
+    assert.ok(want.length >= 4, 'the focus view carries a real member set (fixture sanity)')
+    assert.deepEqual(pathIds.sort(), want.sort(), 'fit eles = exactly the pkg/profile members, nothing else')
+    assert.equal(pathEles.some((e) => e.hasClass('ctx')), false, 'no ctx container sneaks into the fit set')
+    // Numerical before/after on the FIT ITSELF. A probe against the frozen dist
+    // (see v22b-fit-probe during development) proved headless renders into a 1×1
+    // window cy.viewport() cannot resize — so cy.fit()'s resulting zoom is
+    // degenerate in node; what is NOT degenerate is the fit INPUT: the rendered
+    // bounding boxes (styleEnabled, style from styleFor). Run those through
+    // cytoscape's own fit formula for a real browser window: fitting the path
+    // MUST pick a strictly tighter zoom than fitting the ctx-padded whole.
+    const boxFull = cy.elements().boundingBox()
+    const boxPath = pathEles.boundingBox()
+    assert.ok(boxPath.w > 0 && boxPath.h > 0 && boxPath.w < boxFull.w && boxPath.h < boxFull.h,
+      `path bbox ${Math.round(boxPath.w)}×${Math.round(boxPath.h)} vs full ${Math.round(boxFull.w)}×${Math.round(boxFull.h)}`)
+    const W = 1200, H = 800, PAD = 40
+    const fitZoom = (bb) => Math.min((W - 2 * PAD) / bb.w, (H - 2 * PAD) / bb.h)
+    const zFull = fitZoom(boxFull), zPath = fitZoom(boxPath)
+    assert.ok(zPath > zFull,
+      `fit-to-path zooms in (${zPath.toFixed(3)} > ${zFull.toFixed(3)}) in a ${W}×${H} window — the path fills the screen`)
+    // animateFitPath goes through cy.animate ONLY (never a direct viewport write)
+    const anims = []
+    cy.animate = (opts) => { anims.push(opts) }
+    vp.animateFit()
+    assert.equal(anims.length, 1, 'entry/walk animate exactly one fit')
+    assert.equal(anims[0].duration, 250, 'the entry animation is 250ms')
+    assert.equal(anims[0].fit.padded, true, 'padded fit')
+    assert.equal(anims[0].fit.eles.length, want.length, 'animated to the path elements')
+    vp.state.focus = null
+    vp.animateFit()
+    assert.equal(anims.length, 1, 'no fit animation outside focus mode')
+  } finally {
+    cy.destroy()
+  }
+})
+
+test('V22b viewport snapshot/restore: snapshot deep-copies, restore animates zoom+pan back and self-disarms', () => {
+  const vp = loadViewportLogic()
+  const anims = []
+  const pan = { x: 11, y: 22 }
+  vp.state.cy = {
+    zoom: () => 2.5,
+    pan: () => pan,
+    animate: (o) => { anims.push(o) },
+  }
+  vp.snapshot()
+  pan.x = 999 // the app must not alias cytoscape's live pan object
+  assert.deepEqual(vp.state.viewport, { zoom: 2.5, pan: { x: 11, y: 22 } }, 'a deep snapshot survives the live pan mutation')
+  vp.state.restore = true
+  vp.restoreVp()
+  assert.equal(anims.length, 1)
+  assert.deepEqual([anims[0].zoom, anims[0].pan.x, anims[0].pan.y, anims[0].duration], [2.5, 11, 22, 250],
+    'restore rides cy.animate({zoom, pan, duration}) — the sole viewport-animation path')
+  assert.equal(vp.state.restore, false, 'restore is one-shot (armed once, spent once)')
+  vp.restoreVp()
+  assert.equal(anims.length, 1, 'without a snapshot there is nothing to animate back to')
+  // table mode never animates the (absent) canvas
+  vp.state.viewport = { zoom: 1, pan: { x: 0, y: 0 } }
+  vp.state.restore = true
+  vp.state.tableMode = true
+  vp.restoreVp()
+  assert.equal(anims.length, 1, 'table fallback skips the animation')
+  assert.equal(vp.state.restore, false)
+})
+
+// ---------- Esc ordering (extracted against stub DOM) ----------
+
+function loadEscLogic() {
+  const src = readFileSync(join(WEB, 'app.js'), 'utf8')
+  const body = [
+    'var CALLS = []\n',
+    'var BOX = { hidden: true }\n',
+    'var document = { getElementById: function (id) { return id === \x27search-results\x27 ? BOX : null } }\n',
+    'var state = { focus: null, pathStack: [], viewport: null, restore: false, selected: \x27z\x27 }\n',
+    'function syncFocusCtl() { CALLS.push(\x27sync\x27) }\n',
+    'function renderDetails(id) { CALLS.push(\x27details:\x27 + id) }\n',
+    'function paint(x) { CALLS.push(\x27paint:\x27 + String(x)) }\n',
+    'function restoreViewport() { CALLS.push(\x27restore\x27) }\n',
+    extractBalanced(src, 'function exitFocus() {') + '\n',
+    extractBalanced(src, 'function onGlobalKey(e) {') + '\n',
+    'return { BOX: BOX, CALLS: CALLS, state: state, key: onGlobalKey }',
+  ].join('')
+  return new Function(body)()
+}
+
+test('V22b Esc ordering: open search results close first; then focus exits; text inputs are never hijacked', () => {
+  const esc = loadEscLogic()
+  // 1. results open -> ONLY the results close, even with a live focus
+  esc.BOX.hidden = false
+  esc.state.focus = { rootId: 'a@1', depth: null }
+  esc.state.pathStack = ['x']
+  esc.key({ key: 'Escape', target: { tagName: 'BODY' } })
+  assert.equal(esc.BOX.hidden, true, 'the results box closed')
+  assert.ok(esc.state.focus, 'the focus survived the results-closing Esc')
+  assert.deepEqual(esc.CALLS, [], 'nothing else ran')
+  // 2. results closed + focus active -> the path exits (keep-viewport repaint + restore)
+  esc.state.viewport = { zoom: 2, pan: { x: 0, y: 0 } }
+  esc.key({ key: 'Escape', target: { tagName: 'BODY' } })
+  assert.equal(esc.state.focus, null, 'focus exited')
+  assert.deepEqual(esc.state.pathStack, [], 'stack cleared by the exit')
+  assert.equal(esc.state.restore, true, 'viewport restore armed…')
+  assert.deepEqual(esc.CALLS, ['details:z', 'sync', 'paint:false', 'restore'],
+    'details -> ctl -> keep-viewport paint -> animate-back, in order')
+  // 3. plain view -> no-op
+  esc.CALLS.length = 0
+  esc.key({ key: 'Escape', target: { tagName: 'BODY' } })
+  assert.deepEqual(esc.CALLS, [], 'no results, no focus -> Esc does nothing')
+  // 4. a text input keeps its own Esc semantics (future-proof guard) — with results CLOSED
+  esc.state.focus = { rootId: 'a@1', depth: null }
+  for (const tag of ['INPUT', 'TEXTAREA', 'SELECT']) {
+    esc.key({ key: 'Escape', target: { tagName: tag } })
+    assert.ok(esc.state.focus, `${tag} keeps the focus mode intact`)
+  }
+  esc.key({ key: 'Escape', target: { isContentEditable: true } })
+  assert.ok(esc.state.focus, 'contenteditable too')
+  assert.deepEqual(esc.CALLS, [], 'not one handler ran while typing')
+  // and with results OPEN, Esc still closes just the results from inside the search input
+  esc.BOX.hidden = false
+  esc.key({ key: 'Escape', target: { tagName: 'INPUT' } })
+  assert.equal(esc.BOX.hidden, true, 'results still close (the brief-exempt branch)')
+  assert.ok(esc.state.focus, '…without touching the focus')
+  // 5. unrelated keys ignore
+  esc.BOX.hidden = false
+  esc.key({ key: 'q', target: { tagName: 'BODY' } })
+  assert.equal(esc.BOX.hidden, false, 'not Esc -> nothing happens')
+})
+
+// ---------- peek: single reusable card, focus-invariant ----------
+
+function loadPeekDom() {
+  const src = readFileSync(join(WEB, 'app.js'), 'utf8')
+  const cap = /var PEEK_DESC_CAP = [^\n;]+/.exec(src)
+  assert.ok(cap, 'app.js must still declare `var PEEK_DESC_CAP = …`')
+  const body = [
+    'var CREATE_CALLS = 0, HIDES = 0\n',
+    'function El(tag) { this.tag = tag; this.children = []; this.className = \x27\x27; this.hidden = true; this.style = {}; this.appendChild = function (c) { this.children.push(c); return c } }\n',
+    'Object.defineProperty(El.prototype, \x27textContent\x27, { get: function () { return this.text || \x27\x27 }, set: function (v) { this.text = String(v); this.children.length = 0 } })\n',
+    'var GRAPH = new El(\x27div\x27); GRAPH.clientWidth = 500; GRAPH.clientHeight = 400\n',
+    'var document = {\n',
+    '  getElementById: function (id) {\n',
+    '    if (id === \x27graph\x27) return GRAPH\n',
+    '    if (id === \x27peek-card\x27) {\n',
+    '      for (var i = 0; i < GRAPH.children.length; i++) { if (GRAPH.children[i].id === \x27peek-card\x27) return GRAPH.children[i] }\n',
+    '      return null\n',
+    '    }\n',
+    '    return null\n',
+    '  },\n',
+    '  createElement: function (tag) { CREATE_CALLS++; return new El(tag) },\n',
+    '  createTextNode: function (s) { return { tag: \x27#text\x27, text: String(s), children: [] } },\n',
+    '}\n',
+    'var state = { graph: null, byId: new Map(), lang: \x27zh\x27, focus: null, selected: null, tableMode: false }\n',
+    'function t(k) { return k }\n',
+    'function hidePeek() { HIDES++ }\n',
+    cap[0] + '\n',
+    extractBalanced(src, 'var DOWN_EDGE_KINDS = [') + '\n',
+    extractBalanced(src, 'var UP_EDGE_KINDS = [') + '\n',
+    extractBalanced(src, 'function catTitle(categories, catId, lang) {') + '\n',
+    extractBalanced(src, 'function groupZoneOf(graph, gid) {') + '\n',
+    extractBalanced(src, 'function buildPeekCard(n, graph, byId, lang) {') + '\n',
+    extractBalanced(src, 'function escText(el, s) {') + '\n',
+    extractBalanced(src, 'function renderPeek(card, p) {') + '\n',
+    extractBalanced(src, 'function peekCard() {') + '\n',
+    extractBalanced(src, 'function positionPeek(card, el) {') + '\n',
+    extractBalanced(src, 'function showPeek(el) {') + '\n',
+    'return { state: state, GRAPH: GRAPH, CREATE_CALLS: function () { return CREATE_CALLS }, CREATE_CALLS_N: 0, showPeek: showPeek, peekCard: peekCard }',
+  ].join('')
+  return new Function(body)()
+}
+
+test('V22b peek works WHILE a focus is active and never touches focus/selected (the core user story)', () => {
+  const pk = loadPeekDom()
+  const g = peekFixture()
+  pk.state.graph = g
+  pk.state.byId = byIdMap(g)
+  pk.state.focus = { rootId: 'a@1', depth: null } // the user is deep in path mode
+  pk.state.selected = 'a@1'
+  const mkNode = (id, kind, name, count) => ({
+    id: () => id,
+    data: (k) => ({ id: id, kind: kind, name: name, count: count }[k]),
+    removed: () => false,
+    renderedBoundingBox: () => ({ x1: 10, y1: 10, x2: 26, y2: 26 }),
+  })
+  pk.showPeek(mkNode('b@1', 'pkg', 'b@1', undefined))
+  const card = pk.GRAPH.children[0]
+  assert.ok(card, 'the peek card lives inside the #graph container')
+  const texts = card.children.map((c) => c.text)
+  assert.ok(texts.some((s) => s.startsWith('beta@2.0.0')), `the peeked member renders: ${JSON.stringify(texts)}`)
+  assert.deepEqual([pk.state.focus.rootId, pk.state.selected], ['a@1', 'a@1'],
+    'peeking a lit member changed NOTHING about the root or the selection — focus is intact')
+  // the same card element is reused for the next hover (no per-hover DOM churn)
+  pk.showPeek(mkNode('c@1', 'pkg', 'c@1', undefined))
+  assert.equal(pk.GRAPH.children.length, 1, 'the same single card lives in #graph, never a second one')
+  assert.equal(pk.GRAPH.children[0], card, '…and it is the SAME element, reused not rebuilt')
+  const texts2 = pk.GRAPH.children[0].children.map((c) => c.text)
+  assert.ok(texts2.some((s) => s.startsWith('gamma@3.0.0')), 'and it now shows the new member')
+})
+
+// ---------- grep guards for the wiring that the fake harnesses cannot reach ----------
+
+test('V22b wiring guards: LOD suspend in focus, dbl-click gates, paint mirrors focus into view, chip buttons', () => {
+  const src = readFileSync(join(WEB, 'app.js'), 'utf8')
+  // LOD suspends while a focus is active, and the zoom repaint is viewport-keeping
+  assert.match(src, /if \(state\.focus \|\| state\.granMode !== 'auto'\)/, 'the debounced zoom tick skips focus mode and pinned tiers')
+  assert.match(src, /decideGranularity\(state\.granMode, state\.cy\.zoom\(\), LOD_T_IN, LOD_T_OUT\)/, 'the zoom tick decides through the pure function')
+  assert.match(src, /if \(eff === null \|\| eff === state\.view\.granularity\) return/, 'only an EFFECTIVE change repaints (string compare)')
+  assert.match(src, /\}, LOD_DEBOUNCE_MS\)/, 'the zoom handler runs debounced')
+  // double-click gates: group collapse only at the pinned groups tier, never inside a path
+  const dbl = src.slice(src.indexOf("cy.on('dbltap', 'node.group'"), src.indexOf("cy.on('tap', 'node, edge'"))
+  assert.match(dbl, /if \(state\.granMode !== 'groups' \|\| state\.focus\) return/,
+    'auto/packages tiers make group dbl-click a no-op (README); a live path ignores it too')
+  // paint is the single place the focus mirror enters the model view
+  assert.match(src, /state\.view\.focus = state\.focus/, 'paint mirrors state.focus into view.focus (view→paint flow)')
+  assert.match(src, /built\.meta\.focus && typeof built\.meta\.focus === 'object'/,
+    'the fit branch keys on the THREE-STATE meta.focus (absent / null / object)')
+  assert.match(src, /state\.cy\.fit\(pathFitEles\(state\.cy\), 40\)/, 'a focus-active refit fits the path, not the ctx-padded whole')
+  // chip UI: solo on dblclick + the two row-tail buttons
+  assert.match(src, /addEventListener\('dblclick'/, 'chips carry a dblclick handler (solo)')
+  assert.match(src, /state\.view\.filterCats = soloToggleFor\(cats, state\.view\.filterCats, id\)/, 'dblclick routes through the pure solo predicate')
+  assert.match(src, /t\('chipShowAll'\)/, 'show-all button label')
+  assert.match(src, /t\('chipHideAll'\)/, 'hide-all button label')
+  assert.match(src, /state\.view\.filterCats = showAllCats\(\)/, 'show-all clears the exclude set')
+  assert.match(src, /state\.view\.filterCats = hideAllCats\(cats\)/, 'hide-all excludes everything')
+  // the peek card is created once and reused; hovering never writes focus
+  const peekFn = src.slice(src.indexOf('function showPeek(el) {'), src.indexOf('function positionPeek(card, el) {'))
+  assert.ok(peekFn.includes('function showPeek(el) {'), 'showPeek still exists')
+  assert.doesNotMatch(peekFn, /createElement/, 'showPeek creates nothing — the reusable card comes from peekCard()')
+  assert.doesNotMatch(peekFn, /state\.focus\s*=[^=]|state\.selected\s*=[^=]|selectNode\(|exitFocus\(/,
+    'hovering a member cannot disturb the focus/selection')
+  assert.match(src, /granMode: 'auto'/, 'the new UI defaults the granularity segment to auto')
+  assert.match(src, /granularity: 'groups'/, 'the model-level default stays groups until the zoom decides otherwise')
+})
+
+test('V22b index.html: LOD segment control, back button, and the exit rename ship', () => {
+  const html = readFileSync(join(WEB, 'index.html'), 'utf8')
+  assert.match(html, /<span id="lod-ctl"/, 'the three-way granularity control exists')
+  for (const seg of ['auto', 'groups', 'packages']) {
+    assert.ok(html.includes(`data-seg="${seg}"`), `segment ${seg} button declared`)
+  }
+  for (const key of ['lodAuto', 'lodGroups', 'lodPkgs']) {
+    assert.ok(html.includes(`data-i18n="${key}"`), `${key} label is bilingual`)
+  }
+  assert.match(html, /<button id="path-back"[^>]*hidden/, 'the breadcrumb back button ships hidden inside #focus-ctl')
+  const ctl = /<span id="focus-ctl"[\s\S]*?<\/span>/.exec(html)
+  assert.ok(ctl, '#focus-ctl block')
+  assert.ok(html.indexOf('id="path-back"') > html.indexOf('id="focus-ctl"'), 'the breadcrumb rides INSIDE #focus-ctl')
+  assert.match(html, /id="focus-clear" data-i18n="focusOff">退出路径/, '取消聚焦 renamed 退出路径 (exit path)')
+})
+
+test('V22b style.css: peek card, segment control, tier headers and breadcrumb get minimal rules', () => {
+  const css = readFileSync(join(WEB, 'style.css'), 'utf8')
+  assert.match(css, /#graph\s*\{[^}]*position:\s*relative/, '#graph anchors the absolute peek card')
+  assert.match(css, /#peek-card\s*\{[^}]*position:\s*absolute/, 'the peek card is absolutely positioned')
+  assert.match(css, /#peek-card\s*\{[^}]*pointer-events:\s*none/, 'the card never eats canvas events (no hover flicker loop)')
+  assert.match(css, /#peek-card\[hidden\]\s*\{[^}]*display:\s*none/, 'hidden peek is truly invisible')
+  assert.match(css, /#lod-ctl\s*\{[^}]*display:\s*inline-flex/, 'segment control display')
+  assert.match(css, /#lod-ctl button\.on\b/, 'the active segment is marked')
+  assert.match(css, /\.tier\s*\{[^}]*cursor:\s*pointer/, 'tier headers are clickable')
+  assert.match(css, /#path-back\[hidden\]\s*\{[^}]*display:\s*none/, 'the breadcrumb hides via [hidden] like its siblings')
+})
+
+// ---------- chip bar behaviour (fake DOM) ----------
+
+function loadChipDom() {
+  const src = readFileSync(join(WEB, 'app.js'), 'utf8')
+  const body = [
+    'var PAINTS = []\n',
+    'function El(tag) {\n',
+    '  this.tag = tag; this.children = []; this.className = \x27\x27; this.text = \x27\x27; this.handlers = {}; this.style = {}\n',
+    '  var self = this; this.children_ = this.children\n',
+    '  this.appendChild = function (c) { this.children.push(c); return c }\n',
+    '  this.addEventListener = function (k, fn) { this.handlers[k] = fn }\n',
+    '  this.classList = { add: function () {}, toggle: function () {} }\n',
+    '}\n',
+    'Object.defineProperty(El.prototype, \x27textContent\x27, {\n',
+    '  get: function () { return this.text },\n',
+    '  set: function (v) { this.text = String(v); this.children.length = 0 },\n',
+    '})\n',
+    'var BOX = new El(\x27div\x27)\n',
+    'var document = { getElementById: function (id) { return id === \x27zone-chips\x27 ? BOX : null }, createElement: function (t) { return new El(t) } }\n',
+    'var state = { graph: null, view: { filterCats: new Set() }, theme: \x27light\x27, lang: \x27zh\x27 }\n',
+    extractBalanced(src, 'var ZONE_COLORS = {') + '\n',
+    extractBalanced(src, 'var ZONE_IDS_FALLBACK = [') + '\n',
+    extractBalanced(src, 'function soloToggleFor(allCats, current, id) {') + '\n',
+    extractBalanced(src, 'function hideAllCats(allCats) {') + '\n',
+    extractBalanced(src, 'function showAllCats() {') + '\n',
+    'function t(k) { return k }\n',
+    'function paint() { PAINTS.push([].concat(Array.from(state.view.filterCats)).sort().join(\x27,\x27)) }\n',
+    'function escText(el, s) { el.textContent = s == null ? \x27\x27 : String(s) }\n',
+    'function catById() { var m = new Map(); (((state.graph && state.graph.categories) || []).forEach(function (c) { if (c && c.id != null) m.set(String(c.id), c) })); return m }\n',
+    extractBalanced(src, 'function zoneTitle(catId) {') + '\n',
+    extractBalanced(src, 'function buildZoneChips() {') + '\n',
+    'return { state: state, BOX: BOX, PAINTS: PAINTS, build: buildZoneChips }',
+  ].join('')
+  return new Function(body)()
+}
+
+test('V22b chip bar: click exclusion (V6) survives, dblclick solos, row-tail buttons show/hide all', () => {
+  const dom2 = loadChipDom()
+  dom2.state.graph = {
+    categories: [
+      { id: 'kernel', zh: 'Kernel', en: 'Kernel' },
+      { id: 'tools', zh: 'Tools', en: 'Tools' },
+      { id: 'plugin', zh: 'Plugin', en: 'Plugin' },
+    ],
+  }
+  dom2.build()
+  const kids = () => dom2.BOX.children
+  assert.equal(kids().length, 5, 'three chips + the two row-tail buttons')
+  assert.equal(kids()[3].text, 'chipShowAll')
+  assert.equal(kids()[4].text, 'chipHideAll')
+  // V6 semantics survive: single click excludes the chip zone, click again restores
+  kids()[0].handlers.click()
+  assert.deepEqual([...dom2.state.view.filterCats], ['kernel'], 'single click still EXCLUDES (R32)')
+  kids()[0].handlers.click()
+  assert.deepEqual([...dom2.state.view.filterCats], [], '…and the second click restores')
+  // dblclick solos (the two co-fired clicks cancel out: kernel was toggled off then on)
+  kids()[0].handlers.click(); kids()[0].handlers.click(); kids()[0].handlers.dblclick()
+  assert.deepEqual([...dom2.state.view.filterCats].sort(), ['plugin', 'tools'], 'double-click kernel = every other zone hidden')
+  const afterRebuild = kids()
+  afterRebuild[0].handlers.click(); afterRebuild[0].handlers.click(); afterRebuild[0].handlers.dblclick()
+  assert.deepEqual([...dom2.state.view.filterCats], [], 'the same chip again restores everything (solo is a toggle)')
+  kids()[4].handlers.click()
+  assert.deepEqual([...dom2.state.view.filterCats].sort(), ['kernel', 'plugin', 'tools'], 'hide-all excludes every zone')
+  kids()[3].handlers.click()
+  assert.deepEqual([...dom2.state.view.filterCats], [], 'show-all clears the exclude set')
+  assert.ok(dom2.PAINTS.length >= 8, 'every mutation repaints')
 })

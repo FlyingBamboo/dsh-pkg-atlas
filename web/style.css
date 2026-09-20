@@ -22,7 +22,18 @@ main { display: flex; flex: 1; min-height: 0; position: relative; }
    app.js still declares the theme on `core`; the pane is painted here with the
    SAME two colors, and light-dark() tracks the same prefers-color-scheme signal
    app.js resolves at boot (the pairing is pinned by test/render-smoke.test.mjs). */
-#graph { flex: 1; min-width: 0; background: light-dark(#f7f8fa, #12161b); }
+#graph { flex: 1; min-width: 0; position: relative; background: light-dark(#f7f8fa, #12161b); }
+/* V22b hover peek: ONE reusable absolutely-positioned card inside #graph
+   (position:relative above anchors it; app.js positions it from the rendered
+   bbox). pointer-events:none so it can never steal canvas gestures nor
+   generate its own hide/show flicker loop. */
+#peek-card { position: absolute; z-index: 4; pointer-events: none; max-width: 250px; padding: 6px 9px; border: 1px solid #8886; border-radius: 6px; background: light-dark(#ffffffee, #12161bee); font-size: 11px; line-height: 1.45; box-shadow: 0 2px 8px #0002; }
+#peek-card[hidden] { display: none; }
+#peek-card .pk-title { font-weight: 600; overflow-wrap: anywhere; }
+#peek-card .pk-sub { opacity: .7; overflow-wrap: anywhere; }
+#peek-card .pk-desc { margin-top: 3px; opacity: .85; overflow-wrap: anywhere; }
+#peek-card .pk-counts { margin-top: 3px; opacity: .8; }
+#peek-card .pk-flags { margin-top: 2px; color: #d0433f; }
 /* V6 fills #legend and #zone-chips; empty containers must stay invisible (V5).
    V6 adds a clickable collapse button inside #legend → pointer-events must be
    auto (V5 shipped none because it was decorative-only and empty). */
@@ -53,6 +64,22 @@ header .chips { display: inline-flex; gap: 6px; flex-wrap: wrap; align-items: ce
 .chip.off { opacity: .38; }
 .chip.off .n { text-decoration: line-through; }
 #edge-kinds label { font-size: 11px; }
+/* V22b LOD segment control (自动|组级|包级) + the active-segment mark */
+#lod-ctl { display: inline-flex; align-items: stretch; border: 1px solid #8886; border-radius: 5px; overflow: hidden; }
+#lod-ctl button { border: 0; border-radius: 0; padding: 2px 8px; font-size: 11px; background: light-dark(#fff, #171c22); color: inherit; cursor: pointer; }
+#lod-ctl button + button { border-left: 1px solid #8885; }
+#lod-ctl button.on { background: light-dark(#dde7f3, #2a3646); font-weight: 600; }
+/* V22b chip row-tail buttons (show all / hide all) read slightly flatter */
+.chip.chip-all { opacity: .8; font-size: 10px; }
+/* V22b detail path-list tier headers */
+#details .tier { display: block; width: 100%; text-align: left; border: 0; background: none; cursor: pointer; padding: 1px 4px; margin-top: 3px; font: inherit; font-size: 11px; font-weight: 600; opacity: .8; color: inherit; }
+#details .tier:hover { background: #8882; }
+#details .tier-body { padding-left: 6px; }
+#details .tier-body[hidden] { display: none; }
+/* V22b breadcrumb back button rides #focus-ctl's inline-flex; the attribute
+   guard keeps it truly hidden (same trap class as #focus-ctl/#progress-bar). */
+#path-back { border: 1px solid #8885; border-radius: 4px; background: light-dark(#fff, #171c22); color: inherit; cursor: pointer; font-size: 11px; padding: 1px 6px; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#path-back[hidden] { display: none; }
 #focus-ctl { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; }
 #focus-ctl[hidden] { display: none; } /* the inline-flex above would beat the UA [hidden] rule */
 #progress-bar { display: flex; align-items: center; gap: 8px; padding: 4px 12px; }

@@ -688,54 +688,10 @@ test('V5-16c I-5 slot flow is collapse-independent (V4 coordinate constancy re-p
 // =========================================================================
 // Task V2.2a — view.granularity + view.focus subgraph + canonical pathSets.
 // The pathSets cases are the app-side V21 semantics (render-smoke) re-run INSIDE
-// the model sandbox, plus a byte-parity pin against the app.js copy that still
-// ships there (deleted in task B).
+// the model sandbox. V22b deleted the app.js copy, so the former cross-copy
+// parity of V22-00 was MIGRATED (not dropped): its consumption half became a
+// grep guard and its semantics half a direct BFS expectation (see V22-00 below).
 // =========================================================================
-
-/** render-smoke's balanced extractor, copied so the app-side seam can be read
- *  without importing the test file (test-only helper, stays in this file). */
-function extractBalanced(src, anchor) {
-  const i = src.indexOf(anchor)
-  assert.ok(i >= 0, `app.js must still declare \`${anchor}\` (extraction anchor)`)
-  let j = i + anchor.length, depth = 1, inStr = null, inCom = null
-  for (; j < src.length; j++) {
-    const c = src[j], d = src[j + 1]
-    if (inCom) {
-      if (inCom === '//' && c === '\n') inCom = null
-      else if (inCom === '/*' && c === '*' && d === '/') { j++; inCom = null }
-      continue
-    }
-    if (inStr) {
-      if (c === '\\') { j++; continue }
-      if (c === inStr) inStr = null
-      continue
-    }
-    if (c === '/' && d === '/') { j++; inCom = '//'; continue }
-    if (c === '/' && d === '*') { j++; inCom = '/*'; continue }
-    if (c === '"' || c === "'" || c === '`') { inStr = c; continue }
-    if (c === '{' || c === '[') { depth++; continue }
-    if (c === '}' || c === ']') {
-      depth--
-      if (depth === 0) return src.slice(i, j + 1)
-      continue
-    }
-  }
-  assert.fail(`unbalanced text after \`${anchor}\``)
-}
-
-/** The STILL-SHIPPING app.js pathSets, lifted into a bare scope (same seam as
- *  render-smoke's loadAppPure — app.js must not be edited by this task). */
-function loadAppPathSets() {
-  const src = readFileSync(join(HERE, '..', 'web', 'app.js'), 'utf8')
-  const body = [
-    extractBalanced(src, 'var DOWN_EDGE_KINDS = [') + '\n',
-    extractBalanced(src, 'var UP_EDGE_KINDS = [') + '\n',
-    extractBalanced(src, 'function normalizeDepth(depth) {') + '\n',
-    extractBalanced(src, 'function pathSets(graph, rootId, depth) {') + '\n',
-    'return { pathSets: pathSets }',
-  ].join('')
-  return new Function(body)().pathSets
-}
 
 /** A pathSets result is only comparable across realms through its Sets. */
 function serSets(s) {
@@ -787,23 +743,28 @@ function chainGraph() {
 }
 const sortedIds = (s) => [...s].slice().sort()
 
-// ---------- canonical pathSets: exported surface + app-copy parity ----------
+// ---------- canonical pathSets: exported surface + V22b consumption guard ----------
 
-test('V22-00 AtlasModel.pathSets is the canonical export and is byte-parity with the app.js copy', () => {
+test('V22-00 (V22b migrated) AtlasModel.pathSets is canonical: app consumed it, copy deleted, BFS semantics stand', () => {
   const M = loadModel()
-  assert.equal(typeof M.pathSets, 'function', 'AtlasModel must export pathSets (canonical, task B consumes it)')
-  const appPathSets = loadAppPathSets()
-  const graphs = [dirGraph(), chainGraph(), fixture()]
-  const roots = ['r', 'member', 'iso', 'nope', 'a', 'd', A1, P1, WB]
-  const depths = [null, undefined, 0, 1, 2, 3, 99, 2.6, '2', NaN, -1]
-  for (const g of graphs) {
-    for (const root of roots) {
-      for (const d of depths) {
-        assert.equal(serSets(M.pathSets(g, root, d)), serSets(appPathSets(g, root, d)),
-          `model/app pathSets diverge on ${root}@${String(d)}`)
-      }
-    }
-  }
+  assert.equal(typeof M.pathSets, 'function', 'AtlasModel must export pathSets (canonical)')
+  // Consumption half of the old cross-copy parity: the app now READS the export.
+  const src = readFileSync(join(HERE, '..', 'web', 'app.js'), 'utf8')
+  assert.match(src, /AtlasModel\.pathSets\(/, 'app.js consumes AtlasModel.pathSets')
+  assert.doesNotMatch(src, /function pathSets\s*\(/, 'the V2.2a-era duplicate copy in app.js is gone')
+  // Semantics half: the BFS the app relies on, expected explicitly against the model.
+  const g = dirGraph()
+  const s = M.pathSets(g, 'u2', null)
+  assert.deepEqual(sortedIds(s.down), ['d1', 'd2', 'd3', 'r', 'u1'],
+    'u2 →(peer) u1 →(dep) r →(dep) d1 →(peer) d2 →(peer-opt) d3, the d1→d3 mount stays a non-down kind')
+  assert.deepEqual(sortedIds(s.downEdges),
+    ['e:d1|d2|peer', 'e:d2|d3|peer-optional', 'e:r|d1|dep', 'e:u1|r|dep', 'e:u2|u1|peer'].sort(),
+    'induced down edges = every traversed hop; the wrong-kind d1→d3 mount is NOT induced')
+  assert.deepEqual(sortedIds(s.up), [], 'nothing points into u2')
+  assert.deepEqual(sortedIds(s.upEdges), [], 'no up universe, no up edges')
+  const d1 = M.pathSets(g, 'u2', 1)
+  assert.deepEqual(sortedIds(d1.down), ['u1'], 'depth 1 cuts the walk…')
+  assert.deepEqual(sortedIds(d1.downEdges), ['e:u2|u1|peer'], '…and the induced set with it')
 })
 
 test('V22-01 pathSets: down follows OUT dep/peer/peer-opt only; up climbs IN edges incl. mount; root in neither', () => {
@@ -1163,4 +1124,31 @@ test('V22-17 focus mode ignores granularity/showRealCross; frozen graph+focus vi
   deepFreeze(fv)
   const v2 = M.buildView(g2, Object.assign(EXPANDED(), fv))
   assert.equal(v2.meta.focus.members, 6, 'the frozen view object was readable, and nothing wrote back')
+})
+
+// V22b review handover: pin the induced-edge dedup (graph-model.js focus branch
+// `fSeen` guard). Two BYTE-IDENTICAL (from,to,kind) lines must not produce the
+// same element id twice — cytoscape's add() would otherwise drop/replace under
+// undefined behaviour. (Test-file-only change; the model is untouched.)
+test('V22-18 focus view dedupes fully-duplicate (from,to,kind) edge lines', () => {
+  const M = loadModel()
+  const R = 'r@1.0.0', D = 'd@1.0.0'
+  const g = {
+    schema: 1, generatedAt: 'x', dshHome: '$DSH_HOME', warnings: [],
+    categories: [{ id: 'kernel', zh: 'k', en: 'k' }],
+    profiles: [],
+    groups: [{ id: 'g1', kind: 'official', category: 'kernel', packageCount: 2 }],
+    nodes: [node(R, 'r', 'package', 'official', 'g1', 'kernel', []),
+      node(D, 'd', 'package', 'official', 'g1', 'kernel', [])],
+    edges: [
+      { from: R, to: D, kind: 'dep' },
+      { from: R, to: D, kind: 'dep' },   // byte-identical duplicate line
+      { from: R, to: D, kind: 'peer' },  // same pair, different kind → a second, DISTINCT edge
+    ],
+  }
+  const res = M.buildView(g, { focus: { rootId: R, depth: null } })
+  assertFocusSet(res, 'duplicate edge lines') // already asserts id uniqueness
+  assert.deepEqual(plain(edgeEls(res).map((e) => e.data.id)), [`e:${R}|${D}|dep`, `e:${R}|${D}|peer`],
+    'exactly one element per DISTINCT (from,to,kind) — the dup collapses, the distinct kind survives')
+  assert.equal(res.meta.focus.edges, 2, 'meta agrees with the emitted element count')
 })

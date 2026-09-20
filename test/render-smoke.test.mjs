@@ -2264,7 +2264,8 @@ test('V22b focus flow: exit clears focus+stack and arms the viewport restore; ed
   assert.equal(flow.state.focus, null, 'focus cleared')
   assert.deepEqual(flow.state.pathStack, [], 'the stack empties with the focus')
   assert.equal(flow.state.restore, true, 'the saved viewport is armed for the animate-back')
-  assert.equal(flow.state.viewport, null, 'the snapshot itself is consumed')
+  assert.deepEqual(flow.state.viewport, { zoom: 3.3, pan: { x: 1, y: 2 } },
+    'the snapshot itself SURVIVES exitFocus — restoreViewport() is the only thing allowed to spend it (nulling it here made the animate-back guard bail)')
   // an edge tap keeps the current focus (edges are not roots, R35)
   flow.reset({ byId: new Map([['a@1', PKG('a')]]) })
   flow.act('a@1')
@@ -2422,7 +2423,9 @@ test('V22b fit-to-path: the fit selection holds only pkg/profile nodes and zooms
     vp.animateFit()
     assert.equal(anims.length, 1, 'entry/walk animate exactly one fit')
     assert.equal(anims[0].duration, 250, 'the entry animation is 250ms')
-    assert.equal(anims[0].fit.padded, true, 'padded fit')
+    assert.equal(anims[0].fit.padding, 40,
+      'the animate fit carries fit.padding = 40 — the frozen dist reads fit.padding (getFitViewport(v.eles, v.padding)); `padded` is not an animate option, so it silently meant padding 0. 40 also matches the structural refit cy.fit(pathFitEles(cy), 40) and the PAD used by the probe above')
+    assert.equal(anims[0].fit.padded, undefined, 'no inert `padded` key left on the animate options')
     assert.equal(anims[0].fit.eles.length, want.length, 'animated to the path elements')
     vp.state.focus = null
     vp.animateFit()
@@ -2521,6 +2524,157 @@ test('V22b Esc ordering: open search results close first; then focus exits; text
   esc.BOX.hidden = false
   esc.key({ key: 'q', target: { tagName: 'BODY' } })
   assert.equal(esc.BOX.hidden, false, 'not Esc -> nothing happens')
+})
+
+// ---------- wiring-level: the REAL tap/Esc handlers drive the REAL exit chain ----------
+// Everything that decides the path mode runs from app.js here: bindCy (the actual
+// cy.on('tap', …) registration), selectNode/focusFlowAction/exitFocus/
+// snapshotViewport/restoreViewport/animateFitPath/focusForId/isFocusRoot/
+// pushPathStack. Only the leaf side effects are recording stubs: paint (its own
+// behaviour has a dedicated suite) plus details/ctl chrome and the peek card.
+// paint records WHETHER focus was still installed when it ran, which is what
+// pins the paint-then-glide order on the exit.
+
+function loadExitWiring() {
+  const src = readFileSync(join(WEB, 'app.js'), 'utf8')
+  const stackCap = /var PATH_STACK_CAP = [^\n;]+/.exec(src)
+  assert.ok(stackCap, 'app.js must still declare `var PATH_STACK_CAP = …`')
+  const body = [
+    'var LOG = [], ANIMS = []\n',
+    'var BOX = { hidden: true }\n',
+    'var document = { getElementById: function (id) { return id === "search-results" ? BOX : null } }\n',
+    'function depthOfCtl() { return null }\n',
+    'function t(k) { return k }\n',
+    'function hidePeek() { LOG.push("peek-off") }\n',
+    'function showPeek() {}\n',
+    'function toggleGroup() {}\n',
+    'function renderDetails(id) { LOG.push("details") }\n',
+    'function syncFocusCtl() { LOG.push("sync") }\n',
+    'function paint(refit) { LOG.push("paint:" + (refit === false ? "keep" : "refit") + (state.focus ? ":focus" : ":nofocus")) }\n',
+    'function decideGranularity() { return null }\n',
+    'var LOD_T_IN = 1, LOD_T_OUT = 1, LOD_DEBOUNCE_MS = 120, PEEK_DEBOUNCE_MS = 250\n',
+    'var state = { graph: {}, cy: null, byId: new Map(), focus: null, selected: null, pathStack: [],\n'
+    + '  viewport: null, restore: false, tableMode: false, granMode: "auto", view: { collapsedCats: new Set() } }\n',
+    'function coll(items) {\n'
+    + '  return { length: items.length, items: items, filter: function (f) { return coll(items.filter(f)) } }\n'
+    + '}\n',
+    'var GRAPH_NODES = [\n'
+    + '  { id: "a@1", kind: "pkg" }, { id: "u@1", kind: "pkg" }, { id: "cat:kernel", kind: "zone" }]\n'
+    + '.map(function (n) { return { isElement: true, id: function () { return n.id },\n'
+    + '    data: function (k) { return k === "kind" ? n.kind : n.id } } })\n',
+    'var vp = { zoom: 1.35, pan: { x: -40, y: 90 } }\n',
+    'var handlers = []\n',
+    'var cy = {\n',
+    '  on: function (evt, sel, fn) { if (typeof sel === "function") { fn = sel; sel = null } handlers.push({ evt: evt, sel: sel, fn: fn }) },\n',
+    '  // cytoscape hands pan()/zoom() back as the live viewport: hand back a COPY so a\n',
+    '  // shallow snapshot cannot accidentally look correct through aliasing.\n',
+    '  pan: function () { return { x: vp.pan.x, y: vp.pan.y } },\n',
+    '  zoom: function () { return vp.zoom },\n',
+    '  nodes: function () { return coll(GRAPH_NODES) },\n',
+    '  animate: function (o) { ANIMS.push(o); LOG.push("animate") },\n',
+    '  trigger: function (evt, target) {\n',
+    '    handlers.forEach(function (h) {\n',
+    '      if (h.evt !== evt) return\n',
+    '      if (h.sel === null) { if (target === cy) h.fn({ target: target }) }\n',
+    '      else if (target && target.isElement) h.fn({ target: target })\n',
+    '    })\n',
+    '  },\n',
+    '}\n',
+    stackCap[0] + '\n',
+    extractBalanced(src, 'function pushPathStack(stack, id, cap) {') + '\n',
+    extractBalanced(src, 'function isFocusRoot(id) {') + '\n',
+    extractBalanced(src, 'function focusForId(id) {') + '\n',
+    extractBalanced(src, 'function focusFlowAction(id) {') + '\n',
+    extractBalanced(src, 'function exitFocus() {') + '\n',
+    extractBalanced(src, 'function selectNode(id) {') + '\n',
+    extractBalanced(src, 'function snapshotViewport() {') + '\n',
+    extractBalanced(src, 'function restoreViewport() {') + '\n',
+    extractBalanced(src, 'function pathFitEles(cy) {') + '\n',
+    extractBalanced(src, 'function animateFitPath() {') + '\n',
+    extractBalanced(src, 'function bindCy() {') + '\n',
+    extractBalanced(src, 'function onGlobalKey(e) {') + '\n',
+    'state.cy = cy\n',
+    'state.byId = new Map([["a@1", { id: "a@1", kind: "package", name: "a" }]])\n',
+    'return { state: state, cy: cy, BOX: BOX, LOG: LOG, ANIMS: ANIMS,\n'
+    + '  bind: function () { bindCy() },\n'
+    + '  tap: function (target) { cy.trigger("tap", target) },\n'
+    + '  esc: function () { onGlobalKey({ key: "Escape", target: { tagName: "BODY" } }) },\n'
+    + '  pkg: function () { return GRAPH_NODES[0] },\n'
+    + '  liveZoom: function () { return vp.zoom },\n'
+    + '  // what a path refit does to the camera: the entry snapshot must NOT follow it.\n'
+    + '  moveCamera: function (z, x, y) { vp.zoom = z; vp.pan.x = x; vp.pan.y = y } }',
+  ].join('')
+  return new Function(body)()
+}
+
+test('V22b exit wiring: the registered blank-tap handler repaints the plain view and THEN animates the exact entry snapshot back', () => {
+  const w = loadExitWiring()
+  w.bind() // the real cy.on('tap', …) registration, no manual state poking
+  const animsOf = () => w.ANIMS.length
+  // --- ENTRY through the same handler the browser fires ---
+  w.tap(w.pkg())
+  assert.deepEqual(w.state.focus, { rootId: 'a@1', depth: null }, 'a package tap roots the path')
+  assert.deepEqual(w.state.viewport, { zoom: 1.35, pan: { x: -40, y: 90 } },
+    'the entry snapshot holds the pre-entry viewport, taken once')
+  assert.equal(animsOf(), 1, 'entry glides once')
+  // the fit moves the camera — the snapshot must survive it
+  w.moveCamera(3.1, 777, -888)
+  w.LOG.length = 0
+  // --- EXIT through the SAME registered blank-tap handler ---
+  w.tap(w.cy)
+  assert.equal(w.state.focus, null, 'the blank tap exited the path')
+  assert.equal(animsOf(), 2, '…and the exit glides back: cy.animate ran on the exit path')
+  const back = w.ANIMS[1]
+  assert.equal(back.fit, undefined, 'the exit is a zoom/pan glide, not a fit')
+  assert.equal(back.zoom, 1.35, 'the snapshot zoom, not the post-fit 3.1')
+  assert.deepEqual([back.pan.x, back.pan.y], [-40, 90], 'the snapshot pan, not the post-fit 777/-888')
+  assert.equal(back.duration, 250, 'the animate-back is 250ms, like the entry glide')
+  assert.deepEqual(w.LOG, ['peek-off', 'details', 'sync', 'paint:keep:nofocus', 'animate'],
+    'peek off → details → ctl → viewport-keeping repaint WITH focus already null → then the camera glides')
+  assert.equal(w.state.viewport, null, 'the snapshot is spent')
+  assert.equal(w.state.restore, false, '…and the arming flag with it (one-shot)')
+  // a second blank tap must not glide twice off a spent snapshot
+  w.LOG.length = 0
+  w.tap(w.cy)
+  assert.equal(animsOf(), 2, 'no second animate from an exhausted snapshot')
+  assert.deepEqual(w.LOG, ['peek-off', 'details', 'sync', 'paint:keep:nofocus'], 'a plain repaint, no camera move')
+  // the ENTRY glide, read back off the same real chain: fit + real padding
+  assert.equal(w.ANIMS[0].fit.padding, 40,
+    'the entry glide fits the path with fit.padding = 40 (this dist reads fit.padding; `padded` is not an animate option at all)')
+  assert.equal(w.ANIMS[0].fit.eles.length, 2, 'the fit set is the real pathFitEles result (zone shell excluded)')
+  assert.equal(w.ANIMS[0].duration, 250)
+})
+
+test('V22b exit wiring: Esc runs the same chain (order + one-spend), and 退出路径 keeps the paint-then-glide order', () => {
+  const w = loadExitWiring()
+  w.bind()
+  w.tap(w.pkg())
+  w.moveCamera(2.4, 500, 500)
+  w.LOG.length = 0
+  w.esc()
+  assert.equal(w.state.focus, null, 'Esc exited the path')
+  assert.equal(w.ANIMS.length, 2, 'Esc glides the camera back too')
+  assert.deepEqual([w.ANIMS[1].zoom, w.ANIMS[1].pan.x, w.ANIMS[1].pan.y, w.ANIMS[1].duration], [1.35, -40, 90, 250],
+    'the same snapshot, the same duration as the blank-tap exit')
+  assert.deepEqual(w.LOG, ['details', 'sync', 'paint:keep:nofocus', 'animate'],
+    'details → ctl → repaint with focus null → glide (peek is not part of the Esc chain)')
+  assert.equal(w.state.viewport, null, 'spent by the Esc exit')
+  assert.equal(w.state.restore, false)
+  // 退出路径 lives in the chrome binder (a full DOM harness is out of scope here):
+  // pin its ORDER against the two wiring-verified exits — exit, repaint, glide.
+  const src = readFileSync(join(WEB, 'app.js'), 'utf8')
+  const clear = src.slice(src.indexOf("getElementById('focus-clear')"), src.indexOf("var pathBack = document"))
+  assert.ok(clear.length > 0, 'the 退出路径 handler is still in app.js')
+  const at = (needle) => {
+    const i = clear.indexOf(needle)
+    assert.ok(i >= 0, `the exit button still calls ${needle}`)
+    return i
+  }
+  const iExit = at('exitFocus()')
+  const iPaint = at('paint(false)')
+  const iRestore = at('restoreViewport()')
+  assert.ok(iExit < iPaint && iPaint < iRestore, 'exitFocus → repaint → glide, never glide-before-repaint')
+  assert.ok(!/state\.viewport\s*=\s*null/.test(clear), 'the handler must not clear the snapshot it is about to spend')
 })
 
 // ---------- peek: single reusable card, focus-invariant ----------

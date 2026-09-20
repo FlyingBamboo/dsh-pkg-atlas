@@ -1016,12 +1016,18 @@
   }
   // Exit half, shared by blank-tap, the Esc key and the 退出路径 button: focus
   // gone, stack gone, and IF an entry snapshot exists it is armed for exactly
-  // one animate-back (restoreViewport spends both flags).
+  // one animate-back. The SNAPSHOT ITSELF STAYS PUT — restoreViewport() is the
+  // only thing allowed to spend it (nulling it here made that guard bail every
+  // time, i.e. the documented 镜头滑回 never ran).
+  // Every exit call site runs the sequence exitFocus() → paint(false) →
+  // restoreViewport() in exactly that order, and the order is load-bearing: the
+  // repaint sees focus === null (the whole graph is back on screen, viewport
+  // kept because refit === false), and only THEN does the camera glide — gliding
+  // first would have the structural repaint land mid-flight.
   function exitFocus() {
     state.focus = null
     state.pathStack = []
-    state.restore = !!state.viewport
-    state.viewport = null
+    state.restore = !!state.viewport // armed marker; state.viewport is the payload
   }
   function selectNode(id) {
     var act = focusFlowAction(id)
@@ -1057,7 +1063,11 @@
       if (!was) snapshotViewport()
     } else if (was) {
       exitFocus()
-      state.restore = false // the full refit below is the exit; no glide on top
+      // The full refit below IS the exit for a reveal: no glide on top of it, so
+      // the exit disarms and the (now stale) snapshot goes with it — the reveal
+      // has already re-planted the camera on a different node.
+      state.restore = false
+      state.viewport = null
     }
     paint()
     renderDetails(n.id)
@@ -1130,7 +1140,11 @@
     if (!cy || state.tableMode || !state.focus) return
     var eles = pathFitEles(cy)
     if (!eles.length) return
-    cy.animate({ fit: { eles: eles, padded: true }, duration: 250 })
+    // The frozen 3.34.1 animate reads `fit.padding` (getFitViewport(v.eles,
+    // v.padding)); `padded` is core.fit() vocabulary and is NOT an animate option
+    // here — passing it silently means padding 0. 40 matches the structural
+    // focus refit in paint(), so entry glide and refit agree on the inset.
+    cy.animate({ fit: { eles: eles, padding: 40 }, duration: 250 })
   }
   function depthOfCtl() {
     var s = document.getElementById('focus-depth')

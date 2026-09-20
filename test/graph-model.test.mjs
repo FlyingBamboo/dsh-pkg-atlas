@@ -684,3 +684,483 @@ test('V5-16c I-5 slot flow is collapse-independent (V4 coordinate constancy re-p
     }
   }
 })
+
+// =========================================================================
+// Task V2.2a — view.granularity + view.focus subgraph + canonical pathSets.
+// The pathSets cases are the app-side V21 semantics (render-smoke) re-run INSIDE
+// the model sandbox, plus a byte-parity pin against the app.js copy that still
+// ships there (deleted in task B).
+// =========================================================================
+
+/** render-smoke's balanced extractor, copied so the app-side seam can be read
+ *  without importing the test file (test-only helper, stays in this file). */
+function extractBalanced(src, anchor) {
+  const i = src.indexOf(anchor)
+  assert.ok(i >= 0, `app.js must still declare \`${anchor}\` (extraction anchor)`)
+  let j = i + anchor.length, depth = 1, inStr = null, inCom = null
+  for (; j < src.length; j++) {
+    const c = src[j], d = src[j + 1]
+    if (inCom) {
+      if (inCom === '//' && c === '\n') inCom = null
+      else if (inCom === '/*' && c === '*' && d === '/') { j++; inCom = null }
+      continue
+    }
+    if (inStr) {
+      if (c === '\\') { j++; continue }
+      if (c === inStr) inStr = null
+      continue
+    }
+    if (c === '/' && d === '/') { j++; inCom = '//'; continue }
+    if (c === '/' && d === '*') { j++; inCom = '/*'; continue }
+    if (c === '"' || c === "'" || c === '`') { inStr = c; continue }
+    if (c === '{' || c === '[') { depth++; continue }
+    if (c === '}' || c === ']') {
+      depth--
+      if (depth === 0) return src.slice(i, j + 1)
+      continue
+    }
+  }
+  assert.fail(`unbalanced text after \`${anchor}\``)
+}
+
+/** The STILL-SHIPPING app.js pathSets, lifted into a bare scope (same seam as
+ *  render-smoke's loadAppPure — app.js must not be edited by this task). */
+function loadAppPathSets() {
+  const src = readFileSync(join(HERE, '..', 'web', 'app.js'), 'utf8')
+  const body = [
+    extractBalanced(src, 'var DOWN_EDGE_KINDS = [') + '\n',
+    extractBalanced(src, 'var UP_EDGE_KINDS = [') + '\n',
+    extractBalanced(src, 'function normalizeDepth(depth) {') + '\n',
+    extractBalanced(src, 'function pathSets(graph, rootId, depth) {') + '\n',
+    'return { pathSets: pathSets }',
+  ].join('')
+  return new Function(body)().pathSets
+}
+
+/** A pathSets result is only comparable across realms through its Sets. */
+function serSets(s) {
+  return JSON.stringify({
+    rootId: s.rootId,
+    down: [...s.down], up: [...s.up], both: [...s.both],
+    downEdges: [...s.downEdges], upEdges: [...s.upEdges],
+  })
+}
+
+function deepFreeze(x) {
+  if (x && typeof x === 'object' && !Object.isFrozen(x)) {
+    Object.freeze(x)
+    for (const k of Object.keys(x)) deepFreeze(x[k])
+  }
+  return x
+}
+
+// Bare path-graph fixtures for the pathSets surface (ids only — pathSets needs
+// nothing else). Ports of render-smoke's dirFixture/focusFixture.
+function dirGraph() {
+  return {
+    nodes: ['r', 'd1', 'd2', 'd3', 'u1', 'u2', 'prof', 'bundle', 'member',
+      'side', 'cx', 'cy', 'iso'].map((id) => ({ id })),
+    edges: [
+      { from: 'r', to: 'd1', kind: 'dep' },
+      { from: 'd1', to: 'd2', kind: 'peer' },
+      { from: 'd2', to: 'd3', kind: 'peer-optional' },
+      { from: 'd1', to: 'd3', kind: 'mount' },          // wrong kind for DOWN
+      { from: 'u1', to: 'r', kind: 'dep' },
+      { from: 'u2', to: 'u1', kind: 'peer' },
+      { from: 'bundle', to: 'member', kind: 'mount' },
+      { from: 'prof', to: 'bundle', kind: 'mount' },
+      { from: 'side', to: 'iso', kind: 'dep' },
+      { from: 'cx', to: 'cy', kind: 'peer' },
+      { from: 'cy', to: 'cx', kind: 'peer' },
+    ],
+  }
+}
+function chainGraph() {
+  return {
+    nodes: [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }, { id: 'iso' }],
+    edges: [
+      { from: 'a', to: 'b', kind: 'dep' },
+      { from: 'b', to: 'c', kind: 'mount', unsatisfied: true },
+      { from: 'c', to: 'd', kind: 'peer-optional' },
+    ],
+  }
+}
+const sortedIds = (s) => [...s].slice().sort()
+
+// ---------- canonical pathSets: exported surface + app-copy parity ----------
+
+test('V22-00 AtlasModel.pathSets is the canonical export and is byte-parity with the app.js copy', () => {
+  const M = loadModel()
+  assert.equal(typeof M.pathSets, 'function', 'AtlasModel must export pathSets (canonical, task B consumes it)')
+  const appPathSets = loadAppPathSets()
+  const graphs = [dirGraph(), chainGraph(), fixture()]
+  const roots = ['r', 'member', 'iso', 'nope', 'a', 'd', A1, P1, WB]
+  const depths = [null, undefined, 0, 1, 2, 3, 99, 2.6, '2', NaN, -1]
+  for (const g of graphs) {
+    for (const root of roots) {
+      for (const d of depths) {
+        assert.equal(serSets(M.pathSets(g, root, d)), serSets(appPathSets(g, root, d)),
+          `model/app pathSets diverge on ${root}@${String(d)}`)
+      }
+    }
+  }
+})
+
+test('V22-01 pathSets: down follows OUT dep/peer/peer-opt only; up climbs IN edges incl. mount; root in neither', () => {
+  const M = loadModel()
+  const s = M.pathSets(dirGraph(), 'r', null)
+  assert.deepEqual(sortedIds(s.down), ['d1', 'd2', 'd3'], 'd3 over peer-optional; the d1→d3 mount edge never qualifies')
+  assert.deepEqual(sortedIds(s.up), ['u1', 'u2'], 'up = reverse dep + reverse peer')
+  assert.deepEqual(sortedIds(s.both), [], 'the two universes are disjoint here')
+  assert.equal(s.down.has('r') || s.up.has('r'), false, 'the root is never a member of its own path')
+  assert.equal(s.down.has('prof') || s.up.has('member'), false, 'a disconnected chain stays out entirely')
+})
+
+test('V22-02 pathSets: mount reverse climb + depth clamps (null unlimited, >3→3) cut nodes AND induced edges', () => {
+  const M = loadModel()
+  const g = dirGraph()
+  const s = M.pathSets(g, 'member', null)
+  assert.deepEqual(sortedIds(s.up), ['bundle', 'prof'], 'the mount chain auto-climbs to the profile')
+  assert.deepEqual(sortedIds(s.down), [], 'mount points the other way: nothing hangs below a member')
+  assert.deepEqual(sortedIds(s.upEdges), ['e:bundle|member|mount', 'e:prof|bundle|mount'], 'both mount hops induced')
+  assert.deepEqual(sortedIds(M.pathSets(g, 'member', 1).up), ['bundle'], 'depth 1 stops at the bundle')
+  assert.deepEqual(sortedIds(M.pathSets(g, 'r', 1).down), ['d1'])
+  assert.deepEqual(sortedIds(M.pathSets(g, 'r', 2).downEdges), ['e:d1|d2|peer', 'e:r|d1|dep'], 'depth cuts the edge set too')
+  assert.deepEqual(serSets(M.pathSets(g, 'r', 99)), serSets(M.pathSets(g, 'r', 3)), '99 clamps to 3')
+})
+
+test('V22-03 pathSets: cycles terminate (visited set) and land in both; unsatisfied edges are traversed', () => {
+  const M = loadModel()
+  const cyc = {
+    nodes: [{ id: 'A' }, { id: 'B' }, { id: 'C' }],
+    edges: [
+      { from: 'A', to: 'B', kind: 'peer' }, { from: 'B', to: 'A', kind: 'peer' },
+      { from: 'B', to: 'C', kind: 'dep' }, { from: 'C', to: 'A', kind: 'dep' },
+    ],
+  }
+  const s = M.pathSets(cyc, 'A', null)
+  assert.deepEqual(sortedIds(s.down), ['B', 'C'])
+  assert.deepEqual(sortedIds(s.up), ['B', 'C'])
+  assert.deepEqual(sortedIds(s.both), ['B', 'C'], 'every cycle member is both')
+  assert.deepEqual(sortedIds(s.downEdges), sortedIds(s.upEdges), 'induced over both ∪ {root}')
+  const ch = M.pathSets(chainGraph(), 'd', null)
+  assert.deepEqual(sortedIds(ch.up), ['a', 'b', 'c'], 'the UNSATISFIED b→c mount flag is a note, not an absent edge')
+  assert.deepEqual(sortedIds(ch.upEdges), ['e:a|b|dep', 'e:b|c|mount', 'e:c|d|peer-optional'])
+})
+
+test('V22-04 pathSets induced-edge rule: wrong-kind and leaving-set edges stay dark', () => {
+  const M = loadModel()
+  const g = {
+    nodes: [{ id: 'r' }, { id: 'a' }, { id: 'b' }, { id: 'far' }],
+    edges: [
+      { from: 'r', to: 'a', kind: 'dep' },
+      { from: 'r', to: 'b', kind: 'dep' },
+      { from: 'a', to: 'b', kind: 'mount' },   // both endpoints down, WRONG kind
+      { from: 'b', to: 'far', kind: 'dep' },   // far leaves the set at depth 1
+      { from: 'far', to: 'r', kind: 'mount' }, // points INTO the root: an up edge
+    ],
+  }
+  const s = M.pathSets(g, 'r', 1)
+  assert.deepEqual(sortedIds(s.downEdges), ['e:r|a|dep', 'e:r|b|dep'])
+  assert.deepEqual(sortedIds(s.upEdges), ['e:far|r|mount'], 'mount is an UP kind: far mounts r')
+  assert.deepEqual(sortedIds(M.pathSets(g, 'r', 2).downEdges), ['e:b|far|dep', 'e:r|a|dep', 'e:r|b|dep'],
+    'at depth 2 b→far joins; still no a→b mount edge')
+})
+
+test('V22-05 pathSets: defensive junk → empty sets, never a throw; zero mutation; deterministic insertion order', () => {
+  const M = loadModel()
+  for (const [label, g, root] of [
+    ['no graph', null, 'x'], ['no edges', {}, 'x'],
+    ['malformed edges', { edges: [null, {}, { from: 'x' }, { to: 'y' }] }, 'x'],
+    ['unknown root', dirGraph(), 'nope'],
+  ]) {
+    const s = M.pathSets(g, root, null)
+    for (const key of ['down', 'up', 'both', 'downEdges', 'upEdges']) {
+      assert.deepEqual([...s[key]], [], `${label}: ${key} empty`)
+    }
+  }
+  const frozen = deepFreeze(dirGraph())
+  const a = M.pathSets(frozen, 'r', null)
+  const b = M.pathSets(frozen, 'r', null)
+  assert.equal(serSets(a), serSets(b), 'two calls serialize equal')
+  assert.deepEqual([...a.down], [...b.down], 'Set ITERATION ORDER is insertion order, not hash order')
+  const live = dirGraph()
+  const before = JSON.stringify(live)
+  M.pathSets(live, 'r', 2)
+  assert.equal(JSON.stringify(live), before, 'a live (unfrozen) graph comes back byte-identical')
+})
+
+// ---------- view.granularity ----------
+
+test('V22-06 granularity default/junk/absent is byte-identical to BASE across view combinations', () => {
+  const M = loadModel()
+  const graph = fixture()
+  const combos = [
+    {},
+    EXPANDED(),
+    { collapsedGroups: new Set(['bundle', 'llm']) },
+    Object.assign(EXPANDED(), { collapsedCats: new Set(['llm']), showRealCross: true }),
+    Object.assign(EXPANDED(), { filterCats: ['plugin'], filterProfile: 'web' }),
+  ]
+  for (const base of combos) {
+    const s0 = JSON.stringify(M.buildView(graph, base))
+    assert.equal(JSON.stringify(M.buildView(graph, Object.assign({}, base, { granularity: 'groups' }))), s0,
+      'explicit groups === absent')
+    assert.equal(JSON.stringify(M.buildView(graph, Object.assign({}, base, { granularity: 'nonsense' }))), s0,
+      'junk granularity falls back to groups')
+    assert.equal(JSON.stringify(M.buildView(graph, Object.assign({}, base, { granularity: 'groups', focus: null }))), s0,
+      'focus:null === focus absent (meta carries NO focus key when focus was not requested)')
+  }
+})
+
+test('V22-07 granularity packages overrides collapsedGroups byte-for-byte (the all-expanded build)', () => {
+  const M = loadModel()
+  const graph = fixture()
+  const pk = M.buildView(graph, {
+    collapsedCats: new Set(), filterCats: null, filterScope: 'all', edgeKinds: null,
+    filterProfile: null, showRealCross: false, granularity: 'packages',
+    collapsedGroups: new Set(['bundle', 'llm', 'profiles', 'nonexistent']), // ignored
+  })
+  const full = M.buildView(graph, EXPANDED())
+  assert.equal(JSON.stringify(pk), JSON.stringify(full), 'packages view IS the all-expanded view, meta included')
+  for (const e of nodeEls(pk).filter((x) => x.data.kind === 'group')) {
+    assert.ok(!e.classes.includes('collapsed'), `${e.data.id} renders as container`)
+  }
+})
+
+test('V22-08 collapsedCats (zone collapse) still bites at packages granularity', () => {
+  const M = loadModel()
+  const res = M.buildView(fixture(), { collapsedCats: new Set(['llm']), collapsedGroups: new Set(), granularity: 'packages' })
+  const m = elMap(res)
+  assert.ok(m.has('cat:llm'), 'zone shell stays')
+  assert.ok(!m.has('g:llm') && !m.has(P1) && !m.has(P2), 'collapsed zone renders no cards/members at any granularity')
+  assert.ok(m.has(A1), 'a kernel member still renders')
+})
+
+// ---------- view.focus subgraph ----------
+
+/** Focus subgraph invariant helper: well-formed + parent-safe + no aggregates. */
+function assertFocusSet(res, label) {
+  const ids = new Set()
+  const seen = new Set()
+  const nodeIdSet = new Set()
+  for (const e of els(res)) {
+    assert.ok(!ids.has(e.data.id), `${label}: duplicate id ${e.data.id}`)
+    ids.add(e.data.id)
+    assert.ok(e.classes.length > 0, `${label}: classes on ${e.data.id}`)
+    if (e.group === 'nodes') nodeIdSet.add(e.data.id)
+    assert.ok(!String(e.data.id).startsWith('agg:'), `${label}: focus view must never emit aggregates (${e.data.id})`)
+  }
+  for (const e of els(res)) {
+    if (e.group === 'nodes') {
+      assert.ok(Number.isFinite(e.data.x) && Number.isFinite(e.data.y), `${label}: finite x/y on ${e.data.id}`)
+      if (e.data.parent != null) {
+        assert.ok(ids.has(e.data.parent) && nodeIdSet.has(e.data.parent), `${label}: parent ${e.data.parent} of ${e.data.id} renders`)
+        assert.ok(seen.has(e.data.parent), `${label}: parent ${e.data.parent} precedes ${e.data.id}`)
+      }
+    } else {
+      assert.ok(ids.has(e.data.source) && ids.has(e.data.target), `${label}: edge ${e.data.id} endpoints render`)
+      assert.notEqual(e.data.source, e.data.target, `${label}: no self-loop edges in focus view`)
+    }
+    seen.add(e.data.id)
+  }
+}
+
+test('V22-09 focus root A1: member packages + ancestor containers (ctx) + induced real edges, aggregates never', () => {
+  const M = loadModel()
+  const res = M.buildView(fixture(), Object.assign(EXPANDED(), { focus: { rootId: A1, depth: null } }))
+  assertFocusSet(res, 'focus A1')
+  const m = elMap(res)
+  const member = A1 + '|' + P1 + '|' + P2 + '|' + A2 + '|' + B1 + '|' + WB
+
+  // M = down{P1,P2} ∪ up{A2,WB,B1} ∪ {A1}; X1/U1/g:util/cat:plugin are NOT members
+  assert.deepEqual(kindIds(res, 'zone'), ['cat:kernel', 'cat:tools', 'cat:llm', 'cat:profiles', 'cat:broken'],
+    'zones in category order, member-free zones absent')
+  assert.deepEqual(kindIds(res, 'group'), ['g:bundle', 'g:tools', 'g:llm', 'g:profiles', 'g:broken'])
+  assert.deepEqual(
+    plain(els(res).filter((e) => e.data.kind === 'pkg' || e.data.kind === 'profile').map((e) => e.data.id)),
+    [A1, P1, P2, A2, B1, WB], 'members in graph.nodes order')
+  assert.ok(!m.has(X1) && !m.has(U1) && !m.has('g:util') && !m.has('cat:plugin'),
+    'non-members never render (nor do member-free zones)')
+
+  // ctx rides ON TOP of the existing classes — zones AND group containers only
+  for (const z of kindIds(res, 'zone')) {
+    assert.deepEqual(plain(m.get(z).classes), ['zone', 'cat-' + z.slice(4), 'ctx'], `${z}: ctx appended`)
+    assert.equal(m.get(z).data.kind, 'zone')
+  }
+  for (const g of kindIds(res, 'group')) {
+    const base = m.get(g).classes
+    assert.equal(base[0], 'group'); assert.ok(String(base[1]).startsWith('gk-'), 'existing classes kept')
+    assert.deepEqual(plain(base.slice(2)), ['ctx'], `${g}: ctx appended after the existing classes`)
+    assert.ok(!base.includes('collapsed'), 'containers render expanded')
+    assert.equal(m.get(g).data.parent, 'cat:' + { 'g:bundle': 'kernel', 'g:tools': 'tools', 'g:llm': 'llm', 'g:profiles': 'profiles', 'g:broken': 'broken' }[g])
+  }
+  assert.ok(!m.get(A1).classes.includes('ctx'), 'packages do NOT carry ctx')
+  assert.equal(m.get(A1).data.parent, 'g:bundle')
+  assert.equal(m.get(WB).data.kind, 'profile', 'a profile member keeps its profile shape')
+
+  // induced edges ONLY — over sets.downEdges∪upEdges ∩ survivors, graph.edges order:
+  // e1 dep, e3 dep, e5 mount, e8 mount, e9 peer, e11 peer-optional.
+  // e4 (P1 self-loop) is induced but dropped; e14/e15 mount between down members
+  // and e10/e16 A2↔P2 sit in NEITHER set → dark (R37 semantics hold).
+  assert.deepEqual(plain(edgeEls(res).map((e) => e.data.id)), [
+    'e:' + A1 + '|' + P1 + '|dep', 'e:' + A2 + '|' + A1 + '|dep', 'e:' + WB + '|' + A1 + '|mount',
+    'e:' + A1 + '|' + WB + '|mount', 'e:' + A1 + '|' + P2 + '|peer', 'e:' + B1 + '|' + A1 + '|peer-optional',
+  ])
+  for (const e of edgeEls(res)) {
+    assert.deepEqual(plain(e.classes), ['e-' + e.data.kind, 'cross'], 'same shape as today\'s real cross edges')
+  }
+  assert.deepEqual(plain(res.meta), {
+    zones: 5, groups: 5, pkgs: 5, profiles: 1, realEdges: 6, aggEdges: 0, edges: 6,
+    focus: { rootId: A1, depth: null, members: 6, edges: 6 },
+  })
+  assert.ok(member, 'pin of the member set (documentation only)')
+})
+
+test('V22-10 focus depth re-cuts M and the induced set (root P1: depth 1 vs unlimited)', () => {
+  const M = loadModel()
+  const g = fixture()
+  const one = M.buildView(g, Object.assign(EXPANDED(), { focus: { rootId: P1, depth: 1 } }))
+  const m1 = elMap(one)
+  // up layer 1 = {A1,U1,X1}; down = {} (only the self dep); M = {P1,A1,U1,X1}
+  assert.deepEqual(plain(els(one).filter((e) => e.data.kind === 'pkg').map((e) => e.data.id)), [A1, P1, U1, X1])
+  assert.deepEqual(kindIds(one, 'group'), ['g:bundle', 'g:util', 'g:llm', 'g:plugin'])
+  // e14 (A1→P1 mount) IS an up-kind edge with both endpoints in up∪{root} at depth 1;
+  // e7 (X1→U1) too — induced edges span the whole lit side, not just root hops.
+  assert.deepEqual(plain(edgeEls(one).map((e) => e.data.id)), [
+    'e:' + A1 + '|' + P1 + '|dep', 'e:' + U1 + '|' + P1 + '|dep',
+    'e:' + X1 + '|' + P1 + '|dep', 'e:' + X1 + '|' + U1 + '|dep', 'e:' + A1 + '|' + P1 + '|mount',
+  ], 'the P1→P1 dep self-loop is induced but never rendered as an edge')
+  assert.deepEqual(plain(one.meta.focus), { rootId: P1, depth: 1, members: 4, edges: 5 })
+
+  const two = M.buildView(g, Object.assign(EXPANDED(), { focus: { rootId: P1, depth: 2 } }))
+  assert.deepEqual(plain(two.meta.focus), { rootId: P1, depth: 2, members: 7, edges: 10 },
+    'depth 2 adds A2/WB/B1 via layer-2 up edges (e14 parallel edge counts once per key)')
+})
+
+test('V22-11 R39 filter applies to focus members: excluded-zone members drop out of M, induced edges re-cut', () => {
+  const M = loadModel()
+  const res = M.buildView(fixture(), Object.assign(EXPANDED(), {
+    filterCats: ['broken'], focus: { rootId: A1, depth: null },
+  }))
+  const m = elMap(res)
+  assert.ok(!m.has(B1) && !m.has('g:broken') && !m.has('cat:broken'), 'B1 was a member — the zone exclusion evicts it')
+  assert.ok(!edgeEls(res).some((e) => String(e.data.id).includes(B1)), 'e11 died with its endpoint')
+  assert.ok(m.has(A1) && m.has(P1) && m.has(WB), 'surviving members stay rendered')
+  assert.deepEqual(plain(res.meta.focus), { rootId: A1, depth: null, members: 5, edges: 5 })
+})
+
+test('V22-12 same-group members emit REAL induced edges — aggregates are never produced', () => {
+  const M = loadModel()
+  // one zone, one group: in any collapse state these pairs would only ever
+  // appear as an aggregate (or a self-bucket); in focus mode they must be real.
+  const nodes = ['r', 'd1', 'u1'].map((id) => node(id + '@1.0.0', id, 'package', 'official', 'g1', 'kernel', ['web']))
+  const g = {
+    schema: 1, generatedAt: 'x', dshHome: '$DSH_HOME', warnings: [],
+    categories: [{ id: 'kernel', zh: 'k', en: 'k' }], profiles: [],
+    groups: [{ id: 'g1', kind: 'official', category: 'kernel', packageCount: 3 }],
+    nodes,
+    edges: [
+      { from: nodes[0].id, to: nodes[1].id, kind: 'dep' },
+      { from: nodes[2].id, to: nodes[0].id, kind: 'mount' },
+    ],
+  }
+  const res = M.buildView(g, { focus: { rootId: nodes[0].id, depth: null } }) // default-collapsed view
+  assertFocusSet(res, 'same-group focus')
+  const eids = plain(edgeEls(res).map((e) => e.data.id))
+  assert.deepEqual(eids, [
+    'e:' + nodes[0].id + '|' + nodes[1].id + '|dep',
+    'e:' + nodes[2].id + '|' + nodes[0].id + '|mount',
+  ], 'all three members share one group; both edges are real pathSets keys')
+  assert.equal(edgeEls(res).every((e) => e.classes.includes('cross')), true)
+  assert.deepEqual(plain(elMap(res).get('g:g1').classes), ['group', 'gk-official', 'ctx'])
+})
+
+test('V22-13 coordinate constancy under focus: member positions + w/h byte-equal the granularity:packages view', () => {
+  const M = loadModel()
+  const g = fixture()
+  const focus = elMap(M.buildView(g, Object.assign(EXPANDED(), {
+    collapsedCats: new Set(['llm']), collapsedGroups: new Set(['bundle']),
+    focus: { rootId: A1, depth: null },
+  })))
+  const pk = elMap(M.buildView(g, Object.assign(EXPANDED(), { granularity: 'packages' })))
+  let checked = 0
+  for (const e of focus.values()) {
+    if (e.group !== 'nodes') continue // edges carry no coordinates and legitimately differ
+    assert.ok(pk.has(e.data.id), `focus element ${e.data.id} exists in the packages view (same layout universe)`)
+    const q = pk.get(e.data.id)
+    assert.deepEqual({ x: e.data.x, y: e.data.y, w: e.data.w, h: e.data.h },
+      { x: q.data.x, y: q.data.y, w: q.data.w, h: q.data.h },
+      `${e.data.id}: position/size must be byte-identical to the packages view`)
+    checked++
+  }
+  assert.ok(checked >= 10, `focus view must have positioned elements (got ${checked})`)
+})
+
+test('V22-14 focus overrides collapsedGroups/collapsedCats for member containers (expanded slot sizes)', () => {
+  const M = loadModel()
+  const res = M.buildView(fixture(), {
+    collapsedCats: new Set(['llm', 'kernel']),
+    collapsedGroups: new Set(['bundle', 'llm', 'tools', 'profiles', 'broken']),
+    focus: { rootId: A1, depth: null },
+  })
+  assertFocusSet(res, 'focus over collapse')
+  const m = elMap(res)
+  assert.ok(m.has(P1) && m.has(P2), 'members of a collapsed ZONE still render (focus overrides)')
+  assert.equal(m.get('g:llm').data.w, 132)
+  assert.equal(m.get('g:llm').data.h, 46, 'expanded slot size, never the 132×36 card')
+  assert.ok(!m.get('g:llm').classes.includes('collapsed'))
+  assert.ok(!m.get('cat:llm').classes.includes('collapsed'), 'zones never carried collapsed; membership wins over collapsedCats')
+})
+
+test('V22-15 focus fallback: unknown root / M emptied by filters ⇒ base-path view + meta.focus=null', () => {
+  const M = loadModel()
+  const g = fixture()
+  const base = M.buildView(g, EXPANDED())
+  const unknown = M.buildView(g, Object.assign(EXPANDED(), { focus: { rootId: 'nope@9.9.9', depth: null } }))
+  assert.equal(JSON.stringify(unknown.elements), JSON.stringify(base.elements), 'unknown root renders the base view')
+  assert.deepEqual(plain(Object.assign({}, unknown.meta, { focus: undefined })),
+    plain(Object.assign({}, base.meta, { focus: undefined })), 'every other meta field matches the base view')
+  assert.equal(unknown.meta.focus, null, 'the requested-but-not-applied focus is recorded as null')
+
+  const starved = M.buildView(g, Object.assign(EXPANDED(), {
+    filterCats: ['kernel', 'tools', 'llm', 'profiles', 'broken'],
+    focus: { rootId: A1, depth: null },
+  }))
+  assert.equal(JSON.stringify(starved.elements), JSON.stringify(M.buildView(g, Object.assign(EXPANDED(), {
+    filterCats: ['kernel', 'tools', 'llm', 'profiles', 'broken'],
+  })).elements), 'M empty after survival renders the base view of the same filter')
+  assert.equal(starved.meta.focus, null)
+})
+
+test('V22-16 focus input defense: non-object / non-string rootId are treated as focus=null (byte-identical base)', () => {
+  const M = loadModel()
+  const g = fixture()
+  const base = M.buildView(g, EXPANDED())
+  const s0 = JSON.stringify(base)
+  for (const junk of [42, 'a', true, [], { rootId: 42 }, { rootId: null }, {}, { rootId: {} }]) {
+    const res = M.buildView(g, Object.assign(EXPANDED(), { focus: junk }))
+    assert.equal(JSON.stringify(res), s0, `junk focus ${JSON.stringify(junk)} === base, byte-for-byte (no meta.focus key)`)
+    assert.ok(!('focus' in plain(res.meta)), 'a focus that never parsed contributes no meta key at all')
+  }
+})
+
+test('V22-17 focus mode ignores granularity/showRealCross; frozen graph+focus view builds twice, identical, unmoved', () => {
+  const M = loadModel()
+  const g1 = fixture()
+  const g2 = deepFreeze(fixture())
+  const view = (extra) => Object.assign({
+    collapsedCats: new Set(['plugin']), collapsedGroups: new Set(['bundle']),
+    filterCats: null, filterScope: 'all', edgeKinds: null, filterProfile: null,
+    showRealCross: false, focus: { rootId: A1, depth: null },
+  }, extra || {})
+  const a = JSON.stringify(M.buildView(g1, view()))
+  assert.equal(JSON.stringify(M.buildView(g1, view({ showRealCross: true }))), a, 'focus edges are unconditional real')
+  assert.equal(JSON.stringify(M.buildView(g1, view({ granularity: 'packages' }))), a, 'granularity ignored in focus mode')
+  const b = JSON.stringify(M.buildView(g2, view()))
+  assert.equal(b, a, 'a deep-frozen graph + focus view builds identically (zero mutation, determinism)')
+  const fv = { focus: { rootId: A1, depth: 2 } }
+  deepFreeze(fv)
+  const v2 = M.buildView(g2, Object.assign(EXPANDED(), fv))
+  assert.equal(v2.meta.focus.members, 6, 'the frozen view object was readable, and nothing wrote back')
+})

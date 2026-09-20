@@ -12,7 +12,16 @@
  * inputs are deep-equal; the model mutates neither graph nor view.
  *
  * Public surface (frozen): buildView(graph, view) -> { elements, meta },
- * ZONE_LAYOUT. Everything else below is private and may evolve.
+ * pathSets(graph, rootId, depth), ZONE_LAYOUT. Everything else below is
+ * private and may evolve.
+ *
+ * V2.2a adds the two VIEW dimensions (R38/R39): `view.granularity`
+ * ('groups' default = byte-identical to BASE; 'packages' renders every group
+ * expanded, collapsedGroups ignored, collapsedCats still honored) and
+ * `view.focus` ({rootId, depth} → subgraph of pathSets members with induced
+ * REAL edges only; invalid/empty → base-path view). pathSets moved in from
+ * app.js as the canonical implementation — the app copy still ships until
+ * task B deletes it, and byte-parity of the two is pinned by tests.
  */
 ;(function () {
   'use strict'
@@ -44,7 +53,110 @@
     'plugin', 'profiles', 'broken', 'ungrouped',
   ])
 
+  /**
+   * R35/R36 path-traversal kinds — canonical copy (V2.2a). Semantics are the
+   * byte-twin of the app.js pair that still ships there: DOWN is a package's
+   * own dependency paths, so `mount` is NOT a down kind; UP accepts every
+   * kind because climbing mount backwards is what takes a member to its
+   * bundle and on to `profile:<name>`.
+   */
+  var DOWN_EDGE_KINDS = Object.freeze(['dep', 'peer', 'peer-optional'])
+  var UP_EDGE_KINDS = Object.freeze(['dep', 'mount', 'peer', 'peer-optional'])
+
   var EMPTY = new Set()
+
+  /**
+   * normalizeDepth(depth) → null | 1 | 2 | 3 (R35, verbatim app.js twin).
+   * `null` = UNLIMITED and the shipped default: 0 / absent / junk all
+   * normalize to null (an unusable depth widens the view, never silently
+   * narrows it); 1..3 kept, fractions floor, >3 clamps to 3.
+   */
+  function normalizeDepth(depth) {
+    var v = typeof depth === 'number' && isFinite(depth) ? Math.floor(depth) : 0
+    return v >= 1 ? Math.min(3, v) : null
+  }
+
+  /**
+   * pathSets(graph, rootId, depth) →
+   *   { rootId, down:Set, up:Set, both:Set, downEdges:Set, upEdges:Set }
+   *
+   * CANONICAL copy (V2.2a): the two directed path universes of one package,
+   * computed over the REAL scan edges — never over rendered aggregates.
+   * Semantics byte-exact to the app.js implementation it came from:
+   *  - down: BFS over OUT-edges whose kind DOWN_EDGE_KINDS allows.
+   *  - up:   BFS over IN-edges whose kind UP_EDGE_KINDS allows (mount
+   *          included, traversed backwards → the profile climb).
+   *  - both: down ∩ up (cycle members). The root is in NONE of the three.
+   * `depth` (normalizeDepth) limits each direction independently; null is
+   * unlimited. Cycle-safe via the visited set. Induced edge rule: the kind
+   * must be one this direction traverses AND both endpoints sit in
+   * (that set ∪ root). Edge keys are 'e:<from>|<to>|<kind>' — the same id
+   * real cross edges carry, so a rendered edge matches a key verbatim.
+   * Deterministic (Sets built in graph.edges order, never hash order),
+   * defensive (malformed edges skipped, junk inputs → empty sets) and
+   * side-effect free: graph is never written.
+   */
+  function pathSets(graph, rootId, depth) {
+    var g = graph || {}
+    var list = Array.isArray(g.edges) ? g.edges : []
+    var root = String(rootId == null ? '' : rootId)
+    var max = normalizeDepth(depth)
+    var clean = [], out = new Map(), inc = new Map()
+    for (var i = 0; i < list.length; i++) {
+      var e = list[i]
+      if (!e || e.from == null || e.to == null) continue
+      var from = String(e.from), to = String(e.to), kind = String(e.kind)
+      clean.push({ from: from, to: to, kind: kind })
+      var ix = clean.length - 1
+      var la = out.get(from); if (!la) { la = []; out.set(from, la) }
+      la.push(ix)
+      var lb = inc.get(to); if (!lb) { lb = []; inc.set(to, lb) }
+      lb.push(ix)
+    }
+    function walk(adjacent, kinds, outward) {
+      var seen = new Set([root])
+      var frontier = [root]
+      for (var layer = 1; frontier.length && (max === null || layer <= max); layer++) {
+        var next = []
+        for (var f = 0; f < frontier.length; f++) {
+          var links = adjacent.get(frontier[f])
+          if (!links) continue
+          for (var k = 0; k < links.length; k++) {
+            var ce = clean[links[k]]
+            if (kinds.indexOf(ce.kind) < 0) continue
+            var other = outward ? ce.to : ce.from
+            if (seen.has(other)) continue
+            seen.add(other); next.push(other)
+          }
+        }
+        frontier = next
+      }
+      seen.delete(root)
+      return seen
+    }
+    var down = walk(out, DOWN_EDGE_KINDS, true)
+    var up = walk(inc, UP_EDGE_KINDS, false)
+    var both = new Set()
+    down.forEach(function (id) { if (up.has(id)) both.add(id) })
+    var downSide = new Set(down); downSide.add(root)
+    var upSide = new Set(up); upSide.add(root)
+    var downEdges = new Set(), upEdges = new Set()
+    for (var j = 0; j < clean.length; j++) {
+      var ce2 = clean[j]
+      var key = 'e:' + ce2.from + '|' + ce2.to + '|' + ce2.kind
+      if (DOWN_EDGE_KINDS.indexOf(ce2.kind) >= 0 && downSide.has(ce2.from) && downSide.has(ce2.to)) downEdges.add(key)
+      if (UP_EDGE_KINDS.indexOf(ce2.kind) >= 0 && upSide.has(ce2.from) && upSide.has(ce2.to)) upEdges.add(key)
+    }
+    return { rootId: root, down: down, up: up, both: both, downEdges: downEdges, upEdges: upEdges }
+  }
+
+  /** toSet-style defense (brief rule 3): a focus that is not an object with a
+   *  string rootId is indistinguishable from focus=null. */
+  function parseFocus(f) {
+    if (!f || typeof f !== 'object') return null
+    if (typeof f.rootId !== 'string') return null
+    return { rootId: f.rootId, depth: normalizeDepth(f.depth) }
+  }
 
   function toSet(v) {
     if (v == null) return null
@@ -69,6 +181,11 @@
     var profile = v.filterProfile == null ? null : String(v.filterProfile)
     var edgeKinds = toSet(v.edgeKinds)              // null => all kinds pass
     var showRealCross = !!v.showRealCross
+    // V2.2a view dimensions. granularity defaults to 'groups' (BASE behavior,
+    // byte-identical); 'packages' renders every group expanded and ignores
+    // collapsedGroups. focus parses with toSet-style defense: null = base view.
+    var granularity = v.granularity === 'packages' ? 'packages' : 'groups'
+    var focusIn = parseFocus(v.focus)
 
     // ---------- universe: membership + group table (defensive synthesis) ----------
     var nodeById = new Map()
@@ -236,7 +353,118 @@
     })
     function zoneShown(cat) { return !excludeCats.has(cat) && (survivorsByZone.get(cat) || 0) > 0 }
     function groupShown(gid2) { return (survivorsByGroup.get(gid2) || 0) > 0 && zoneShown(groupById.get(gid2).category) }
-    function groupCollapsed(gid2) { return collapsedGroups ? collapsedGroups.has(gid2) : true }
+    function groupCollapsed(gid2) {
+      if (granularity === 'packages') return false // R38: collapsedGroups is ignored
+      return collapsedGroups ? collapsedGroups.has(gid2) : true
+    }
+
+    // ---------- focus subgraph (R38/R39) — a NEW branch; the base path below is untouched ----------
+    // M = pathSets(graph, rootId, depth).down ∪ .up ∪ .both ∪ {root}, evaluated
+    // over the RAW graph, then intersected with survivors (R39: members of
+    // excluded zones are evicted; induced edges re-cut over the survivors).
+    // Unknown root or an M that empties under the filters falls back to the
+    // base-path view (meta.focus = null records the request that did not apply).
+    var focusSets = null, focusMembers = null
+    if (focusIn) {
+      focusSets = pathSets(g, focusIn.rootId, focusIn.depth)
+      if (nodeById.has(focusSets.rootId)) {
+        var cand = new Set([focusSets.rootId])
+        focusSets.down.forEach(function (id) { cand.add(id) })
+        focusSets.up.forEach(function (id) { cand.add(id) })
+        focusSets.both.forEach(function (id) { cand.add(id) })
+        var fms = new Set()
+        cand.forEach(function (id) {
+          var nd = nodeById.get(id)
+          if (nd && survivesMap.get(nd)) fms.add(id)
+        })
+        if (fms.size > 0) focusMembers = fms
+      }
+    }
+    if (focusMembers) {
+      // Render fewer elements from the SAME layout universe (slot
+      // pre-allocation ran unconditionally above — coordinates are identical
+      // to the granularity:'packages' build by construction).
+      var fel = []
+      var fz = 0, fg = 0, fp = 0, fw = 0
+      var fGroupCount = new Map() // gid -> rendered member count (focus semantics for data.count)
+      focusMembers.forEach(function (id2) {
+        var nd2 = nodeById.get(id2)
+        var gid4 = nd2.group == null ? 'ungrouped' : String(nd2.group)
+        fGroupCount.set(gid4, (fGroupCount.get(gid4) || 0) + 1)
+      })
+      zones.forEach(function (zz) { // zones in category order; member-free zones simply absent
+        var zc = 0
+        zz.groups.forEach(function (gr) { zc += fGroupCount.get(gr.id) || 0 })
+        if (zc === 0) return
+        fz++
+        fel.push({
+          group: 'nodes',
+          data: { id: 'cat:' + zz.id, kind: 'zone', name: zz.id, count: zc, x: zz.x, y: zz.y, w: zz.w, h: zz.h },
+          classes: ['zone', 'cat-' + zz.id, 'ctx'],
+        })
+      })
+      zones.forEach(function (zz) { // ancestor containers of surviving members, expanded slot sizes
+        var zc2 = 0
+        zz.groups.forEach(function (gr) { zc2 += fGroupCount.get(gr.id) || 0 })
+        if (zc2 === 0) return
+        zz.groups.forEach(function (gr) {
+          var gc = fGroupCount.get(gr.id) || 0
+          if (gc === 0) return
+          fg++
+          fel.push({
+            group: 'nodes',
+            data: {
+              id: 'g:' + gr.id, parent: 'cat:' + zz.id, kind: 'group', name: gr.id,
+              count: gc, x: gr.x, y: gr.y, w: gr.slotW, h: gr.slotH,
+            },
+            classes: ['group', 'gk-' + gr.kind, 'ctx'],
+          })
+        })
+      })
+      for (i = 0; i < nodes.length; i++) { // member pkgs in graph.nodes order
+        n = nodes[i]
+        if (!n || n.id == null || !survivesMap.get(n)) continue
+        var mk = String(n.id)
+        if (!focusMembers.has(mk)) continue
+        var gid5 = n.group == null ? 'ungrouped' : String(n.group)
+        if (!groupById.get(gid5)) continue
+        var p5 = nodePos.get(n)
+        if (!p5) continue
+        if (n.kind === 'profile') fw++; else fp++
+        fel.push({
+          group: 'nodes',
+          data: { id: n.id, parent: 'g:' + gid5, kind: n.kind === 'profile' ? 'profile' : 'pkg', name: n.name == null ? n.id : n.name, x: p5.x, y: p5.y },
+          classes: ['pkg', 'sk-' + (n.kind || 'package'), 'sc-' + (n.scope == null ? '' : n.scope)],
+        })
+      }
+      // Induced REAL edges only: (downEdges ∪ upEdges) ∩ survivor endpoints,
+      // walked in graph.edges order and deduped by key — the SAME element shape
+      // as today's real cross edges ('e-'+kind + cross classes). Aggregates are
+      // never produced in focus mode, even between two members of one group.
+      var fEdges = []
+      var fSeen = new Set()
+      for (i = 0; i < gedges.length; i++) {
+        var fe = gedges[i]
+        if (!fe || fe.from == null || fe.to == null) continue
+        var fs2 = String(fe.from), ft2 = String(fe.to)
+        if (fs2 === ft2) continue // self-loops never render (base path drops them too)
+        if (!focusMembers.has(fs2) || !focusMembers.has(ft2)) continue
+        var fkey = 'e:' + fs2 + '|' + ft2 + '|' + String(fe.kind)
+        if (!focusSets.downEdges.has(fkey) && !focusSets.upEdges.has(fkey)) continue
+        if (fSeen.has(fkey)) continue
+        fSeen.add(fkey)
+        fEdges.push({ group: 'edges', data: { id: fkey, source: fs2, target: ft2, kind: String(fe.kind) }, classes: ['e-' + fe.kind, 'cross'] })
+      }
+      fEdges.forEach(function (el0) { fel.push(el0) })
+      return {
+        elements: fel,
+        meta: {
+          zones: fz, groups: fg, pkgs: fp, profiles: fw,
+          realEdges: fEdges.length, aggEdges: 0, edges: fEdges.length,
+          focus: { rootId: focusSets.rootId, depth: focusIn.depth, members: focusMembers.size, edges: fEdges.length },
+        },
+      }
+    }
 
     // ---------- endpoint resolution (rule 4) ----------
     function resolveOf(n2) {
@@ -345,14 +573,15 @@
     aggEls.forEach(function (el) { elements.push(el) })
     real.forEach(function (el) { elements.push(el) })
 
-    return {
-      elements: elements,
-      meta: {
-        zones: zoneN, groups: groupN, pkgs: pkgN, profiles: profileN,
-        realEdges: real.length, aggEdges: aggEls.length, edges: real.length + aggEls.length,
-      },
+    var meta = {
+      zones: zoneN, groups: groupN, pkgs: pkgN, profiles: profileN,
+      realEdges: real.length, aggEdges: aggEls.length, edges: real.length + aggEls.length,
     }
+    // Byte-identity rule: the focus meta key appears ONLY when a focus object
+    // was actually requested — a requested-but-not-applied focus records null.
+    if (focusIn) meta.focus = null
+    return { elements: elements, meta: meta }
   }
 
-  globalThis.AtlasModel = Object.freeze({ buildView: buildView, ZONE_LAYOUT: ZONE_LAYOUT })
+  globalThis.AtlasModel = Object.freeze({ buildView: buildView, pathSets: pathSets, ZONE_LAYOUT: ZONE_LAYOUT })
 })()

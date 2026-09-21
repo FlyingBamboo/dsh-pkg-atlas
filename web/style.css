@@ -34,6 +34,16 @@ main { display: flex; flex: 1; min-height: 0; position: relative; }
 #peek-card .pk-desc { margin-top: 3px; opacity: .85; overflow-wrap: anywhere; }
 #peek-card .pk-counts { margin-top: 3px; opacity: .8; }
 #peek-card .pk-flags { margin-top: 2px; color: #d0433f; }
+/* V2.5 R44: the right-click command menu. Same one-reusable-div pattern as the
+   peek card (appended inside #graph, rows rebuilt per open), but CLICKABLE —
+   its rows are commands, so no pointer-events:none here (the peek card's rule
+   must not leak). z-index 60: above the canvas, the peek and the legend. */
+#ctx-menu { position: absolute; z-index: 60; min-width: 160px; background: light-dark(#ffffff, #1b2026); border: 1px solid #8886; border-radius: 6px; box-shadow: 0 4px 14px #0004; padding: 4px 0; font-size: 12px; }
+#ctx-menu[hidden] { display: none; }
+#ctx-menu .cm-title { padding: 4px 10px 5px; font-weight: 600; opacity: .7; border-bottom: 1px solid #8883; margin-bottom: 2px; overflow-wrap: anywhere; }
+#ctx-menu button.cm-item { display: block; width: 100%; text-align: left; border: 0; background: none; color: inherit; font: inherit; padding: 5px 10px; cursor: pointer; }
+#ctx-menu button.cm-item:hover:not(:disabled) { background: light-dark(#0000000d, #ffffff14); }
+#ctx-menu button.cm-item:disabled { opacity: .45; cursor: default; }
 /* V6 fills #legend and #zone-chips; empty containers must stay invisible (V5).
    V6 adds a clickable collapse button inside #legend → pointer-events must be
    auto (V5 shipped none because it was decorative-only and empty). */

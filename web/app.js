@@ -11,6 +11,14 @@
  * `state.view` (or state.focus/selected/theme/lang) and then calls paint() —
  * no control touches cytoscape elements directly.
  *
+ * V2.5 R45 (camera doctrine): every repaint KEEPS the viewport — the old
+ * structural auto-refit is retired (paint fits exactly once, the boot frame,
+ * behind state.fitted). The camera moves only at the sanctioned spots, always
+ * cy.animate OUTSIDE the render path: entry/walk glide (afterFocusChange),
+ * exit restore (the armed snapshot), reveal center+zoom (flashReveal),
+ * re-root glide (focusNode when the root actually moved) and the explicit
+ * resetView (⌂ / background-menu 复位视图).
+ *
  * Parent sizing (V5-M-6, VERIFIED against the vendored 3.34.1 dist by a headless
  * probe): compound nodes auto-fit their children (a 700x500 data-w/h parent with
  * children rendered at the children's bbox); explicit width/height only holds for
@@ -59,7 +67,13 @@
       kindLabel: '类型', groupLabel: '组', zoneLabel: '区',
       // V2.4b group focus: the disabled depth hint + the related-neighborhood headers
       groupFocusDepth: '组聚焦固定 1 跳（深度不适用）',
-      relatedGroupsLabel: '相关组（{n}）', relatedPkgsLabel: '相关包（{n}）' },
+      relatedGroupsLabel: '相关组（{n}）', relatedPkgsLabel: '相关包（{n}）',
+      // V2.5 R44 right-click command surface + R45 explicit view reset
+      menuCanvas: '画布', menuExpand: '展开', menuMerge: '合并',
+      menuFocusGroup: '聚焦邻域（1 跳）', menuFocusGroupPkgs: '聚焦邻域（包形态）',
+      menuSoloZone: '只看该区', menuHideZone: '隐藏该区',
+      menuCollapseZone: '折叠该区', menuExpandZone: '展开该区',
+      menuPkgPath: '路径模式', menuResetView: '复位视图', menuExitFocus: '退出聚焦' },
     en: { title: 'DSH Package Atlas', search: 'search packages…', refresh: 'rescan', retry: 'retry',
       loadFail: 'failed to load graph', warnings: 'data warnings', noDescription: '(no description)',
       langSwitch: '中文',
@@ -88,7 +102,13 @@
       kindLabel: 'kind', groupLabel: 'group', zoneLabel: 'zone',
       // V2.4b group focus: the disabled depth hint + the related-neighborhood headers
       groupFocusDepth: 'group focus is fixed at 1 hop (depth does not apply)',
-      relatedGroupsLabel: 'related groups ({n})', relatedPkgsLabel: 'related packages ({n})' },
+      relatedGroupsLabel: 'related groups ({n})', relatedPkgsLabel: 'related packages ({n})',
+      // V2.5 R44 right-click command surface + R45 explicit view reset
+      menuCanvas: 'canvas', menuExpand: 'expand', menuMerge: 'merge',
+      menuFocusGroup: 'focus neighborhood (1 hop)', menuFocusGroupPkgs: 'focus neighborhood (packages)',
+      menuSoloZone: 'show only this zone', menuHideZone: 'hide this zone',
+      menuCollapseZone: 'collapse zone', menuExpandZone: 'expand zone',
+      menuPkgPath: 'path mode', menuResetView: 'reset view', menuExitFocus: 'exit focus' },
   }
   var lang = (navigator.language || 'zh').toLowerCase().indexOf('zh') === 0 ? 'zh' : 'en'
   function t(k) { return (I18N[state.lang] && I18N[state.lang][k]) || k }
@@ -150,6 +170,9 @@
   // Hover peek: a 250ms dwell keeps fly-over gestures silent.
   var PEEK_DEBOUNCE_MS = 250
   var PEEK_DESC_CAP = 140
+  // V2.5 R44: armed while a menu-dismissing mousedown waits for the tap that
+  // completes the press (that tap is eaten — menu semantics, not selection).
+  var menuSwallow = false
   // Path-mode back stack + breadcrumb.
   var PATH_STACK_CAP = 20
   var CRUMB_MAX = 4
@@ -158,6 +181,9 @@
   var state = {
     graph: null, byId: new Map(), groupIds: new Set(), groupZone: new Map(),
     cy: null, tableMode: false,
+    // V2.5 R45: the auto-refit is retired — paint() keeps the viewport on EVERY
+    // repaint, and the ONE fit paint may still run belongs to the boot frame.
+    fitted: false,
     theme: 'light', lang: lang,
     loading: false, // a graph fetch (+ its status poll) is in flight
     // AtlasModel `view` input. Defaults = the model defaults: every group collapsed
@@ -723,18 +749,25 @@
 
   // ---------- helpers ----------
   function escText(el, s) { el.textContent = s == null ? '' : String(s) }
-  function catById() {
+  function catById(graph) {
     var m = new Map()
-    var cats = state.graph && Array.isArray(state.graph.categories) ? state.graph.categories : []
+    var cats = graph && Array.isArray(graph.categories) ? graph.categories : []
     cats.forEach(function (c) { if (c && c.id != null) m.set(String(c.id), c) })
     return m
   }
   // V5-M-5: zone data.name is the raw category id — the visible title must come
   // from graph.categories {id, zh, en}, never the raw id.
   function zoneTitle(catId) {
-    var c = catById().get(catId)
+    var c = catById(state.graph).get(catId)
     if (!c) return catId
     return (state.lang === 'zh' ? (c.zh || c.en) : (c.en || c.zh)) || catId
+  }
+  // V2.5: the category-id universe, once per caller instead of two hand-rolled
+  // derivations (the chip bar and the menu's solo/hide commands read ONE list).
+  function allCatIds() {
+    return (state.graph && Array.isArray(state.graph.categories) && state.graph.categories.length)
+      ? state.graph.categories.map(function (c) { return c && c.id != null ? String(c.id) : '' }).filter(Boolean)
+      : ZONE_IDS_FALLBACK.slice()
   }
   function shortName(name, kind) {
     var s = name == null ? '' : String(name)
@@ -909,12 +942,16 @@
   }
 
   // ---------- paint(): the single render path (R26) ----------
-  // `refit === false` keeps the current viewport (selection-only repaints must not
-  // fight the user's zoom/pan); every structural change refits.
-  function paint(refit) {
+  // V2.5 R45: `refit` is GONE — keeping the current viewport IS the doctrine,
+  // not a per-call-site decision. paint() only ever fits the FIRST (boot) frame
+  // through the state.fitted gate; the four sanctioned camera moves (entry/walk
+  // glide, the exit restore, the reveal flash, the 复位视图 glide) all live
+  // OUTSIDE this render path, and nothing else moves the viewport.
+  function paint() {
     if (!state.graph) return // static chrome binds at boot; ignore interaction until first load
     if (state.tableMode) { renderTable(); return }
     hidePeek() // the elements under a live peek are about to be destroyed
+    closeMenu() // a structural repaint destroys what an open menu was describing
     state.view.focus = state.focus // THE single place focus flows into the model (V22b)
     try {
       if (!state.cy) {
@@ -945,18 +982,10 @@
       state.cy.add(cyEls)
       state.cy.style(styleFor(state.theme))
       applyClasses()
-      if (refit !== false) {
-        // V22b: meta.focus is THREE-STATE (absent = never requested | null =
-        // requested but fell back | object = the path subgraph is what renders).
-        // Only an ACTIVE path view refits to the path: the ctx zone/group frames
-        // span whole layout rows and would shrink the path into a corner.
-        var focusApplied = built.meta && built.meta.focus && typeof built.meta.focus === 'object'
-        // V2.4b: a groups-mode GROUP focus renders cards only — pathFitEles (a
-        // pkg/profile selector) is empty there, and fitting an empty collection
-        // is undefined behavior. The render set is the neighborhood itself, so
-        // the ordinary whole-view refit is the honest fallback.
-        if (focusApplied && pathFitEles(state.cy).length) state.cy.fit(pathFitEles(state.cy), 40)
-        else state.cy.fit(undefined, 24)
+      if (!state.fitted) {
+        // R45: the one-shot BOOT fit — padding 24 as in V5.
+        state.fitted = true
+        state.cy.fit(undefined, 24) // the only fit() call in the whole app
       }
     } catch (err) {
       console.warn('atlas graph render failed, using table fallback', err)
@@ -1122,6 +1151,14 @@
     // exactly one job left, and it is dropping a peek that can no longer track the
     // camera it was anchored to.
     cy.on('zoom', hidePeek)
+    // V2.5 R44: the context-menu lifecycle. cxttap opens (node → target menu,
+    // blank canvas → view menu); mousedown closes AND arms the tap swallow;
+    // panstart/zoom close WITHOUT arming (a drag must never eat the next click).
+    cy.on('cxttap', 'node', onCtxTap)
+    cy.on('cxttap', onCtxTapBackground)
+    cy.on('mousedown', onCanvasMouseDown)
+    cy.on('panstart', onCanvasGesture)
+    cy.on('zoom', closeMenu)
     // V22b hover peek: dwell 250ms on ANY node (member, card, zone) → the one
     // reusable card. pan/zoom/click/leave close it instantly.
     cy.on('pan', hidePeek)
@@ -1164,8 +1201,18 @@
     // single click → selection + details panel (V6 Step 4); V22b adds the path-
     // mode walk/entry/exit flow and closes any peek (a click means the reader
     // moved on — and the click's repaint would destroy the peeked element).
-    cy.on('tap', 'node, edge', function (evt) { hidePeek(); selectNode(evt.target.id()) })
-    cy.on('tap', function (evt) { if (evt.target === cy) { hidePeek(); selectNode(null) } })
+    // V2.5 R44: while the context menu is open (or its swallow is armed), the
+    // tap only DISMISSES — no peek-off, no selection, no focus change.
+    cy.on('tap', 'node, edge', function (evt) {
+      if (swallowMenuTap()) return
+      hidePeek(); selectNode(evt.target.id())
+    })
+    cy.on('tap', function (evt) {
+      if (evt.target === cy) {
+        if (swallowMenuTap()) return
+        hidePeek(); selectNode(null)
+      }
+    })
   }
   function toggleGroup(gid) {
     if (!state.view.collapsedGroups) state.view.collapsedGroups = new Set(state.groupIds)
@@ -1174,7 +1221,7 @@
     // packages flag is defined as "this group is expanded" (or 包级 tier), so
     // the focus re-derives instead of contradicting the layout it renders in.
     if (state.focus && isGroupRootId(state.focus.rootId) && state.focus.rootId === 'g:' + gid) {
-      state.focus = focusForId('g:' + gid)
+      state.focus = groupFocusShape('g:' + gid)
     }
     paint()
   }
@@ -1195,15 +1242,14 @@
     var s = String(id == null ? '' : id)
     if (!s) return null
     if (isGroupRootId(s)) {
-      if (!isFocusRoot(s)) return null // an unknown gid anchors nothing
-      // V2.4b: the GROUP focus is FIXED at 1 hop (depth is inert in the model).
-      // packages = member shape iff the 包级 tier is on, or (组级 tier) this very
-      // group is expanded — collapsedGroups === null means ALL collapsed.
-      return {
-        rootId: s, depth: 1,
-        packages: state.view.granularity === 'packages' ||
-          !!(state.view.collapsedGroups && !state.view.collapsedGroups.has(s.slice(2))),
-      }
+      // R44 (V2.5): the TAP door into a group focus is CLOSED — a plain-view
+      // group-card tap selects (details panel) and clears the focus, exactly
+      // like any other non-root. INSIDE a live focus the tap still WALKS onto
+      // the neighbor card (the V2.4b semantics, unchanged). Entry now rides the
+      // right-click menu command, which builds the shape through groupFocusShape
+      // directly and never passes through this gate.
+      if (!state.focus) return null
+      return groupFocusShape(s)
     }
     if (!state.byId.has(s)) {
       if (s.indexOf('agg:') === 0 || s.indexOf('e:') === 0) return state.focus
@@ -1211,21 +1257,32 @@
     }
     return isFocusRoot(s) ? { rootId: s, depth: depthOfCtl() } : null
   }
-  // V22b path mode — the ENTRY/WALK/EXIT decision for one selection. Every
-  // path-structure mutation flows through here (tap handlers) so the semantics
-  // stay in one place:
-  //   entry (plain → package): snapshot the live viewport ONCE, stack resets.
-  //   walk  (package → other package): the PREVIOUS root goes onto the back
-  //         stack (pushPathStack dedupes consecutive repeats, caps at 20).
-  //   exit  (package → blank/non-package): exitFocus() clears focus + stack and
-  //         arms the viewport restore; the CALLER paints(false) then
-  //         restoreViewport() animates the snapshot back.
-  // Returns {entered, walked, exited} so the caller can pick the animation.
-  function focusFlowAction(id) {
+  // V2.5 (R44): the GROUP focus shape, ONE builder for every entry door — the
+  // menu command, focusNode's g: branch (deep link / breadcrumb), toggleGroup's
+  // re-derivation and the tier switch. Fixed 1 hop (the model owns depth);
+  // packages = member shape iff the 包级 tier is on, or (组级 tier) this very
+  // group is expanded — collapsedGroups === null means ALL collapsed.
+  function groupFocusShape(rootId) {
+    var s = String(rootId == null ? '' : rootId)
+    if (!isGroupRootId(s) || !isFocusRoot(s)) return null
+    return {
+      rootId: s, depth: 1,
+      packages: state.view.granularity === 'packages' ||
+        !!(state.view.collapsedGroups && !state.view.collapsedGroups.has(s.slice(2))),
+    }
+  }
+  // V2.5 (R44): the transition recorder — every focus STRUCTURE change made
+  // through a selection or a menu command flows through here, so entry/walk/exit
+  // bookkeeping lives in exactly one place:
+  //   entry (null → next): snapshot the live viewport ONCE, stack resets.
+  //   walk  (prev → different root): the PREVIOUS root goes onto the back stack
+  //         (pushPathStack dedupes consecutive repeats, caps at PATH_STACK_CAP).
+  //   exit  (prev → null): exitFocus() clears focus + stack; the surviving
+  //         snapshot stays armed for exactly one restoreViewport() glide.
+  // Returns {entered, walked, exited} so the caller picks the camera move.
+  function focusTransition(next) {
     var prev = state.focus
-    state.selected = id
-    state.focus = focusForId(id)
-    var next = state.focus
+    state.focus = next
     if (prev && next) {
       if (next.rootId !== prev.rootId) state.pathStack = pushPathStack(state.pathStack, prev.rootId)
       return { entered: false, walked: next.rootId !== prev.rootId, exited: false }
@@ -1241,6 +1298,13 @@
     }
     return { entered: false, walked: false, exited: false }
   }
+  // V22b path mode — the ENTRY/WALK/EXIT decision for one selection. V2.5: the
+  // transition itself moved into focusTransition; this stays the tap-side
+  // funnel (selection + focus in one step) so the semantics never fork.
+  function focusFlowAction(id) {
+    state.selected = id
+    return focusTransition(focusForId(id))
+  }
   // Exit half, shared by blank-tap, the Esc key and the 退出路径 button: focus
   // gone, stack gone, and IF an entry snapshot exists it is left in place, armed
   // for exactly one animate-back — the surviving snapshot IS the armed marker,
@@ -1248,22 +1312,40 @@
   // The SNAPSHOT ITSELF STAYS PUT — restoreViewport() is the only thing allowed
   // to spend it (nulling it here made that guard bail every time, i.e. the
   // documented 镜头滑回 never ran).
-  // Every exit call site runs the sequence exitFocus() → paint(false) →
+  // Every exit call site runs the sequence exitFocus() → paint() →
   // restoreViewport() in exactly that order, and the order is load-bearing: the
   // repaint sees focus === null (the whole graph is back on screen, viewport
-  // kept because refit === false), and only THEN does the camera glide — gliding
-  // first would have the structural repaint land mid-flight.
+  // kept because keeping IS the R45 doctrine), and only THEN does the camera
+  // glide — gliding first would have the structural repaint land mid-flight.
   function exitFocus() {
     state.focus = null
     state.pathStack = []
   }
+  // V2.5 (R44): the ONE exit funnel — the background-menu 退出聚焦 command and
+  // (through the same five steps) Esc and 退出路径 all end the focus the same
+  // way. Order is load-bearing: the repaint sees focus === null (the whole graph
+  // is back on screen; viewport kept because keeping IS the doctrine), and only
+  // THEN does the camera glide — gliding first would have the structural repaint
+  // land mid-flight. The chrome binder pins the same shape textually.
+  function exitFocusCommand() {
+    if (!state.focus) return
+    exitFocus()
+    renderDetails(state.selected)
+    syncFocusCtl()
+    paint()
+    restoreViewport()
+  }
   function selectNode(id) {
-    var act = focusFlowAction(id)
+    afterFocusChange(focusFlowAction(id), id)
+  }
+  // V2.5 (R45): the shared tail of every focus transition (tap chain + menu
+  // focus command): chrome, ONE viewport-kept repaint, and only then the
+  // sanctioned camera move — entry/walk glides onto the render set, exit glides
+  // the armed snapshot back.
+  function afterFocusChange(act, id) {
     renderDetails(id)
     syncFocusCtl()
-    paint(false) // selection/focus-only repaint: keep the viewport
-    // V22b: entering/walking glides the camera onto the new path (cy.animate —
-    // the only viewport-animation API this app uses); exiting glides back.
+    paint()
     if (act.entered || act.walked) animateFitPath()
     else if (act.exited) restoreViewport()
   }
@@ -1291,9 +1373,9 @@
       if (!was) snapshotViewport()
     } else if (was) {
       exitFocus()
-      // The full refit below IS the exit for a reveal: no glide on top of it, so
-      // the (now stale) snapshot goes with it — dropping it IS the disarm. The
-      // reveal has already re-planted the camera on a different node.
+      // The reveal IS the exit for a prior focus: the camera is re-planted on a
+      // DIFFERENT node by flashReveal's center+zoom, so the (now stale) entry
+      // snapshot goes with it — dropping it IS the disarm (no restore glide).
       state.viewport = null
     }
     paint()
@@ -1324,12 +1406,18 @@
   // walk history), and it snapshots the viewport only when it IS the entry.
   function focusNode(rootId, depth, selectId) {
     var d = normalizeDepth(depth)
+    // V2.5 (R45): the camera decision is made BEFORE the re-root — a genuine
+    // re-root (deep link, breadcrumb 返回, the details 聚焦 button) glides onto
+    // the new path after the repaint; a depth re-cut IN PLACE (the slider) keeps
+    // the viewport exactly where the reader left it.
+    var moved = !state.focus || String(state.focus.rootId) !== String(rootId)
     if (!state.focus) snapshotViewport()
     // V2.4b: a g: re-root keeps the GROUP focus shape (fixed 1 hop + derived
     // packages flag) — the breadcrumb back button and the #node=g: deep link
     // both land here, and a stale {rootId, depth} shape would contradict the
-    // model's parseFocus contract for g: roots.
-    if (isGroupRootId(rootId)) state.focus = focusForId(String(rootId))
+    // model's parseFocus contract for g: roots. V2.5: the shape builder is
+    // groupFocusShape itself (the tap-era focusForId door is closed).
+    if (isGroupRootId(rootId)) state.focus = groupFocusShape(String(rootId))
     else state.focus = { rootId: rootId, depth: d }
     var rn = state.byId.get(String(rootId))
     if (isGroupRootId(rootId)) {
@@ -1343,11 +1431,209 @@
       sets.up.forEach(function (id) { var n = state.byId.get(id); if (n) expandPath(n) })
     }
     if (selectId) state.selected = selectId
-    paint() // focus-active refit inside paint: fits the path members (no ctx padding)
+    paint() // viewport kept (R45); the render set is whatever the new cut selects
+    if (moved) animateFitPath() // the sanctioned re-root glide, after the repaint
     syncFocusCtl()
     if (selectId) renderDetails(selectId)
     if (selectId) flashReveal(selectId)
   }
+  // ---------- V2.5 (R44): the right-click COMMAND SURFACE ----------
+  // ONE reusable div inside #graph (created on first use, rows rebuilt per open
+  // — the peek-card pattern), positioned from the click's RENDERED point with
+  // the peek's edge-flip/clamp vocabulary. Unlike the peek it is CLICKABLE (no
+  // pointer-events:none — the rows ARE commands). The header is the only place
+  // target-derived text lands and it goes through escText (textContent): a
+  // group/package named like an attack stays a string. Row labels ride
+  // t(labelKey) at render time; the row SET and the enabled gates come from the
+  // PURE buildContextMenu(target, state, lang) — the same predicates the
+  // dbl-tap handlers enforce, so menu and gesture can never disagree.
+  // Closing rules: a tap elsewhere SWALLOWS (closes WITHOUT selecting), a
+  // mousedown closes AND arms the swallow for the tap completing that press,
+  // any camera gesture (pan/zoom) or a pane resize strands it → plain close,
+  // and every structural repaint closes it. Esc priority: menu > results > focus.
+  function buildContextMenu(target, state, lang) {
+    var rows = []
+    if (!target) return rows
+    var v = state.view || {}
+    var focus = state.focus || null
+    if (target.kind === 'group') {
+      var gid = target.gid != null ? String(target.gid)
+        : String(target.id == null ? '' : target.id).replace(/^g:/, '')
+      var expanded = v.granularity === 'packages' ||
+        !!(v.collapsedGroups && !v.collapsedGroups.has(gid))
+      var toggleLive = v.granularity === 'groups' && (!focus || focus.rootId === 'g:' + gid)
+      if (expanded) rows.push({ id: 'toggle-group', labelKey: 'menuMerge', enabled: toggleLive })
+      else rows.push({ id: 'toggle-group', labelKey: 'menuExpand', enabled: toggleLive })
+      if (expanded) rows.push({ id: 'focus-group', labelKey: 'menuFocusGroupPkgs', enabled: true })
+      else rows.push({ id: 'focus-group', labelKey: 'menuFocusGroup', enabled: true })
+      rows.push({ id: 'solo-zone', labelKey: 'menuSoloZone', enabled: true })
+    } else if (target.kind === 'zone') {
+      var zid = String(target.id == null ? '' : target.id)
+      var collapsed = !!(v.collapsedCats && v.collapsedCats.has(zid))
+      if (collapsed) rows.push({ id: 'toggle-zone', labelKey: 'menuExpandZone', enabled: !focus })
+      else rows.push({ id: 'toggle-zone', labelKey: 'menuCollapseZone', enabled: !focus })
+      rows.push({ id: 'solo-zone', labelKey: 'menuSoloZone', enabled: true })
+      rows.push({ id: 'hide-zone', labelKey: 'menuHideZone', enabled: true })
+    } else if (target.kind === 'pkg') {
+      var n = state.byId.get(String(target.id))
+      rows.push({ id: 'pkg-path', labelKey: 'menuPkgPath', enabled: !!(n && n.kind === 'package') })
+    } else if (target.kind === 'bg') {
+      rows.push({ id: 'reset-view', labelKey: 'menuResetView', enabled: true })
+      rows.push({ id: 'exit-focus', labelKey: 'menuExitFocus', enabled: !!focus })
+    }
+    return rows // any other kind (an edge) emits NO rows → no menu
+  }
+  function ctxMenu() {
+    var m = document.getElementById('ctx-menu')
+    if (m) return m
+    var cont = document.getElementById('graph')
+    if (!cont) return null
+    m = document.createElement('div')
+    m.id = 'ctx-menu'
+    m.hidden = true
+    cont.appendChild(m)
+    return m
+  }
+  function menuIsOpen() {
+    var m = document.getElementById('ctx-menu')
+    return !!(m && !m.hidden)
+  }
+  function closeMenu() {
+    var m = document.getElementById('ctx-menu')
+    if (m) m.hidden = true
+    menuSwallow = false
+  }
+  // The tap that merely DISMISSES the menu must not also select what sits under
+  // the cursor — menu semantics, not selection semantics. Returns true when the
+  // tap was eaten; the caller returns before touching anything else.
+  function swallowMenuTap() {
+    if (menuIsOpen()) { closeMenu(); return true }
+    if (menuSwallow) { menuSwallow = false; return true }
+    return false
+  }
+  function menuHeader(target) {
+    if (!target) return ''
+    if (target.kind === 'bg') return t('menuCanvas')
+    if (target.kind === 'zone') return zoneTitle(String(target.id))
+    if (target.kind === 'group') return String(target.gid)
+    var n = state.byId.get(String(target.id))
+    return (n && n.name) || String(target.id)
+  }
+  // Same vocabulary as positionPeek (rendered pixels, flip up-left, clamp ≥2),
+  // anchored at the CLICK POINT instead of an element bbox.
+  function positionMenu(m, px, py) {
+    m.hidden = false
+    var cont = document.getElementById('graph')
+    if (!cont) return
+    var cw = cont.clientWidth || 0, ch = cont.clientHeight || 0
+    var w = m.offsetWidth || 160, h = m.offsetHeight || 120
+    var x = px, y = py
+    if (x + w > cw) x = px - w
+    if (y + h > ch) y = py - h
+    if (x < 2) x = 2
+    if (y < 2) y = 2
+    m.style.left = x + 'px'
+    m.style.top = y + 'px'
+  }
+  function openMenuAt(target, evt) {
+    if (!state.graph || state.tableMode) return
+    var rows = buildContextMenu(target, state, state.lang)
+    if (!rows.length) return // no command exists for this target → no menu
+    var m = ctxMenu()
+    if (!m) return
+    hidePeek() // one hover surface at a time: the menu replaces the peek
+    m.textContent = '' // rows rebuild; the div itself is reused forever
+    var head = document.createElement('div')
+    head.className = 'cm-title'
+    escText(head, menuHeader(target))
+    m.appendChild(head)
+    rows.forEach(function (row) {
+      var b = document.createElement('button')
+      b.type = 'button'
+      b.className = 'cm-item'
+      escText(b, t(row.labelKey))
+      b.disabled = !row.enabled // ONE rule: greyed, never hidden
+      b.addEventListener('click', function () { runMenuCommand(row.id, target) })
+      m.appendChild(b)
+    })
+    menuSwallow = false // a re-open cannot inherit a stale armed swallow
+    var p = evt && evt.renderedPosition
+    positionMenu(m, p ? p.x : 0, p ? p.y : 0)
+  }
+  function ctxTargetOf(el) {
+    if (!el || typeof el.isNode !== 'function' || !el.isNode()) return null
+    if (el.hasClass('group')) {
+      var id = String(el.id())
+      return { kind: 'group', id: id, gid: id.replace(/^g:/, '') }
+    }
+    if (el.hasClass('zone')) return { kind: 'zone', id: String(el.data('name')) }
+    if (el.hasClass('pkg')) return { kind: 'pkg', id: String(el.id()) }
+    return null
+  }
+  // Every row dispatches through the SAME chain its gesture twin uses — the menu
+  // is a door, not a second implementation: toggleGroup, focusTransition+
+  // afterFocusChange (the tap chain), the chip solo/exclusion predicates,
+  // selectNode, exitFocusCommand. closeMenu FIRST: a command never inherits a
+  // live surface.
+  function runMenuCommand(cmd, target) {
+    closeMenu()
+    if (!target) return
+    var gid = target.gid != null ? String(target.gid)
+      : String(target.id == null ? '' : target.id).replace(/^g:/, '')
+    if (cmd === 'toggle-group') { toggleGroup(gid); return }
+    if (cmd === 'focus-group') {
+      var id = 'g:' + gid
+      state.selected = id
+      afterFocusChange(focusTransition(groupFocusShape(id)), id)
+      return
+    }
+    var zid = target.kind === 'zone' ? String(target.id) : (state.groupZone.get(gid) || 'ungrouped')
+    if (cmd === 'solo-zone') {
+      state.view.filterCats = soloToggleFor(allCatIds(), state.view.filterCats, zid)
+      buildZoneChips()
+      paint()
+      return
+    }
+    if (cmd === 'hide-zone') {
+      state.view.filterCats.add(zid)
+      buildZoneChips()
+      paint()
+      return
+    }
+    if (cmd === 'toggle-zone') {
+      if (state.focus) return // the same inertness the zone dbl-tap gate enforces
+      var z = String(target.id)
+      state.view.collapsedCats.has(z) ? state.view.collapsedCats.delete(z) : state.view.collapsedCats.add(z)
+      paint()
+      return
+    }
+    if (cmd === 'pkg-path') { selectNode(String(target.id)); return }
+    if (cmd === 'reset-view') { resetView(); return }
+    if (cmd === 'exit-focus') { exitFocusCommand(); return }
+  }
+  function onCtxTap(evt) {
+    var target = ctxTargetOf(evt.target)
+    if (!target) return // an edge (or anything without commands) opens nothing
+    openMenuAt(target, evt)
+  }
+  function onCtxTapBackground(evt) {
+    if (evt.target !== state.cy) return // node cxttaps bubble here too — only the blank canvas owns this row set
+    openMenuAt({ kind: 'bg' }, evt)
+  }
+  function onCanvasGesture() { closeMenu(); menuSwallow = false } // a drag never eats the next click
+  function onCanvasMouseDown() {
+    // The press closes; the tap that COMPLETES it is swallowed (otherwise the
+    // click that dismissed the menu would also select what sits under it).
+    if (menuIsOpen()) { closeMenu(); menuSwallow = true }
+  }
+  // V2.5 (R45): 复位视图 — the ONE user-commanded camera move that touches NO
+  // state: same render set, fit over the CURRENT nodes with the path-glide's
+  // padding 40, the 250ms family. Focus, selection, stack, snapshot: untouched.
+  function resetView() {
+    if (!state.cy || state.tableMode) return
+    state.cy.animate({ fit: { eles: state.cy.nodes(), padding: 40 }, duration: 250 })
+  }
+
   // ---------- V22b viewport snapshots + path fit (cy.animate ONLY) ----------
   // cytoscape's pan() hands back a LIVE object — the snapshot deep-copies.
   function snapshotViewport() {
@@ -1386,8 +1672,9 @@
     if (!eles.length) return
     // The frozen 3.34.1 animate reads `fit.padding` (getFitViewport(v.eles,
     // v.padding)); `padded` is core.fit() vocabulary and is NOT an animate option
-    // here — passing it silently means padding 0. 40 matches the structural
-    // focus refit in paint(), so entry glide and refit agree on the inset.
+    // here — passing it silently means padding 0. 40 is the whole glide family's
+    // inset (entry/walk, resetView), so every sanctioned camera move frames the
+    // same way.
     cy.animate({ fit: { eles: eles, padding: 40 }, duration: 250 })
   }
   function depthOfCtl() {
@@ -1432,24 +1719,21 @@
   }
 
   // ---------- V22b global Esc (order per brief) ----------
-  // 1. open search results → close ONLY those (also from inside the input — the
-  //    one Esc semantics an input keeps). 2. typing anywhere else → hands-off.
-  // 3. live path → exit through the SAME exitFocus path as the button.
-  // 4. else no-op.
+  // V2.5 R44 extends the ladder to three rungs: 1. OPEN CONTEXT MENU → close
+  // ONLY that. 2. open search results → close ONLY those (also from inside the
+  // input — the one Esc semantics an input keeps). 3. typing anywhere else →
+  // hands-off. 4. live path → exit through the SAME exitFocusCommand funnel as
+  // the menu row and the 退出路径 button. 5. else no-op.
   function onGlobalKey(e) {
     if (!e || e.key !== 'Escape') return
+    var menu = document.getElementById('ctx-menu')
+    if (menu && !menu.hidden) { menu.hidden = true; return }
     var box = document.getElementById('search-results')
     if (box && !box.hidden) { box.hidden = true; return }
     var tg = e.target
     var tag = tg && tg.tagName ? String(tg.tagName).toLowerCase() : ''
     if (tag === 'input' || tag === 'textarea' || tag === 'select' || (tg && tg.isContentEditable === true)) return
-    if (state.focus) {
-      exitFocus()
-      renderDetails(state.selected)
-      syncFocusCtl()
-      paint(false)
-      restoreViewport()
-    }
+    if (state.focus) exitFocusCommand()
   }
 
   // ---------- V22b hover peek card ----------
@@ -2006,9 +2290,7 @@
     if (!box) return
     box.textContent = ''
     if (!state.graph) return
-    var cats = Array.isArray(state.graph.categories) && state.graph.categories.length
-      ? state.graph.categories.map(function (c) { return c && c.id != null ? String(c.id) : '' }).filter(Boolean)
-      : ZONE_IDS_FALLBACK.slice()
+    var cats = allCatIds()
     cats.forEach(function (id) {
       var b = document.createElement('button'); b.className = 'chip'
       var dot = document.createElement('span'); dot.className = 'dot'
@@ -2132,12 +2414,21 @@
     })
     var focusClear = document.getElementById('focus-clear')
     if (focusClear) focusClear.addEventListener('click', function () {
-      state.focus = null
-      exitFocus() // V22b: also clears the back-stack and arms the viewport restore
+      // The five steps of exitFocusCommand, spelled out — the V22b wiring guard
+      // pins this handler's TEXTUAL order (exit → repaint → glide), and the menu
+      // 退出聚焦 row + Esc run the same funnel through the function.
+      if (!state.focus) return
+      exitFocus()
+      renderDetails(state.selected)
       syncFocusCtl()
-      paint(false) // class-only change: no structural repaint, keep the viewport
+      paint() // viewport kept (R45): the plain view lands under the same camera
       restoreViewport() // …then glide back to the entry snapshot
     })
+    // V2.5 (R45): the header ⌂ — the explicit sibling of the retired auto-refit.
+    // A pane resize must never strand the context menu at old coordinates.
+    var resetBtn = document.getElementById('reset-view')
+    if (resetBtn) resetBtn.addEventListener('click', resetView)
+    try { window.addEventListener('resize', closeMenu) } catch (e) { /* non-browser */ }
     // V22b breadcrumb: 返回 walks back to the previous root (skipping entries
     // that died in a rescan), staying AT the current depth.
     var pathBack = document.getElementById('path-back')
@@ -2167,9 +2458,9 @@
         if (seg === state.view.granularity) return
         state.view.granularity = seg
         // V2.4b: a live GROUP focus re-derives its packages flag from the tier
-        // (focusForId is the single source of that rule) — the focus shape never
-        // lags the granularity the user just picked.
-        if (state.focus && isGroupRootId(state.focus.rootId)) state.focus = focusForId(state.focus.rootId)
+        // (groupFocusShape is the single source of that rule) — the focus shape
+        // never lags the granularity the user just picked.
+        if (state.focus && isGroupRootId(state.focus.rootId)) state.focus = groupFocusShape(state.focus.rootId)
         syncLodCtl()
         paint()
       })

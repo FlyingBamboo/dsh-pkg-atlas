@@ -1321,12 +1321,12 @@
     state.focus = null
     state.pathStack = []
   }
-  // V2.5 (R44): the ONE exit funnel — the background-menu 退出聚焦 command and
-  // (through the same five steps) Esc and 退出路径 all end the focus the same
-  // way. Order is load-bearing: the repaint sees focus === null (the whole graph
+  // V2.5 (R44): the ONE exit funnel — the background-menu 退出聚焦 command, Esc
+  // and (since M1, by delegation) the 退出路径 button all end the focus here.
+  // Order is load-bearing: the repaint sees focus === null (the whole graph
   // is back on screen; viewport kept because keeping IS the doctrine), and only
   // THEN does the camera glide — gliding first would have the structural repaint
-  // land mid-flight. The chrome binder pins the same shape textually.
+  // land mid-flight. The chrome binder pins the delegation AND this shape.
   function exitFocusCommand() {
     if (!state.focus) return
     exitFocus()
@@ -1491,6 +1491,17 @@
     m = document.createElement('div')
     m.id = 'ctx-menu'
     m.hidden = true
+    // C1: the menu lives INSIDE #graph, and the frozen dist processes ANY DOM
+    // mouse event whose target chains to the container (eventInContainer walks
+    // parentNodes — no canvas-only filter). One bubbled mousedown from a row is
+    // therefore core 'mousedown' → closeMenu()+swallow before any click can
+    // land, and the node under the menu is grabbed. Bubble-phase stops on the
+    // ROOT make cytoscape deaf to menu-internal presses; the row's own click
+    // handler ran already (deeper node, bubble order). Capture-phase would
+    // starve the rows — bubble only, four event types, nothing else changes.
+    ;['mousedown', 'mouseup', 'mousemove', 'click'].forEach(function (type) {
+      m.addEventListener(type, function (e) { e.stopPropagation() })
+    })
     cont.appendChild(m)
     return m
   }
@@ -2414,15 +2425,10 @@
     })
     var focusClear = document.getElementById('focus-clear')
     if (focusClear) focusClear.addEventListener('click', function () {
-      // The five steps of exitFocusCommand, spelled out — the V22b wiring guard
-      // pins this handler's TEXTUAL order (exit → repaint → glide), and the menu
-      // 退出聚焦 row + Esc run the same funnel through the function.
-      if (!state.focus) return
-      exitFocus()
-      renderDetails(state.selected)
-      syncFocusCtl()
-      paint() // viewport kept (R45): the plain view lands under the same camera
-      restoreViewport() // …then glide back to the entry snapshot
+      // M1 (V2.5 fix round): the button DELEGATES to the ONE exit funnel — the
+      // five steps live in exitFocusCommand alone (the chrome pin guards this
+      // delegation and the order inside the funnel, not a re-spelled copy).
+      exitFocusCommand()
     })
     // V2.5 (R45): the header ⌂ — the explicit sibling of the retired auto-refit.
     // A pane resize must never strand the context menu at old coordinates.

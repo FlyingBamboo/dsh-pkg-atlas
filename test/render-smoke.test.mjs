@@ -2906,21 +2906,28 @@ test('V22b exit wiring: Esc runs the same chain (order + one-spend), and 退出�
   assert.deepEqual(w.LOG, ['details', 'sync', 'paint:nofocus', 'animate'],
     'details → ctl → repaint with focus null → glide (peek is not part of the Esc chain)')
   assert.equal(w.state.viewport, null, 'spent by the Esc exit, and so disarmed — viewport null is the marker')
-  // 退出路径 lives in the chrome binder (a full DOM harness is out of scope here):
-  // pin its ORDER against the two wiring-verified exits — exit, repaint, glide.
+  // 退出路径 (V2.5-M1 migration): the chrome button no longer RE-SPELLS the
+  // funnel — its five-step copy was a second implementation of the exit. The
+  // pin moved, honestly, from that copy's textual order to (1) the DELEGATION
+  // to exitFocusCommand and (2) the order INSIDE the funnel itself.
   const src = readFileSync(join(WEB, 'app.js'), 'utf8')
   const clear = src.slice(src.indexOf("getElementById('focus-clear')"), src.indexOf("var pathBack = document"))
   assert.ok(clear.length > 0, 'the 退出路径 handler is still in app.js')
+  const clearCode = clear.replace(/\/\/[^\n]*/g, '')
+  assert.match(clearCode, /addEventListener\('click',\s*function\s*\(\)\s*\{\s*exitFocusCommand\(\)\s*\}\)/,
+    'the button body is ONE call — the exit lives only in the funnel (menu row and Esc share it)')
+  assert.ok(!/exitFocus\(\)/.test(clearCode), 'no re-spelled inline exit sequence survives in the button')
+  assert.ok(!/state\.viewport\s*=\s*null/.test(clearCode), 'the handler must not clear the snapshot it is about to spend')
+  const funnel = extractBalanced(src, 'function exitFocusCommand() {')
   const at = (needle) => {
-    const i = clear.indexOf(needle)
-    assert.ok(i >= 0, `the exit button still calls ${needle}`)
+    const i = funnel.indexOf(needle)
+    assert.ok(i >= 0, `the exit funnel still calls ${needle}`)
     return i
   }
   const iExit = at('exitFocus()')
   const iPaint = at('paint()')
   const iRestore = at('restoreViewport()')
   assert.ok(iExit < iPaint && iPaint < iRestore, 'exitFocus → repaint → glide, never glide-before-repaint')
-  assert.ok(!/state\.viewport\s*=\s*null/.test(clear), 'the handler must not clear the snapshot it is about to spend')
 })
 
 // ---------- peek: single reusable card, focus-invariant ----------

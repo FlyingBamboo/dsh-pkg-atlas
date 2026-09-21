@@ -134,6 +134,12 @@ header .chips { display: inline-flex; gap: 6px; flex-wrap: wrap; align-items: ce
 #details .jump .badge { margin-left: 2px; }
 #details pre.readme { max-height: 40vh; overflow: auto; font-size: 11px; background: #8882; padding: 8px; white-space: pre-wrap; }
 #details .btns { margin-top: 10px; display: flex; gap: 8px; }
-#search-results { position: absolute; top: 44px; left: 320px; max-height: 50vh; overflow: auto; background: light-dark(#fff, #171c22); border: 1px solid #8886; z-index: 5; width: 460px; }
+/* V2.6-fix (M2): no top/left here on purpose — positionSearchBox() anchors the
+   popover on the search input's own getBoundingClientRect, and it can only do
+   that against viewport space, so the box is position:fixed. The pair this rule
+   used to carry (top:44px / left:320px) was a snapshot of the pre-R47 toolbar and
+   read detached the moment the input moved to segment ④. No `display` in this rule
+   either, so the UA [hidden] toggle still closes it. */
+#search-results { position: fixed; max-height: 50vh; overflow: auto; background: light-dark(#fff, #171c22); border: 1px solid #8886; z-index: 5; width: 460px; max-width: calc(100vw - 16px); }
 #search-results .hit { display: block; width: 100%; text-align: left; border: 0; border-bottom: 1px solid #8883; background: transparent; padding: 6px 10px; cursor: pointer; }
 #meta { font-size: 11px; opacity: .65; }

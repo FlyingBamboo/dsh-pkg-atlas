@@ -4509,3 +4509,359 @@ test('V2.6 R47 toolbar segmentation: four .tb-seg segments, the brief membership
   assert.match(css, /\.tb-seg \{[^}]*flex-wrap:\s*wrap/, 'and a segment lets its own controls wrap inside it')
 })
 
+// =========================================================================
+// Task V2.6-fix — the three guard layers the review round asked for:
+//   I2  the #focus-depth control must not survive a focus exit as residue
+//   M1  the nav audit pinned by CALL SHAPE, not by call-site spelling
+//   M2  the search popover anchored to its input
+// (I1 renderTable lives in test/table-fallback.test.mjs — it needs a real DOM.)
+// =========================================================================
+
+// ---------- V2.6-fix I2: the depth control's residue ----------
+//
+// syncFocusCtl only ever wrote `sel.value` WHILE a focus was live. A GROUP focus
+// is pinned at depth 1, so entering one wrote '1'; exiting hid the control and
+// left the '1' sitting in it. The control is display:none while cold, so that
+// value is unreachable to the user — but depthOfCtl() reads the DOM, not the
+// screen, and the next cold nav entry (menu 路径模式, a row, the table) built
+// `{ rootId, depth: 1 }` straight out of it: a path truncated by a number nobody
+// set. The reset belongs on the cold branch.
+
+function loadDepthCtlDom() {
+  const src = readFileSync(join(WEB, 'app.js'), 'utf8')
+  const body = [
+    'var CTL = { hidden: true }, SEL = { value: \x270\x27, disabled: false, title: \x27\x27 }, BACK = { hidden: true, textContent: \x27\x27 }\n',
+    'var document = { getElementById: function (id) {\n',
+    '  return id === \x27focus-ctl\x27 ? CTL : id === \x27focus-depth\x27 ? SEL : id === \x27path-back\x27 ? BACK : null\n',
+    '} }\n',
+    'function t(k) { return k }\n',
+    'function escText(el, s) { el.textContent = s == null ? \x27\x27 : String(s) }\n',
+    'var state = { focus: null, pathStack: [], byId: new Map([[\x27a@1\x27, { id: \x27a@1\x27, kind: \x27package\x27, name: \x27a\x27 }]]),\n'
+    + '  groupIds: new Set([\x27bundle\x27]), view: { granularity: \x27groups\x27, collapsedGroups: null } }\n',
+    extractBalanced(src, 'function shortName(name, kind) {') + '\n',
+    extractBalanced(src, 'function isGroupRootId(id) {') + '\n',
+    extractBalanced(src, 'function isFocusRoot(id) {') + '\n',
+    extractBalanced(src, 'function pathChainText(labels, sep) {') + '\n',
+    extractBalanced(src, 'function idToLabel(id) {') + '\n',
+    extractBalanced(src, 'function groupFocusShape(rootId) {') + '\n',
+    extractBalanced(src, 'function depthOfCtl() {') + '\n',
+    extractBalanced(src, 'function syncFocusCtl() {') + '\n',
+    extractBalanced(src, 'function focusForId(id, nav) {') + '\n',
+    'return { state: state, CTL: CTL, SEL: SEL, sync: syncFocusCtl, depth: depthOfCtl, forId: focusForId, shape: groupFocusShape }',
+  ].join('')
+  return new Function(body)()
+}
+
+test('V2.6-fix I2 depth residue: exiting a focus resets the hidden select to the UNLIMITED default', () => {
+  const d = loadDepthCtlDom()
+  // cold: the shipped default is 不限 and depthOfCtl reads it as unlimited
+  assert.equal(d.SEL.value, '0', 'the select ships at 0 = UNLIMITED')
+  assert.equal(d.depth(), null, 'cold → unlimited')
+  // 1. GROUP focus entry (the menu command is the only door; it builds the shape)
+  d.state.focus = d.shape('g:bundle')
+  assert.deepEqual({ rootId: d.state.focus.rootId, depth: d.state.focus.depth }, { rootId: 'g:bundle', depth: 1 },
+    'a GROUP focus is fixed at 1 hop')
+  d.sync()
+  assert.equal(d.CTL.hidden, false, 'the control is visible while the focus is live')
+  assert.equal(d.SEL.value, '1', '…and mirrors the group focus (disabled at 1)')
+  assert.equal(d.SEL.disabled, true, 'the group focus pins the select disabled')
+  // 2. EXIT — the control hides, and the '1' left inside it is invisible residue
+  d.state.focus = null
+  d.sync()
+  assert.equal(d.CTL.hidden, true, 'cold again: the whole control is hidden')
+  assert.equal(d.SEL.value, '0', 'the hidden control is RESET to the unlimited default — a stale value is pure residue')
+  assert.equal(d.depth(), null, 'and the cold depth reading is UNLIMITED again')
+  // 3. the next cold EXPLICIT-NAV entry (menu 路径模式 / a row / a table row) must
+  //    therefore root an UNLIMITED path, not a 1-hop stub
+  const f = d.forId('a@1', true)
+  assert.deepEqual(f, { rootId: 'a@1', depth: null },
+    'the next cold nav entry reads depth UNLIMITED, not the dead group focus\x27s 1')
+})
+
+test('V2.6-fix I2 depth residue: a package focus at 1-3 resets too, and a LIVE focus is never clobbered', () => {
+  const d = loadDepthCtlDom()
+  for (const dep of [1, 2, 3]) {
+    d.SEL.value = '0'
+    d.state.focus = { rootId: 'a@1', depth: dep }
+    d.sync()
+    assert.equal(d.SEL.value, String(dep), 'a live focus still mirrors its own depth into the control')
+    assert.equal(d.depth(), dep, '…and reads back as that depth')
+    d.state.focus = null
+    d.sync()
+    assert.equal(d.SEL.value, '0', `after exiting a depth-${dep} path the control is back at the default`)
+    assert.deepEqual(d.forId('a@1', true), { rootId: 'a@1', depth: null }, 'the next cold entry is unlimited again')
+  }
+  // the cold branch is idempotent: no focus, already at the default, nothing to do
+  d.state.focus = null
+  d.sync()
+  d.sync()
+  assert.equal(d.SEL.value, '0', 'repeated cold syncs stay at the default')
+})
+
+// ---------- V2.6-fix M1: the nav audit, pinned by call SHAPE ----------
+//
+// The R46 audit pinned each door by its verbatim call text. That proves the six
+// known sites and nothing else: re-spell one (`selectNode(id,\n  true)`, a
+// different argument expression, a new site) and the leak sails through while
+// every guard stays green. What actually matters is a COUNT and a FORBIDDEN
+// PATTERN, so this layer parses the call shape out of the source instead:
+// comment-stripped (the doc comments literally quote `selectNode(id, true)` —
+// prose must not count as code), whitespace-normalized, top-level args split on
+// their own depth-1 commas.
+
+const NAV_APP = process.env.ATLAS_NAV_APP || null
+
+/** JS source with every comment removed (string/template bodies preserved) */
+function stripJsComments(src) {
+  let out = '', i = 0, inStr = null, inCom = null
+  while (i < src.length) {
+    const c = src[i], d = src[i + 1]
+    if (inCom) {
+      if (inCom === '//' && c === '\n') { inCom = null; out += c }
+      else if (inCom === '/*' && c === '*' && d === '/') { i++; inCom = null }
+      i++
+      continue
+    }
+    if (inStr) {
+      out += c
+      if (c === '\\') { out += d == null ? '' : d; i += 2; continue }
+      if (c === inStr) inStr = null
+      i++
+      continue
+    }
+    if (c === '/' && d === '/') { inCom = '//'; i += 2; continue }
+    if (c === '/' && d === '*') { inCom = '/*'; i += 2; continue }
+    if (c === '"' || c === "'" || c === '`') { inStr = c; out += c; i++; continue }
+    out += c
+    i++
+  }
+  return out
+}
+
+/**
+ * Every selectNode()/focusForId() call site (declarations excluded) with its
+ * top-level arguments, straight out of comment-stripped, whitespace-normalized
+ * source — the shape a re-spelling cannot hide from.
+ */
+function callSites(srcText, fns) {
+  const code = stripJsComments(srcText).replace(/\s+/g, ' ')
+  const sites = []
+  for (const fn of fns) {
+    const re = new RegExp('(^|[^\\w$.])' + fn + '\\s*\\(', 'g')
+    let m
+    while ((m = re.exec(code))) {
+      // m[0] may carry the preceding delimiter char, so the NAME starts after it
+      const at = m.index + m[1].length
+      if (code.slice(Math.max(0, at - 9), at).endsWith('function ')) continue // the declaration, not a call
+      let i = re.lastIndex, depth = 1, cur = '', args = [], inStr = null
+      for (; i < code.length; i++) {
+        const c = code[i]
+        if (inStr) {
+          cur += c
+          if (c === '\\') { cur += code[++i] } else if (c === inStr) inStr = null
+          continue
+        }
+        if (c === '"' || c === "'" || c === '`') { inStr = c; cur += c; continue }
+        if (c === '(' || c === '[') depth++
+        else if (c === ')' || c === ']') { depth--; if (depth === 0) break }
+        if (c === ',' && depth === 1) { args.push(cur.trim()); cur = ''; continue }
+        cur += c
+      }
+      if (cur.trim()) args.push(cur.trim())
+      sites.push({ fn, args, text: fn + '(' + args.join(', ') + ')' })
+    }
+  }
+  return sites
+}
+
+/**
+ * The audit itself: expected nav-carrying COUNT + the group/zone door ban.
+ * Returns violations (empty ⇒ green), so a mutated copy can be proved RED
+ * without an assert() hiding inside the helper.
+ */
+function navAudit(srcText) {
+  const sites = callSites(srcText, ['selectNode', 'focusForId'])
+  const isNav = (s) => s.args.length >= 2 && s.args[s.args.length - 1] === 'true'
+  const nav = sites.filter(isNav)
+  const navSelect = nav.filter((s) => s.fn === 'selectNode')
+  const navFocus = nav.filter((s) => s.fn === 'focusForId')
+  const v = []
+  if (navSelect.length !== 6) v.push(`nav-carrying selectNode sites: expected 6, found ${navSelect.length} [${navSelect.map((s) => s.text).join(' | ')}]`)
+  if (navFocus.length !== 1) v.push(`nav-carrying focusForId sites: expected 1, found ${navFocus.length} [${navFocus.map((s) => s.text).join(' | ')}]`)
+  // every GROUP/ZONE-shaped selection is a navigation-free door by R44/R46 rule:
+  // 'cat:' zone breadcrumbs, 'g:' group breadcrumbs, the related-group row.
+  const groupDoors = sites.filter((s) => /['"](?:cat|g):/.test(s.args[0] || ''))
+  const leaky = groupDoors.filter(isNav)
+  if (leaky.length) v.push(`group/zone doors carry nav: [${leaky.map((s) => s.text).join(' | ')}]`)
+  if (groupDoors.length !== 4) v.push(`group/zone-shaped selectNode doors: expected 4, found ${groupDoors.length} [${groupDoors.map((s) => s.text).join(' | ')}]`)
+  // the tap door: exactly one nav-free bare selectNode(evt.target.id()) and the
+  // blank deselect — a nav flag sneaking into either is the R46 regression.
+  const taps = sites.filter((s) => /evt\.target\.id\(\)|^null$/.test(s.args[0] || ''))
+  if (taps.length !== 2) v.push(`tap doors: expected 2 (node tap + blank deselect), found ${taps.length}`)
+  if (taps.some(isNav)) v.push('a tap door carries nav: ' + taps.filter(isNav).map((s) => s.text).join(' | '))
+  return v
+}
+
+test('V2.6-fix M1 nav audit by shape: 6+1 nav sites exactly, every group/zone door nav-free, mutation-proven teeth', () => {
+  const src = readFileSync(NAV_APP || join(WEB, 'app.js'), 'utf8')
+  const v = navAudit(src)
+  assert.deepEqual(v, [], 'the shape audit found: ' + v.join('; '))
+  // TEETH 1: a nav flag added to the GROUP details zone-crumb (the exact leak the
+  // call-site regexes could not see — it matches no known needle) must redden.
+  const crumb = "crumbButton(box, zoneTitle(zone), function () { selectNode('cat:' + zone) })"
+  assert.equal((src.match(new RegExp(crumb.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length, 1,
+    'the zone-crumb call site the mutation is aimed at is still there verbatim')
+  const mutated = src.replace(crumb, crumb.replace("selectNode('cat:' + zone)", "selectNode('cat:' + zone, true)"))
+  assert.notEqual(mutated, src, 'the mutation applied')
+  const vm1 = navAudit(mutated)
+  assert.ok(vm1.length > 0, 'MUTATION NOT CAUGHT: a `, true` on the zone breadcrumb slipped past the shape audit')
+  assert.ok(vm1.some((x) => /group\/zone doors carry nav/.test(x)), 'and it is caught by the group-door ban: ' + vm1.join('; '))
+  assert.ok(vm1.some((x) => /expected 6, found 7/.test(x)), '…and by the count: ' + vm1.join('; '))
+  // TEETH 2: a re-spelling the old regexes are blind to (whitespace + different
+  // argument expression, SAME door) must redden the count, not stay green.
+  const respelled = src.replace("selectNode(String(target.id), true)", "selectNode(\n        String(target.id),\n        true\n      )")
+  assert.notEqual(respelled, src, 'the re-spelling applied')
+  assert.deepEqual(navAudit(respelled), [], 'the audit is whitespace-blind: re-spelling the SAME door changes nothing')
+  // TEETH 3: a brand-new nav door (the leak class the brief names) reddens.
+  const extra = src.replace("selectNode('g:' + gid)", "selectNode('g:' + gid, true)")
+  assert.notEqual(extra, src, 'the new nav door applied')
+  assert.ok(navAudit(extra).length > 0, 'a group door given the nav flag is caught')
+})
+
+test('V2.6-fix M1 the strip+parse layer itself is sound (no prose counted, no site missed)', () => {
+  const src = readFileSync(NAV_APP || join(WEB, 'app.js'), 'utf8')
+  // the doc comments literally quote the API — they must NOT be counted as calls
+  assert.match(src, /^\s*\/\/.*selectNode\(id, true\)/m, 'the source really does quote selectNode(id, true) in a comment')
+  const raw = (stripJsComments(src).match(/selectNode/g) || []).length
+  assert.ok(raw < (src.match(/selectNode/g) || []).length, 'comment stripping removed the prose occurrences')
+  const sites = callSites(src, ['selectNode', 'focusForId'])
+  const kinds = sites.filter((s) => s.fn === 'selectNode').length
+  assert.equal(kinds, 12, 'every selectNode CALL (declarations excluded) is in the audit set: ' + kinds)
+  assert.ok(sites.every((s) => s.args.length >= 1), 'each site parsed to at least one argument')
+  assert.deepEqual(sites.filter((s) => s.fn === 'focusForId').map((s) => s.args.join(',')).sort(),
+    ['id,nav', 'n.id,true'], 'focusForId: the funnel pass-through + the one reveal nav site')
+})
+
+// ---------- V2.6-fix M2: the search popover is anchored to its input ----------
+//
+// #search-results carried a hard-coded top/left pair from the pre-R47 toolbar.
+// The input moved to segment ④, so the list sprang up somewhere to the left of
+// the thing the user was typing into. The input's own rect is the only honest
+// anchor; the box is clamped so it can never hang off-screen.
+
+function loadSearchDom(rect, box, vp) {
+  const src = readFileSync(join(WEB, 'app.js'), 'utf8')
+  const body = [
+    'var HITS = [{ id: \x27a@1\x27, name: \x27alpha\x27, kind: \x27package\x27, description: \x27first\x27 },\n'
+    + '  { id: \x27b@1\x27, name: \x27beta\x27, kind: \x27package\x27, description: null }]\n',
+    'var REVEALED = []\n',
+    'var RECT = ' + JSON.stringify(rect) + '\n',
+    'var INPUT = { value: \x27\x27, handlers: {}, addEventListener: function (t, f) { this.handlers[t] = f },\n'
+    + '  getBoundingClientRect: function () { return RECT } }\n',
+    'var BOX = { hidden: true, style: {}, children: [], offsetWidth: ' + box.w + ', offsetHeight: ' + box.h + ',\n'
+    + '  get textContent() { return \x27\x27 }, set textContent(v) { this.children = [] },\n'
+    + '  appendChild: function (c) { c.parentNode = this; this.children.push(c); return c } }\n',
+    'var document = { getElementById: function (id) { return id === \x27search\x27 ? INPUT : id === \x27search-results\x27 ? BOX : null },\n'
+    + '  createElement: function (tag) { return { tagName: tag, className: \x27\x27, style: {}, children: [],\n'
+    + '    handlers: {}, addEventListener: function (t2, f) { this.handlers[t2] = f },\n'
+    + '    appendChild: function (c) { this.children.push(c); return c } } } }\n',
+    'var window = { innerWidth: ' + vp.w + ', innerHeight: ' + vp.h + ' }\n',
+    'function escText(el, s) { el.textContent = s == null ? \x27\x27 : String(s) }\n',
+    'function t(k) { return k }\n',
+    'function shortName(name, kind) { return String(name) }\n',
+    'function matchNodes(g, q, cap) { return q ? HITS.slice(0, cap) : [] }\n',
+    'function revealNode(n) { REVEALED.push(n.id) }\n',
+    'var state = { graph: { nodes: [] } }\n',
+    extractBalanced(src, 'function positionSearchBox(input, box) {') + '\n',
+    extractBalanced(src, 'function bindSearch() {') + '\n',
+    'return { INPUT: INPUT, BOX: BOX, RECT: RECT, REVEALED: REVEALED, bind: bindSearch }',
+  ].join('')
+  return new Function(body)()
+}
+const SEARCH_RECT = { left: 320, top: 8, right: 560, bottom: 36, width: 240, height: 28, x: 320, y: 8 }
+const SEARCH_BOX = { w: 460, h: 120 }
+const SEARCH_VP = { w: 1200, h: 800 }
+const settle = (ms) => new Promise((r) => setTimeout(r, ms))
+
+/** drive the debounced search once (the ctl's own 150ms timer is left in place) */
+async function searchOnce(d, q) {
+  d.INPUT.value = q
+  d.INPUT.handlers.input()
+  await settle(240)
+  return d
+}
+
+test('V2.6-fix M2 the search popover anchors under the input, not at a fixed top/left', async () => {
+  const d = loadSearchDom(SEARCH_RECT, SEARCH_BOX, SEARCH_VP)
+  d.bind()
+  await searchOnce(d, 'a')
+  assert.equal(d.BOX.hidden, false, 'a hit list opened')
+  assert.equal(d.BOX.children.length, 2, 'two rows rendered')
+  assert.equal(d.BOX.style.left, '320px', 'left is aligned to the INPUT\x27S left edge (rect.left)')
+  assert.equal(d.BOX.style.top, '40px', 'top is the input\x27s bottom edge + 4 (36 + 4)')
+  // the anchor is LIVE, not a one-shot: move the input (the segment wraps on a
+  // narrow pane) and the list follows it
+  d.RECT.left = 860; d.RECT.right = 1100; d.RECT.x = 860
+  d.RECT.top = 52; d.RECT.bottom = 80; d.RECT.y = 52
+  await searchOnce(d, 'al')
+  assert.equal(d.BOX.style.left, '740px', 'clamped to innerWidth - box width (1200 - 460) instead of hanging off 860+460')
+  assert.equal(d.BOX.style.top, '84px', 'and it followed the input down to 80 + 4')
+})
+
+test('V2.6-fix M2 the anchored popover stays inside the viewport and keeps the [hidden] toggle', async () => {
+  // a short pane: the list cannot fit below the input → it flips above it
+  const d = loadSearchDom({ left: 20, top: 700, right: 260, bottom: 728, width: 240, height: 28, x: 20, y: 700 },
+    SEARCH_BOX, { w: 1200, h: 800 })
+  d.bind()
+  await searchOnce(d, 'a')
+  assert.equal(d.BOX.hidden, false, 'opened')
+  assert.equal(d.BOX.style.left, '20px', 'left untouched (it fits)')
+  assert.equal(d.BOX.style.top, '576px', '700 - 120 - 4: flipped ABOVE the input rather than running past the pane')
+  assert.ok(Number(d.BOX.style.top.replace('px', '')) + SEARCH_BOX.h <= 800, 'the box bottom is inside the viewport')
+  // an input further right than the box can be: clamp, never a negative overflow
+  const e = loadSearchDom({ left: 1150, top: 8, right: 1190, bottom: 36, width: 40, height: 28, x: 1150, y: 8 },
+    SEARCH_BOX, { w: 1200, h: 800 })
+  e.bind()
+  await searchOnce(e, 'a')
+  assert.equal(e.BOX.style.left, '740px', 'clamped flush right (1200 - 460)')
+  assert.ok(Number(e.BOX.style.left.replace('px', '')) >= 0, 'never negative off the left edge')
+  // the [hidden] toggle is UNCHANGED: empty query ⇒ closed, no hits ⇒ closed
+  await searchOnce(e, '')
+  assert.equal(e.BOX.hidden, true, 'an empty query closes the list')
+  const g = loadSearchDom(SEARCH_RECT, SEARCH_BOX, SEARCH_VP)
+  assert.equal(g.BOX.hidden, true, 'the popover ships hidden before any search runs')
+  g.bind()
+  assert.equal(g.BOX.hidden, true, 'binding alone never opens it')
+})
+
+test('V2.6-fix M2 anchors by rect + style only: no HTML sink, no magic offsets, [hidden] intact', () => {
+  const src = readFileSync(join(WEB, 'app.js'), 'utf8')
+  const css = readFileSync(join(WEB, 'style.css'), 'utf8')
+  const pos = extractBalanced(src, 'function positionSearchBox(input, box) {')
+  assert.match(pos, /getBoundingClientRect\(\)/, 'the input rect is the single anchor')
+  assert.match(pos, /box\.style\.left\s*=/, 'positioned through style.left')
+  assert.match(pos, /box\.style\.top\s*=/, '…and style.top')
+  assert.doesNotMatch(pos, /innerHTML|insertAdjacentHTML|outerHTML|document\.write/, 'no HTML sink in the positioner')
+  assert.doesNotMatch(pos, /\bt\(/, 'the positioner is chrome-only: zero i18n surface')
+  // No new i18n key for the popover. Scoped to the DICTIONARY (a whole-source
+  // regex would match the fix's own prose): the V6 parity test above already fails
+  // the moment any t('key') lacks a zh or en entry, so this pins that the fix round
+  // did not reach for one.
+  const dict = extractBalanced(src, 'var I18N = {')
+  assert.doesNotMatch(dict, /popover|searchResults|anchor|popoverAnchor/i,
+    'the i18n dictionaries gained no search-popover key for this fix')
+  assert.match(dict, /\bsearch:/, 'the pre-existing search placeholder key is still the only search string')
+  // the CSS half: the hard-coded pair is GONE (it was the detachment)
+  const rule = /#search-results \{[^}]*\}/.exec(css)
+  assert.ok(rule, 'the #search-results rule still exists')
+  assert.doesNotMatch(rule[0], /\btop:\s*\d+px/, 'no fixed top any more — JS owns it now')
+  assert.doesNotMatch(rule[0], /\bleft:\s*\d+px/, 'no fixed left any more')
+  assert.doesNotMatch(rule[0], /position:\s*absolute/, 'fixed positioning: viewport coordinates are the input rect\x27s own space')
+  assert.match(rule[0], /position:\s*fixed/, '…and it is position:fixed')
+  assert.doesNotMatch(rule[0], /display:/, 'the rule declares no display ⇒ the UA [hidden] toggle keeps working')
+  assert.match(src, /box\.hidden = searchHits\.length === 0/, 'the JS still toggles hidden off the hit count')
+  assert.match(src, /function bindSearch\(\) \{[\s\S]*?if \(!box\.hidden\) positionSearchBox\(input, box\)/,
+    'positioning runs on OPEN (after the rows exist, so the real height is measurable)')
+})
+
+

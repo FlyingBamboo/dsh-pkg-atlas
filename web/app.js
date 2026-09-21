@@ -1730,6 +1730,15 @@
       sel.title = gf ? t('groupFocusDepth') : ''
     }
     if (state.focus && sel) sel.value = String(state.focus.depth == null ? 0 : state.focus.depth)
+    else if (!state.focus && sel && sel.value !== '0') sel.value = '0'
+    // V2.6-fix (I2): that else branch is the RESIDUE RESET. The write above only
+    // runs while a focus is live, so a GROUP focus (pinned at 1 hop) left '1'
+    // sitting in the select after the exit. Nothing on screen shows it — the whole
+    // #focus-ctl is hidden while cold — but depthOfCtl() reads the DOM, not the
+    // screen, and the next cold nav entry (menu 路径模式, a jump button, a path /
+    // mount / table row) built { rootId, depth: 1 } out of that leftover: a path
+    // silently truncated to one hop by a number nobody chose. Cold ⇒ the control
+    // goes back to its shipped default, which IS 不限 (UNLIMITED).
     // V22b breadcrumb: 「← 返回 (a → b → 当前)」 rides the pathStack; hidden
     // with 0 history (nowhere to go back to). Truncation is pathChainText's.
     var back = document.getElementById('path-back')
@@ -1862,6 +1871,35 @@
 
   // ---------- search (V6 Step 2: pure matcher + Enter selects the top hit) ----------
   var searchHits = []
+  // V2.6-fix (M2): the result list ANCHORS to the input. style.css used to carry a
+  // hard-coded top/left pair, which was honest only while the search box lived at
+  // the head of the toolbar; R47 moved it into segment ④ and the popover kept
+  // springing up to the left of the thing the user was typing into. The input's own
+  // rect is the only anchor that cannot go stale, so: left on the input's left edge,
+  // top 4px under it, clamped back into the viewport (right edge, then a flip above
+  // the input when there is no room below). #search-results is position:FIXED for
+  // exactly this reason — getBoundingClientRect is viewport space, and <main>'s
+  // position:relative would otherwise offset every value by its own origin.
+  // No markup is composed here: getBoundingClientRect + style, nothing else.
+  function positionSearchBox(input, box) {
+    if (!input || !box || typeof input.getBoundingClientRect !== 'function') return
+    var r = input.getBoundingClientRect()
+    if (!r) return
+    var vw = window.innerWidth || 0
+    var vh = window.innerHeight || 0
+    var bw = box.offsetWidth || r.width || 0
+    var bh = box.offsetHeight || 0
+    var left = r.left
+    if (vw && bw && left + bw > vw) left = vw - bw
+    if (left < 0) left = 0
+    var top = r.bottom + 4
+    // no room under the input (a short pane, or the header wrapped to the bottom)
+    // ⇒ hang it ABOVE the input instead of past the bottom edge
+    if (vh && bh && top + bh > vh && r.top - bh - 4 >= 0) top = r.top - bh - 4
+    if (vh && bh && top + bh > vh) top = Math.max(0, vh - bh)
+    box.style.left = Math.round(left) + 'px'
+    box.style.top = Math.round(top) + 'px'
+  }
   function bindSearch() {
     var input = document.getElementById('search'), box = document.getElementById('search-results')
     var timer = 0
@@ -1879,6 +1917,9 @@
         box.appendChild(li)
       })
       box.hidden = searchHits.length === 0
+      // M2: anchor AFTER the rows exist and after the box is visible, so the
+      // offsetHeight the clamp needs is the real one (a hidden box measures 0).
+      if (!box.hidden) positionSearchBox(input, box)
     }
     input.addEventListener('input', function () { clearTimeout(timer); timer = setTimeout(run, 150) })
     input.addEventListener('keydown', function (ev) {
@@ -2413,7 +2454,14 @@
     box.textContent = ''
     var table = document.createElement('table')
     var thead = document.createElement('thead'); var hr = document.createElement('tr')
-    ['group', 'name', 'version', 'scope', 'mountedBy'].forEach(function (c) { var th = document.createElement('th'); escText(th, c); hr.appendChild(th) })
+    // V2.6-fix (I1): the leading `;` is load-bearing, not decoration — it mirrors
+    // the tbody row's defense below. Without it ASI cannot fire (`[` never starts a
+    // new statement after an expression), so the two lines parse as ONE: the
+    // bracket is a member access, the comma operator leaves 'mountedBy', and
+    // `hr['mountedBy'].forEach` throws on EVERY paint of the fallback — the throw
+    // escapes paint()'s own catch (renderTable is called FROM it) straight into
+    // loadGraph.catch, so the table showed 0 rows + the error bar every single time.
+    ;['group', 'name', 'version', 'scope', 'mountedBy'].forEach(function (c) { var th = document.createElement('th'); escText(th, c); hr.appendChild(th) })
     thead.appendChild(hr); table.appendChild(thead)
     var tbody = document.createElement('tbody')
     state.graph.nodes.slice().sort(function (a, b) {

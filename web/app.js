@@ -44,7 +44,7 @@
       legendTitle: '图例', legendShapes: '节点形状', legendEdges: '边类型', legendFocus: '聚焦路径',
       shOfficial: '官方包', shThirdParty: '第三方包', shProfile: 'Profile', shBroken: '断链包',
       egDep: '依赖 dep', egMount: '挂载 mount', egPeer: '对等 peer',
-      egPeerOpt: '可选对等 peer-opt', egAgg: '聚合边（粗细∝计数）',
+      egPeerOpt: '可选对等 peer-opt', egAgg: '聚合边（组聚焦内出现，粗细∝计数）',
       // V2.3: pkgsLabel retired with the zone COUNT row — the 成员包（N） header is
       // that count now. membersLabel stays (the peek card's 成员 N row).
       membersLabel: '成员', groupsLabel: '组',
@@ -56,7 +56,10 @@
       depsLabel: '依赖 →', dependentsLabel: '← 被依赖',
       unsatLabel: '未满足', bundleSurfaceLabel: 'bundle 面', declaredDepsLabel: '声明依赖',
       readmeLabel: 'README', noReadmeLabel: '（无 README）', moreLabel: '+{n} 更多',
-      kindLabel: '类型', groupLabel: '组', zoneLabel: '区' },
+      kindLabel: '类型', groupLabel: '组', zoneLabel: '区',
+      // V2.4b group focus: the disabled depth hint + the related-neighborhood headers
+      groupFocusDepth: '组聚焦固定 1 跳（深度不适用）',
+      relatedGroupsLabel: '相关组（{n}）', relatedPkgsLabel: '相关包（{n}）' },
     en: { title: 'DSH Package Atlas', search: 'search packages…', refresh: 'rescan', retry: 'retry',
       loadFail: 'failed to load graph', warnings: 'data warnings', noDescription: '(no description)',
       langSwitch: '中文',
@@ -73,7 +76,7 @@
       legendTitle: 'Legend', legendShapes: 'node shapes', legendEdges: 'edge kinds', legendFocus: 'focus paths',
       shOfficial: 'official pkg', shThirdParty: 'third-party', shProfile: 'profile', shBroken: 'broken',
       egDep: 'depends dep', egMount: 'mount', egPeer: 'peer',
-      egPeerOpt: 'optional peer (peer-opt)', egAgg: 'aggregate (width ∝ count)',
+      egPeerOpt: 'optional peer (peer-opt)', egAgg: 'aggregate (in group focus, width ∝ count)',
       membersLabel: 'members', groupsLabel: 'groups',
       memberPkgsLabel: 'member packages ({n})', brokenLabel: 'broken',
       pathDownLabel: 'depends paths ↓', pathUpLabel: 'depended-on paths ↑',
@@ -82,7 +85,10 @@
       depsLabel: 'depends on →', dependentsLabel: '← depended by',
       unsatLabel: 'unsatisfied', bundleSurfaceLabel: 'bundle surface', declaredDepsLabel: 'declared deps',
       readmeLabel: 'README', noReadmeLabel: '(no README)', moreLabel: '+{n} more',
-      kindLabel: 'kind', groupLabel: 'group', zoneLabel: 'zone' },
+      kindLabel: 'kind', groupLabel: 'group', zoneLabel: 'zone',
+      // V2.4b group focus: the disabled depth hint + the related-neighborhood headers
+      groupFocusDepth: 'group focus is fixed at 1 hop (depth does not apply)',
+      relatedGroupsLabel: 'related groups ({n})', relatedPkgsLabel: 'related packages ({n})' },
   }
   var lang = (navigator.language || 'zh').toLowerCase().indexOf('zh') === 0 ? 'zh' : 'en'
   function t(k) { return (I18N[state.lang] && I18N[state.lang][k]) || k }
@@ -193,6 +199,31 @@
   function normalizeDepth(depth) {
     var v = typeof depth === 'number' && isFinite(depth) ? Math.floor(depth) : 0
     return v >= 1 ? Math.min(3, v) : null
+  }
+
+  /** 'g:' is the group-card id prefix AtlasModel itself emits — a 'g:' focus
+   *  root is a GROUP (V2.4b). Package id namespaces (npm names, profile:,
+   *  broken:) never collide with it; the model uses the same slice(0,2) rule. */
+  function isGroupRootId(id) {
+    return String(id == null ? '' : id).indexOf('g:') === 0
+  }
+
+  /**
+   * assembleView(view) → the view object paint hands to AtlasModel.buildView.
+   * V2.4b brief ruling: at the PACKAGES tier the app forces
+   * view.showRealCross = true — R43 retired the base aggregate edges, so the
+   * package tier without real cross edges renders a graph WITHOUT A SINGLE
+   * EDGE, a UX regression the R43 ruling does not intend. The forcing happens
+   * ONLY on the assembled copy: state.view (and the #show-real-cross checkbox)
+   * keep the user's own value, so a tier switch back to 组级 restores it verbatim.
+   */
+  function assembleView(view) {
+    var v = view || {}
+    if (v.granularity !== 'packages' || v.showRealCross) return v
+    var out = {}, k
+    for (k in v) if (Object.prototype.hasOwnProperty.call(v, k)) out[k] = v[k]
+    out.showRealCross = true
+    return out
   }
 
   // R35/R36 pathSets: the V2.2a-era duplicate lived here; AtlasModel.pathSets is
@@ -312,6 +343,85 @@
     rows.sort(function (a, b) { return cmp(key(a.name), key(b.name)) || cmp(key(a.version), key(b.version)) || cmp(a.id, b.id) })
     var max = typeof GROUP_MEMBER_CAP === 'number' && GROUP_MEMBER_CAP > 0 ? GROUP_MEMBER_CAP : 200
     return { total: rows.length, rows: rows.slice(0, max), capped: rows.length > max }
+  }
+
+  /**
+   * buildRelatedGroups(sets, graph, groupsMeta, tier) → Row[]  (V2.4b details half).
+   * `sets` is the AtlasModel.groupFocusSets() result for the FOCUSED group. The
+   * direction truth rides the edge keys: a downEdges key is a root→neighbor edge
+   * (its `to` endpoint names the neighbor), an upEdges key is neighbor→root (its
+   * `from` does) — so a group seen from both sides is exactly the both side
+   * groupFocusSets already subtracted into sets.both. `tier` picks the row key:
+   * 'groups' aggregates the neighbor's GROUP, 'packages' keeps each neighbor
+   * PACKAGE separate (those rows re-root path mode; group rows walk focus).
+   * Row = { gid, name, count, kinds, dir, brokenZone }:
+   *  - count = the A-side aggregate-edge count = the number of root-incident
+   *    edge keys landing on that neighbor (packages tier: its touching-edge count
+   *    — the identical arithmetic, just keyed one level lower);
+   *  - kinds = deduped reaching kinds in EDGE_KINDS_ALL order;
+   *  - brokenZone = the neighbor's zone is 'broken' (groupsMeta: Map gid→zone,
+   *    the app's state.groupZone; duck-typed, absent → no flag);
+   *  - sort dir(down,up,both) → name → gid. Junk (null containers, malformed
+   *    keys, unknown nodes, a neighbor keyed on the root itself) drops silently.
+   */
+  function buildRelatedGroups(sets, graph, groupsMeta, tier) {
+    var s = sets || {}
+    var g = graph || {}
+    var pkgs = tier === 'packages'
+    var meta = groupsMeta && typeof groupsMeta.get === 'function' ? groupsMeta : new Map()
+    var groupOf = new Map() // pid -> gid (the model's own group-of rule)
+    var nodeName = new Map() // pid -> display name (name || id, VERBATIM)
+    var nodes = Array.isArray(g.nodes) ? g.nodes : []
+    for (var i = 0; i < nodes.length; i++) {
+      var n = nodes[i]
+      if (!n || n.id == null) continue
+      var pid = String(n.id)
+      if (!groupOf.has(pid)) {
+        groupOf.set(pid, n.group == null ? 'ungrouped' : String(n.group))
+        nodeName.set(pid, n.name == null ? pid : String(n.name))
+      }
+    }
+    var DIR_RANK = { down: 0, up: 1, both: 2 }
+    function cmp(a, b) { return a < b ? -1 : a > b ? 1 : 0 }
+    function kindRank(k) { var ix = EDGE_KINDS_ALL.indexOf(k); return ix < 0 ? EDGE_KINDS_ALL.length : ix }
+    var rows = new Map()
+    function harvest(edgeSet, dir, otherIsFrom) {
+      if (!edgeSet || typeof edgeSet.forEach !== 'function') return
+      edgeSet.forEach(function (key) {
+        var k = String(key == null ? '' : key)
+        if (k.indexOf('e:') !== 0) return
+        var parts = k.slice(2).split('|')
+        if (parts.length !== 3) return // malformed key: drop, never invent a row
+        var from = parts[0], to = parts[1], kind = parts[2]
+        var other = otherIsFrom ? from : to
+        var gid = groupOf.get(other)
+        if (gid === undefined || gid === s.rootGid || gid === '') return // unknown node / root itself
+        var ekey = pkgs ? other : gid
+        var row = rows.get(ekey)
+        if (!row) { row = { gid: ekey, count: 0, kinds: [], dir: dir }; rows.set(ekey, row) }
+        row.count += 1
+        if (row.dir !== dir && row.dir !== 'both') row.dir = 'both' // seen from both sides
+        if (row.kinds.indexOf(kind) < 0) row.kinds.push(kind)
+      })
+    }
+    harvest(s.downEdges, 'down', false) // root→X ⇒ the NEIGHBOR is the target
+    harvest(s.upEdges, 'up', true) // X→root ⇒ the NEIGHBOR is the source
+    var out = []
+    rows.forEach(function (row) {
+      var zoneGid = pkgs ? groupOf.get(row.gid) : row.gid
+      out.push({
+        gid: row.gid,
+        name: pkgs ? nodeName.get(row.gid) : row.gid,
+        count: row.count,
+        kinds: row.kinds.sort(function (a, b) { return kindRank(a) - kindRank(b) || cmp(a, b) }),
+        dir: row.dir,
+        brokenZone: meta.get(zoneGid) === 'broken',
+      })
+    })
+    out.sort(function (a, b) {
+      return (DIR_RANK[a.dir] - DIR_RANK[b.dir]) || cmp(a.name, b.name) || cmp(a.gid, b.gid)
+    })
+    return out
   }
 
   /**
@@ -813,7 +923,7 @@
         state.cy = window.cytoscape({ container: document.getElementById('graph'), elements: [], wheelSensitivity: WHEEL_SENS })
         bindCy()
       }
-      var built = window.AtlasModel.buildView(state.graph, state.view)
+      var built = window.AtlasModel.buildView(state.graph, assembleView(state.view))
       // Label annotation (V5-M-5 / group ×N / pkg short names). This decorates the
       // FRESH element objects buildView returned per call — the model output contract
       // (id/parent/x/y/w/h/classes) is consumed exactly as emitted.
@@ -841,7 +951,11 @@
         // Only an ACTIVE path view refits to the path: the ctx zone/group frames
         // span whole layout rows and would shrink the path into a corner.
         var focusApplied = built.meta && built.meta.focus && typeof built.meta.focus === 'object'
-        if (focusApplied) state.cy.fit(pathFitEles(state.cy), 40)
+        // V2.4b: a groups-mode GROUP focus renders cards only — pathFitEles (a
+        // pkg/profile selector) is empty there, and fitting an empty collection
+        // is undefined behavior. The render set is the neighborhood itself, so
+        // the ordinary whole-view refit is the honest fallback.
+        if (focusApplied && pathFitEles(state.cy).length) state.cy.fit(pathFitEles(state.cy), 40)
         else state.cy.fit(undefined, 24)
       }
     } catch (err) {
@@ -878,7 +992,14 @@
     if (!cy) return
     cy.elements().removeClass('dim in-focus selected f-down f-up f-both f-e-down f-e-up f-e-both ek-off')
     if (state.focus) {
-      var sets = AtlasModel.pathSets(state.graph, state.focus.rootId, state.focus.depth)
+      // V2.4b: a 'g:' rootId is a GROUP focus — the neighborhood comes from
+      // groupFocusSets (1-hop, disjoint tiers), everything else keeps the
+      // V2.2b package-root machinery verbatim.
+      var groupFocus = isGroupRootId(state.focus.rootId)
+      var pkgsTier = !!(state.view && state.view.granularity === 'packages')
+      var sets = groupFocus
+        ? AtlasModel.groupFocusSets(state.graph, String(state.focus.rootId).slice(2))
+        : AtlasModel.pathSets(state.graph, state.focus.rootId, state.focus.depth)
       // V22b: the model's focus view ignores edgeKinds (data-layer ruling), so
       // the user's kind filter is a UI-layer tag: ek-off → display:none. Never
       // .dim — hiding a kind and fading a non-member are different statements.
@@ -897,8 +1018,31 @@
         f.down = f.down || down
         f.up = f.up || up
       }
-      sets.down.forEach(function (id) { mark(id, true, sets.up.has(id)) })
-      sets.up.forEach(function (id) { mark(id, sets.down.has(id), true) })
+      if (groupFocus) {
+        // V2.4a contract (A concerns#1): groupFocusSets is DISJOINT — both is
+        // SUBTRACTED out of down/up and pkgsDown/pkgsUp, so the third side must
+        // be lit EXPLICITLY (mark(…, true, true) → f-both) or both-side members
+        // would silently dim. Mark on the tier that renders: groups mode lights
+        // the neighbor CARDS by their g: ids; the packages tier lights member
+        // pkgs (the g: frames ride along as uncolored ancestors — V22b ctx rule:
+        // colors belong on nodes rendering as content, not as outlines).
+        var gSide = pkgsTier
+          ? [['pkgsDown', true, false], ['pkgsUp', false, true], ['pkgsBoth', true, true]]
+          : [['down', true, false], ['up', false, true], ['both', true, true]]
+        gSide.forEach(function (p) {
+          var bag = sets[p[0]]
+          if (!bag || typeof bag.forEach !== 'function') return
+          bag.forEach(function (id) { mark(pkgsTier ? id : 'g:' + id, p[1], p[2]) })
+        })
+        // Root members render INSIDE the root frame (packages tier): subject
+        // side — kept, never colored, never dimmed.
+        if (sets.rootPkgs && typeof sets.rootPkgs.forEach === 'function') {
+          sets.rootPkgs.forEach(function (id) { var r = renderIdOf(id); if (r) keep.add(r) })
+        }
+      } else {
+        sets.down.forEach(function (id) { mark(id, true, sets.up.has(id)) })
+        sets.up.forEach(function (id) { mark(id, sets.down.has(id), true) })
+      }
       // a focused element drags its ancestor chain in with it
       keep.forEach(function (id) {
         var el = cy.getElementById(id)
@@ -931,7 +1075,16 @@
         // stays kind-coloured instead of going amber.
         var eid = el.id()
         var dn, up
-        if (eid.indexOf('e:') === 0) {
+        if (groupFocus && eid.indexOf('agg:') === 0) {
+          // V2.4b: inside a group focus the aggregate edge IS a direction fact
+          // by construction — the model buckets agg:root|X purely from downEdges
+          // and agg:X|root purely from upEdges — so the rule reads the root
+          // endpoint, not the bucket-dominant kind (a mount-dominant down bucket
+          // would go dark under the package-mode rule and R37 was never about
+          // focus-local aggregates).
+          dn = String(el.data('source')) === String(state.focus.rootId)
+          up = String(el.data('target')) === String(state.focus.rootId)
+        } else if (eid.indexOf('e:') === 0) {
           // Real cross edge: AtlasModel's id IS the pathSets key
           // ('e:'+from+'|'+to+'|'+kind, graph-model.js buildView), so the pure
           // rule answers directly — an edge in neither set is in-focus but dark,
@@ -997,10 +1150,15 @@
     // V2.3: the toggle is back where it means something — the 组级 tier. At 包级 the
     // model expands EVERY group by definition (collapsedGroups is ignored there),
     // so a collapse the next repaint contradicts is a lie: dbl-click stays the
-    // documented no-op. Inert inside a path (a re-cut layout is a surprise).
+    // documented no-op. V2.4b keeps the V2.2b inertness for PACKAGE paths — but
+    // the ROOT CARD of a live GROUP focus keeps its toggle: the documented
+    // tap-then-dbltap gesture enters the group focus on the first tap and opens
+    // the group on the gesture, and toggleGroup re-derives the focus shape.
+    // A non-root card inside a group focus stays inert (no surprise re-cut).
     cy.on('dbltap', 'node.group', function (evt) {
       if (!evt.target.hasClass('group')) return
-      if (state.view.granularity !== 'groups' || state.focus) return
+      if (state.view.granularity !== 'groups') return
+      if (state.focus && !(isGroupRootId(state.focus.rootId) && state.focus.rootId === String(evt.target.data('id')))) return
       toggleGroup(String(evt.target.data('id')).replace(/^g:/, ''))
     })
     // single click → selection + details panel (V6 Step 4); V22b adds the path-
@@ -1012,21 +1170,41 @@
   function toggleGroup(gid) {
     if (!state.view.collapsedGroups) state.view.collapsedGroups = new Set(state.groupIds)
     state.view.collapsedGroups.has(gid) ? state.view.collapsedGroups.delete(gid) : state.view.collapsedGroups.add(gid)
+    // V2.4b: a group focus rooted ON this card follows the expansion — its
+    // packages flag is defined as "this group is expanded" (or 包级 tier), so
+    // the focus re-derives instead of contradicting the layout it renders in.
+    if (state.focus && isGroupRootId(state.focus.rootId) && state.focus.rootId === 'g:' + gid) {
+      state.focus = focusForId('g:' + gid)
+    }
     paint()
   }
-  // R35: focus follows selection, and a PACKAGE node is the only legal focus
-  // root. isFocusRoot() also owns the rescan guard (a root that vanished or
-  // changed kind can no longer anchor a focus).
+  // R35: a PACKAGE node is a legal focus root; V2.4b (R42) adds GROUP cards
+  // ('g:' ids). isFocusRoot() also owns the rescan guard: a package that
+  // vanished/changed kind, or a gid outside the rebuilt state.groupIds, can no
+  // longer anchor a focus — for EITHER root kind.
   function isFocusRoot(id) {
-    var n = id == null ? null : state.byId.get(String(id))
+    var s = String(id == null ? '' : id)
+    if (isGroupRootId(s)) return !!(state.groupIds && state.groupIds.has(s.slice(2)))
+    var n = id == null ? null : state.byId.get(s)
     return !!(n && n.kind === 'package')
   }
-  // Selecting anything that is not a package (broken/profile node, group card,
-  // zone shell, or a blank tap) clears the focus; tapping an EDGE leaves it alone
-  // (an edge is not a root, and selecting one must not drop the path being read).
+  // Selecting anything that is neither (broken/profile node, zone shell, or a
+  // blank tap) clears the focus; tapping an EDGE leaves it alone (an edge is not
+  // a root, and selecting one must not drop the path being read).
   function focusForId(id) {
     var s = String(id == null ? '' : id)
     if (!s) return null
+    if (isGroupRootId(s)) {
+      if (!isFocusRoot(s)) return null // an unknown gid anchors nothing
+      // V2.4b: the GROUP focus is FIXED at 1 hop (depth is inert in the model).
+      // packages = member shape iff the 包级 tier is on, or (组级 tier) this very
+      // group is expanded — collapsedGroups === null means ALL collapsed.
+      return {
+        rootId: s, depth: 1,
+        packages: state.view.granularity === 'packages' ||
+          !!(state.view.collapsedGroups && !state.view.collapsedGroups.has(s.slice(2))),
+      }
+    }
     if (!state.byId.has(s)) {
       if (s.indexOf('agg:') === 0 || s.indexOf('e:') === 0) return state.focus
       return null
@@ -1147,12 +1325,23 @@
   function focusNode(rootId, depth, selectId) {
     var d = normalizeDepth(depth)
     if (!state.focus) snapshotViewport()
-    state.focus = { rootId: rootId, depth: d }
-    var sets = AtlasModel.pathSets(state.graph, rootId, d)
+    // V2.4b: a g: re-root keeps the GROUP focus shape (fixed 1 hop + derived
+    // packages flag) — the breadcrumb back button and the #node=g: deep link
+    // both land here, and a stale {rootId, depth} shape would contradict the
+    // model's parseFocus contract for g: roots.
+    if (isGroupRootId(rootId)) state.focus = focusForId(String(rootId))
+    else state.focus = { rootId: rootId, depth: d }
     var rn = state.byId.get(String(rootId))
-    if (rn) expandPath(rn)
-    sets.down.forEach(function (id) { var n = state.byId.get(id); if (n) expandPath(n) })
-    sets.up.forEach(function (id) { var n = state.byId.get(id); if (n) expandPath(n) })
+    if (isGroupRootId(rootId)) {
+      // The group focus view renders cards/members from the model REGARDLESS of
+      // collapse state (collapsedCats/collapsedGroups are base-path dimensions)
+      // — there is nothing to expand, and expanding would fight the focus.
+    } else {
+      var sets = AtlasModel.pathSets(state.graph, rootId, d)
+      if (rn) expandPath(rn)
+      sets.down.forEach(function (id) { var n = state.byId.get(id); if (n) expandPath(n) })
+      sets.up.forEach(function (id) { var n = state.byId.get(id); if (n) expandPath(n) })
+    }
     if (selectId) state.selected = selectId
     paint() // focus-active refit inside paint: fits the path members (no ctx padding)
     syncFocusCtl()
@@ -1190,6 +1379,10 @@
     var cy = state.cy
     if (!cy || state.tableMode || !state.focus) return
     var eles = pathFitEles(cy)
+    // V2.4b: a groups-mode GROUP focus has no pkg/profile members — the cards
+    // and their ctx frames ARE the neighborhood, so fit them instead of gliding
+    // nowhere.
+    if (!eles.length) eles = cy.nodes()
     if (!eles.length) return
     // The frozen 3.34.1 animate reads `fit.padding` (getFitViewport(v.eles,
     // v.padding)); `padded` is core.fit() vocabulary and is NOT an animate option
@@ -1209,6 +1402,14 @@
     if (!ctl) return
     ctl.hidden = !state.focus
     var sel = document.getElementById('focus-depth')
+    if (sel) {
+      // V2.4b: the GROUP focus is fixed at 1 hop (depth is inert in the model) —
+      // the select goes disabled with a bilingual hint; every exit/walk-to-
+      // package path re-enables it through this same function.
+      var gf = !!(state.focus && isGroupRootId(state.focus.rootId))
+      sel.disabled = !!gf
+      sel.title = gf ? t('groupFocusDepth') : ''
+    }
     if (state.focus && sel) sel.value = String(state.focus.depth == null ? 0 : state.focus.depth)
     // V22b breadcrumb: 「← 返回 (a → b → 当前)」 rides the pathStack; hidden
     // with 0 history (nowhere to go back to). Truncation is pathChainText's.
@@ -1531,6 +1732,49 @@
     // scope/kind/unsat/broken signal) is now the shared memberSection — the same
     // rows a zone shows, filtered to this group.
     memberSection(box, { kind: 'group', id: gid })
+    // V2.4b: the 相关组/相关包 section belongs to the CURRENT GROUP FOCUS ROOT
+    // only — a neighbor card's details show its own members, and walking there
+    // makes ITS neighborhood the one the canvas highlights and this panel lists.
+    if (state.focus && String(state.focus.rootId) === 'g:' + gid) relatedSection(box, 'g:' + gid)
+  }
+
+  // ---------- V2.4b group-focus related-neighborhood rows ----------
+  // One row = `dir-arrow name ×count · kind badges · ⚠broken-zone`; all text is
+  // data-derived (group ids / attacker-influenced package names) and rides
+  // escText only, reusing .jump/.badge/.brk — no new CSS surface.
+  function relatedRow(box, row, onClick) {
+    var b = document.createElement('button'); b.className = 'jump'
+    var arrow = row.dir === 'both' ? '\u2195' : row.dir === 'up' ? '\u2191' : '\u2193'
+    var nm = document.createElement('span')
+    escText(nm, arrow + ' ' + String(row.name) + ' \u00d7' + row.count)
+    b.appendChild(nm)
+    ;(row.kinds || []).forEach(function (k) {
+      var s = document.createElement('span'); s.className = 'badge'
+      escText(s, k)
+      b.appendChild(document.createTextNode(' '))
+      b.appendChild(s)
+    })
+    if (row.brokenZone) {
+      var z = document.createElement('span'); z.className = 'brk'
+      escText(z, ' \u26a0 ' + t('brokenLabel'))
+      b.appendChild(z)
+    }
+    b.addEventListener('click', onClick)
+    box.appendChild(b)
+  }
+  // The details half of the group focus. Row click: a GROUP row walks the focus
+  // to that group (selectNode('g:…') → focusFlowAction, stack grows); a PACKAGE
+  // row re-roots path mode there — both through the one selection funnel.
+  function relatedSection(box, rootCardId) {
+    var gid = String(rootCardId == null ? '' : rootCardId).slice(2)
+    var pkgs = !!(state.focus && state.focus.packages)
+    var sets = AtlasModel.groupFocusSets(state.graph, gid)
+    var rows = buildRelatedGroups(sets, state.graph, state.groupZone, pkgs ? 'packages' : 'groups')
+    var title = pkgs ? t('relatedPkgsLabel') : t('relatedGroupsLabel')
+    secTitle(box, title.replace('{n}', rows.length))
+    rows.forEach(function (r) {
+      relatedRow(box, r, function () { selectNode(pkgs ? r.gid : 'g:' + r.gid) })
+    })
   }
 
   function detailsEdge(box, id) {
@@ -1922,6 +2166,10 @@
         if (seg !== 'groups' && seg !== 'packages') return
         if (seg === state.view.granularity) return
         state.view.granularity = seg
+        // V2.4b: a live GROUP focus re-derives its packages flag from the tier
+        // (focusForId is the single source of that rule) — the focus shape never
+        // lags the granularity the user just picked.
+        if (state.focus && isGroupRootId(state.focus.rootId)) state.focus = focusForId(state.focus.rootId)
         syncLodCtl()
         paint()
       })
@@ -2037,12 +2285,19 @@
       try { hash = decodeURIComponent(location.hash) } catch (e) { hash = location.hash }
       var m = /node=(.+)$/.exec(hash)
       if (m) {
+        // V2.4b: a g: anchor is a GROUP focus deep link — isFocusRoot is the
+        // single gate (same one a card tap uses), and focusNode installs the
+        // group shape (fixed 1 hop + derived packages flag) authoritatively.
+        if (isGroupRootId(m[1])) {
+          if (isFocusRoot(m[1])) { focusNode(m[1], null, m[1]); return }
+        } else {
         var n = state.byId.get(m[1])
         // R35 gate: a deep link anchors a focus only when it names a PACKAGE.
-        // Anything else (profile:, broken, a group id) just reveals the node —
+        // Anything else (profile:, broken, a zone id) just reveals the node —
         // focusForId() declines it, exactly as a tap on the same node would.
         if (n && isFocusRoot(n.id)) { focusNode(n.id, null, n.id); return } // R35: a deep link focuses at UNLIMITED depth
         if (n) { revealNode(n); return }
+        }
       }
     }
     paint()

@@ -680,11 +680,13 @@ function loadAppPure() {
     extractBalanced(src, 'function soloToggleFor(allCats, current, id) {') + '\n',
     extractBalanced(src, 'function hideAllCats(allCats) {') + '\n',
     extractBalanced(src, 'function showAllCats() {') + '\n',
+    extractBalanced(src, 'function buildRelatedGroups(sets, graph, groupsMeta, tier) {') + '\n',
+    extractBalanced(src, 'function assembleView(view) {') + '\n',
     'var __sb = {};(function (globalThis) {' + model + '\n}).call(__sb, __sb)\n',
     'return { EDGE_KINDS_ALL, normalizeDepth, pathSets: __sb.AtlasModel.pathSets, buildPathLists, matchNodes, progressFor, edgeKindsFor,\n'
     + '  catTitle, groupZoneOf, PEEK_DESC_CAP, buildPeekCard, buildGroupMembers, GROUP_MEMBER_CAP,\n'
     + '  PATH_STACK_CAP, pushPathStack, CRUMB_MAX, pathChainText, groupRowsByDist,\n'
-    + '  soloToggleFor, hideAllCats, showAllCats }',
+    + '  soloToggleFor, hideAllCats, showAllCats, buildRelatedGroups, assembleView }',
   ].join('')
   return new Function(body)()
 }
@@ -701,6 +703,7 @@ function loadFocusLogic() {
     extractBalanced(src, 'var DOWN_EDGE_KINDS = [') + '\n',
     extractBalanced(src, 'var UP_EDGE_KINDS = [') + '\n',
     extractBalanced(src, 'function gidOf(n) {') + '\n',
+    extractBalanced(src, 'function isGroupRootId(id) {') + '\n',
     extractBalanced(src, 'function renderIdOf(id) {') + '\n',
     extractBalanced(src, 'function applyClasses() {') + '\n',
     // V22b: applyClasses consumes AtlasModel.pathSets; view.edgeKinds drives ek-off
@@ -795,7 +798,8 @@ function loadDetailsDom() {
   const body = [
     'var CLICKS = [], SELECTED = []\n',
     'var KEYS = { pathCountLabel: \x27{n}·{d}\x27, pathNoneLabel: \x27NONE\x27, pathDistLabel: \x27d{n}\x27, unsatLabel: \x27UNSAT\x27, mountsLabel: \x27MOUNTS\x27, moreLabel: \x27+{n} MORE\x27,\n'
-    + '  peekDeps: \x27PEEK-DEPS\x27, peekDependents: \x27PEEK-UP\x27, peekUnsat: \x27PEEK-UNSAT\x27, peekBroken: \x27PEEK-BROKEN\x27, membersLabel: \x27PEEK-MEMBERS\x27 }\n',
+    + '  peekDeps: \x27PEEK-DEPS\x27, peekDependents: \x27PEEK-UP\x27, peekUnsat: \x27PEEK-UNSAT\x27, peekBroken: \x27PEEK-BROKEN\x27, membersLabel: \x27PEEK-MEMBERS\x27,\n'
+    + '  brokenLabel: \x27BROKEN\x27, relatedGroupsLabel: \x27RELGRP({n})\x27, relatedPkgsLabel: \x27RELPKG({n})\x27 }\n',
     'function t(k) { return Object.prototype.hasOwnProperty.call(KEYS, k) ? KEYS[k] : k }\n',
     'function selectNode(id) { SELECTED.push(id) }\n',
     'function El(tag) {\n',
@@ -811,8 +815,9 @@ function loadDetailsDom() {
     '  createElement: function (tag) { return new El(tag) },\n',
     '  createTextNode: function (s) { return { tag: \x27#text\x27, text: String(s), children: [], className: \x27\x27 } },\n',
     '}\n',
-    'var state = { graph: null, byId: new Map() }\n',
+    'var state = { graph: null, byId: new Map(), groupZone: new Map(), focus: null }\n',
     capDecl[0] + '\n',
+    extractBalanced(src, 'var EDGE_KINDS_ALL = [') + '\n',
     extractBalanced(src, 'function escText(el, s) {') + '\n',
     extractBalanced(src, 'function kvRow(box, key, value) {') + '\n',
     extractBalanced(src, 'function secTitle(box, text) {') + '\n',
@@ -822,10 +827,14 @@ function loadDetailsDom() {
     extractBalanced(src, 'function pathListSection(box, title, rows) {') + '\n',
     extractBalanced(src, 'function mountOutSection(box, id) {') + '\n',
     extractBalanced(src, 'function renderPeek(card, p) {') + '\n',
+    extractBalanced(src, 'function buildRelatedGroups(sets, graph, groupsMeta, tier) {') + '\n',
+    extractBalanced(src, 'function relatedRow(box, row, onClick) {') + '\n',
+    extractBalanced(src, 'function relatedSection(box, rootCardId) {') + '\n',
     'return { El: El, state: state, CLICKS: CLICKS, SELECTED: SELECTED, t: t,\n',
-    '  pathListSection: pathListSection, mountOutSection: mountOutSection, renderPeek: renderPeek, CAP: PATH_ROW_CAP }',
+    '  pathListSection: pathListSection, mountOutSection: mountOutSection, renderPeek: renderPeek,\n'
+    + '  buildRelatedGroups: buildRelatedGroups, relatedSection: relatedSection, CAP: PATH_ROW_CAP }',
   ].join('')
-  return new Function(body)()
+  return new Function('AtlasModel', body)(loadModel())
 }
 
 /** every textContent string in a fake-DOM tree, in document order */
@@ -1688,13 +1697,14 @@ function pathGraph() {
 }
 
 /** applyClasses' output replayed onto the element list it was handed. */
-function classesApplied(Model, graph, view, focus, selected) {
+function classesApplied(Model, graph, view, focus, selected, stateView) {
   const logic = loadFocusLogic()
   const els = paintElements(Model, graph, view)
   const fake = makeFakeCy(els)
-  logic.apply({
-    cy: fake, graph, byId: byIdMap(graph), groupZone: zoneTable(graph), focus, selected,
-  })
+  const apply0 = { cy: fake, graph, byId: byIdMap(graph), groupZone: zoneTable(graph), focus, selected }
+  // V2.4b: the group-focus branch reads view.granularity — hand the app-state view in when the test cares
+  if (stateView) apply0.view = stateView
+  logic.apply(apply0)
   return {
     fake,
     elements: els.map((e) => ({
@@ -2355,7 +2365,7 @@ function loadFocusCtlDom() {
   const crumbCap = /var CRUMB_MAX = [^\n;]+/.exec(src)
   assert.ok(crumbCap, 'app.js must still declare `var CRUMB_MAX = …`')
   const body = [
-    'var CTL = { hidden: true }, SEL = { value: \x27\x27 }, BACK = { hidden: true, textContent: \x27\x27 }\n',
+    'var CTL = { hidden: true }, SEL = { value: \x27\x27, disabled: false, title: \x27\x27 }, BACK = { hidden: true, textContent: \x27\x27 }\n',
     'var document = { getElementById: function (id) {\n',
     '  return id === \x27focus-ctl\x27 ? CTL : id === \x27focus-depth\x27 ? SEL : id === \x27path-back\x27 ? BACK : null\n',
     '} }\n',
@@ -2364,6 +2374,7 @@ function loadFocusCtlDom() {
     'var state = { focus: null, pathStack: [], byId: new Map() }\n',
     crumbCap[0] + '\n',
     extractBalanced(src, 'function shortName(name, kind) {') + '\n',
+    extractBalanced(src, 'function isGroupRootId(id) {') + '\n',
     extractBalanced(src, 'function pathChainText(labels, sep) {') + '\n',
     extractBalanced(src, 'function idToLabel(id) {') + '\n',
     extractBalanced(src, 'function syncFocusCtl() {') + '\n',
@@ -2416,6 +2427,7 @@ function loadFocusFlow() {
     'var state = { byId: new Map(), focus: null, selected: null, pathStack: [], viewport: null }\n',
     stackCap[0] + '\n',
     extractBalanced(src, 'function pushPathStack(stack, id, cap) {') + '\n',
+    extractBalanced(src, 'function isGroupRootId(id) {') + '\n',
     extractBalanced(src, 'function isFocusRoot(id) {') + '\n',
     extractBalanced(src, 'function focusForId(id) {') + '\n',
     extractBalanced(src, 'function exitFocus() {') + '\n',
@@ -2778,6 +2790,7 @@ function loadExitWiring() {
     '}\n',
     stackCap[0] + '\n',
     extractBalanced(src, 'function pushPathStack(stack, id, cap) {') + '\n',
+    extractBalanced(src, 'function isGroupRootId(id) {') + '\n',
     extractBalanced(src, 'function isFocusRoot(id) {') + '\n',
     extractBalanced(src, 'function focusForId(id) {') + '\n',
     extractBalanced(src, 'function focusFlowAction(id) {') + '\n',
@@ -2946,11 +2959,16 @@ test('V22b peek works WHILE a focus is active and never touches focus/selected (
 test('V22b wiring guards: dbl-click gates, paint mirrors focus into view, chip buttons', () => {
   const src = readFileSync(join(WEB, 'app.js'), 'utf8')
   // double-click gates: manual group collapse only makes sense on the 组级 tier —
-  // at 包级 every group is expanded BY DEFINITION (the model ignores collapsedGroups),
-  // and inside a live path it would repaint the structure the reader is reading.
+  // at 包级 every group is expanded BY DEFINITION (the model ignores collapsedGroups).
+  // V2.4b refined the second gate: inside a live PACKAGE path it stays inert, but
+  // the ROOT CARD of a live GROUP focus keeps its toggle — the tap-tap-dbltap
+  // sequence enters the group focus on the taps and opens the group on the gesture
+  // (the V24b real-handler test pins the whole chain).
   const dbl = src.slice(src.indexOf("cy.on('dbltap', 'node.group'"), src.indexOf("cy.on('tap', 'node, edge'"))
-  assert.match(dbl, /if \(state\.view\.granularity !== 'groups' \|\| state\.focus\) return/,
-    'the packages tier and a live path make group dbl-click a no-op (README); 组级 restores the toggle')
+  assert.match(dbl, /if \(state\.view\.granularity !== 'groups'\) return/,
+    'the packages tier makes group dbl-click a no-op (README); 组级 restores the toggle')
+  assert.match(dbl, /if \(state\.focus && !\(isGroupRootId\(state\.focus\.rootId\) && state\.focus\.rootId === String\(evt\.target\.data\('id'\)\)\)\) return/,
+    'inside a focus only the group-focus ROOT card stays toggleable; package roots keep the full V2.2b inertness')
   assert.match(dbl, /toggleGroup\(String\(evt\.target\.data\('id'\)\)\.replace\(\/\^g:\/, ''\)\)/,
     'the groups tier routes the dbl-click to the real collapse toggle')
   // the zone shell keeps its own gate: inert inside a path only (both tiers)
@@ -3132,6 +3150,7 @@ function loadMembersDom() {
     extractBalanced(src, 'function memberRow(box, row, onClick) {') + '\n',
     extractBalanced(src, 'function memberSection(box, sel) {') + '\n',
     extractBalanced(src, 'function gidOf(n) {') + '\n',
+    extractBalanced(src, 'function isGroupRootId(id) {') + '\n',
     extractBalanced(src, 'function isFocusRoot(id) {') + '\n',
     extractBalanced(src, 'function focusForId(id) {') + '\n',
     extractBalanced(src, 'function expandPath(n) {') + '\n',
@@ -3321,6 +3340,9 @@ function loadGestureWiring() {
     '    })\n',
     '  },\n',
     '}\n',
+    extractBalanced(src, 'function isGroupRootId(id) {') + '\n',
+    extractBalanced(src, 'function isFocusRoot(id) {') + '\n',
+    extractBalanced(src, 'function focusForId(id) {') + '\n',
     extractBalanced(src, 'function toggleGroup(gid) {') + '\n',
     extractBalanced(src, 'function bindCy() {') + '\n',
     'state.cy = cy\n',
@@ -3370,5 +3392,506 @@ test('V2.3 group dbl-tap: 组级 restores the expand/collapse toggle; 包级 and
   g.LOG.length = 0
   g.trigger('tap', g.groupCard('fs'))
   assert.deepEqual(g.LOG, ['peek-off', 'select:g:fs'], 'tap = close the peek, then select')
+})
+
+// =========================================================================
+// Task V2.4b — GROUP FOCUS UI: one-hop neighborhood on the group-card tap.
+// The wiring doctrine of V2.2b applies without exception: every chain runs
+// through the REAL registered cytoscape handlers / real state transitions,
+// asserted on terminal side effects (state.focus, collapsedGroups, class sets,
+// fake-DOM texts). Nothing mid-chain is stubbed.
+// =========================================================================
+
+/** One zone + a broken zone, groups gA(root)/gB(both)/gC(down)/gD(up). V24b matrix. */
+function gfFixture() {
+  const n = (id, group) => ({
+    id, kind: 'package', name: id, version: '1.0.0', scope: 'official', group,
+    category: group === 'gC' ? 'broken' : 'kernel',
+    path: '$DSH_HOME\\x', description: null, servicesRequired: [], externalDeps: [],
+    mountedBy: [], flags: { unreadable: false },
+  })
+  return {
+    schema: 1, generatedAt: 'x', dshHome: '$DSH_HOME', warnings: [],
+    categories: [{ id: 'kernel', zh: '内核', en: 'Kernel' }, { id: 'broken', zh: '断链', en: 'Broken' }],
+    profiles: [],
+    groups: [
+      { id: 'gA', kind: 'official', category: 'kernel', packageCount: 2 },
+      { id: 'gB', kind: 'official', category: 'kernel', packageCount: 1 },
+      { id: 'gC', kind: 'official', category: 'broken', packageCount: 1 },
+      { id: 'gD', kind: 'official', category: 'kernel', packageCount: 1 },
+    ],
+    nodes: [n('r1', 'gA'), n('r2', 'gA'), n('x', 'gB'), n('y', 'gC'), n('z', 'gD')],
+    edges: [
+      { from: 'r1', to: 'x', kind: 'dep' },   // down bucket gA→gB (two kinds)
+      { from: 'r1', to: 'x', kind: 'peer' },
+      { from: 'x', to: 'r1', kind: 'dep' },   // also up ⇒ gB/x land in BOTH
+      { from: 'r2', to: 'y', kind: 'dep' },   // down gC (broken zone)
+      { from: 'z', to: 'r1', kind: 'mount' }, // up gD (mount climbs)
+      { from: 'r1', to: 'r2', kind: 'dep' },  // internal: never a neighborhood
+      { from: 'r2', to: 'r1', kind: 'mount' },// mount-OUT of the root: never down
+    ],
+  }
+}
+
+// ---------- pure: focusForId for g: roots (packages flag derivation) ----------
+
+test('V24b focusForId: g: roots focus at depth 1 with the packages flag = (包级档 || 该组已展开)', () => {
+  const flow = loadFocusFlow()
+  const byId = new Map([['a@1', PKG('a')]])
+  const base = { byId, groupIds: new Set(['bundle', 'fs']) }
+  // 组级, collapsedGroups = null (ALL collapsed by default) → card shape
+  flow.reset(Object.assign({}, base, { view: { granularity: 'groups', collapsedGroups: null } }))
+  let act = flow.act('g:bundle')
+  assert.equal(act.entered, true, 'a group-card tap from the plain view is an ENTRY (isFocusRoot admits g:)')
+  assert.deepEqual(flow.state.focus, { rootId: 'g:bundle', depth: 1, packages: false })
+  assert.deepEqual(flow.CALLS, ['snapshot'], 'entry snapshots the viewport exactly once (shared machine)')
+  assert.deepEqual(flow.state.pathStack, [], 'a fresh root starts with an empty stack')
+  // 组级, the group EXPANDED (materialized set without it) → member shape
+  flow.reset(Object.assign({}, base, { view: { granularity: 'groups', collapsedGroups: new Set(['fs']) } }))
+  flow.act('g:bundle')
+  assert.deepEqual(flow.state.focus, { rootId: 'g:bundle', depth: 1, packages: true },
+    '"该组已展开" = 组级档且不在 collapsedGroups')
+  // 组级, the group collapsed in a materialized set → card shape
+  flow.reset(Object.assign({}, base, { view: { granularity: 'groups', collapsedGroups: new Set(['bundle']) } }))
+  flow.act('g:bundle')
+  assert.deepEqual(flow.state.focus.packages, false)
+  // 包级档 → always member shape
+  flow.reset(Object.assign({}, base, { view: { granularity: 'packages', collapsedGroups: null } }))
+  flow.act('g:bundle')
+  assert.deepEqual(flow.state.focus, { rootId: 'g:bundle', depth: 1, packages: true },
+    'granularity === packages forces the packages flag')
+  // an unknown gid anchors nothing
+  flow.reset(Object.assign({}, base, { view: { granularity: 'groups', collapsedGroups: null } }))
+  act = flow.act('g:ghost')
+  assert.equal(flow.state.focus, null, 'a gid outside state.groupIds is not a legal root')
+  assert.equal(act.exited, false)
+  // walk: group focus → package (the previous group root enters the stack) and back
+  act = flow.act('g:bundle')
+  assert.equal(act.entered, true)
+  act = flow.act('a@1')
+  assert.deepEqual([act.entered, act.walked], [false, true], 'group focus → package is a WALK')
+  assert.deepEqual(flow.state.pathStack, ['g:bundle'], 'the group root rode the stack as a g: id (breadcrumb rides it)')
+  assert.deepEqual(flow.state.focus, { rootId: 'a@1', depth: null })
+  act = flow.act('g:bundle')
+  assert.equal(act.walked, true)
+  assert.deepEqual(flow.state.pathStack, ['g:bundle', 'a@1'], 'back-and-forth walks stack the package too')
+  assert.deepEqual(flow.state.focus, { rootId: 'g:bundle', depth: 1, packages: false })
+  // an aggregate edge tap keeps the group focus alive (edges are not roots)
+  act = flow.act('agg:g:bundle|g:fs')
+  assert.deepEqual([act.entered, act.walked, act.exited], [false, false, false], 'an edge tap is inert for the path')
+  assert.equal(flow.state.focus.rootId, 'g:bundle', 'focus survives')
+})
+
+// ---------- wiring: the REAL tap + dbltap handlers run the group-focus chain ----------
+
+function loadGroupFocusWiring() {
+  const src = readFileSync(join(WEB, 'app.js'), 'utf8')
+  const stackCap = /var PATH_STACK_CAP = [^\n;]+/.exec(src)
+  assert.ok(stackCap, 'app.js must still declare `var PATH_STACK_CAP = …`')
+  const body = [
+    'var LOG = [], ANIMS = []\n',
+    'function depthOfCtl() { return null }\n',
+    'function t(k) { return k }\n',
+    'function hidePeek() { LOG.push("peek-off") }\n',
+    'function showPeek() {}\n',
+    'function renderDetails(id) { LOG.push("details") }\n',
+    'function syncFocusCtl() { LOG.push("sync") }\n',
+    'function paint(refit) { LOG.push("paint:" + (refit === false ? "keep" : "refit") + (state.focus ? ":focus" : ":nofocus")) }\n',
+    'var PEEK_DEBOUNCE_MS = 250\n',
+    'var state = { graph: {}, cy: null, byId: new Map(), groupIds: new Set(["bundle", "fs"]),\n'
+    + '  groupZone: new Map([["fs", "tools"]]), focus: null, selected: null, pathStack: [], viewport: null,\n'
+    + '  tableMode: false, view: { collapsedCats: new Set(), collapsedGroups: null, filterCats: new Set(), granularity: "groups", focus: null } }\n',
+    'function coll(items) {\n'
+    + '  return { length: items.length, items: items, filter: function (f) { return coll(items.filter(f)) } }\n'
+    + '}\n',
+    'var GRAPH_NODES = [{ id: "cat:kernel", kind: "zone" }, { id: "g:bundle", kind: "group" }]\n'
+    + '.map(function (n) { return { isElement: true, id: function () { return n.id },\n'
+    + '    data: function (k) { return k === "kind" ? n.kind : n.id },\n'
+    + '    hasClass: function () { return false } } })\n',
+    'var vp = { zoom: 1.35, pan: { x: -40, y: 90 } }\n',
+    'var handlers = []\n',
+    'var cy = {\n',
+    '  on: function (evt, sel, fn) { if (typeof sel === "function") { fn = sel; sel = null } handlers.push({ evt: evt, sel: sel, fn: fn }) },\n',
+    '  pan: function () { return { x: vp.pan.x, y: vp.pan.y } },\n',
+    '  zoom: function () { return vp.zoom },\n',
+    '  nodes: function () { return coll(GRAPH_NODES) },\n'
+    + '  animate: function (o) { ANIMS.push(o); LOG.push("animate") },\n',
+    '  trigger: function (evt, target) {\n',
+    '    handlers.forEach(function (h) {\n',
+    '      if (h.evt !== evt) return\n',
+    '      if (h.sel == null) { if (target === cy) h.fn({ target: target }) }\n',
+    '      else if (target && target.isElement) h.fn({ target: target })\n',
+    '    })\n',
+    '  },\n',
+    '}\n',
+    'function El(idStr, classList, data) {\n',
+    '  this.isElement = true; this.idStr = idStr; this.classes = new Set(classList); this.dataObj = data\n',
+    '}\n',
+    'El.prototype.id = function () { return this.idStr }\n',
+    'El.prototype.data = function (k) { return this.dataObj[k] }\n',
+    'El.prototype.hasClass = function (c) { return this.classes.has(c) }\n',
+    stackCap[0] + '\n',
+    extractBalanced(src, 'function pushPathStack(stack, id, cap) {') + '\n',
+    extractBalanced(src, 'function isGroupRootId(id) {') + '\n',
+    extractBalanced(src, 'function isFocusRoot(id) {') + '\n',
+    extractBalanced(src, 'function focusForId(id) {') + '\n',
+    extractBalanced(src, 'function focusFlowAction(id) {') + '\n',
+    extractBalanced(src, 'function exitFocus() {') + '\n',
+    extractBalanced(src, 'function selectNode(id) {') + '\n',
+    extractBalanced(src, 'function snapshotViewport() {') + '\n',
+    extractBalanced(src, 'function restoreViewport() {') + '\n',
+    extractBalanced(src, 'function pathFitEles(cy) {') + '\n',
+    extractBalanced(src, 'function animateFitPath() {') + '\n',
+    extractBalanced(src, 'function toggleGroup(gid) {') + '\n',
+    extractBalanced(src, 'function bindCy() {') + '\n',
+    'state.cy = cy\n',
+    'return { state: state, cy: cy, LOG: LOG, ANIMS: ANIMS,\n'
+    + '  bind: function () { bindCy() },\n'
+    + '  tap: function (t) { cy.trigger("tap", t) },\n'
+    + '  dbltap: function (t) { cy.trigger("dbltap", t) },\n'
+    + '  card: function (gid) { return new El("g:" + gid, ["group", "collapsed"], { id: "g:" + gid, name: gid }) },\n'
+    + '  pkgFocus: function () { state.focus = { rootId: "a@1", depth: null } } }',
+  ].join('')
+  return new Function(body)()
+}
+
+test('V24b dbl-tap sequence through the REAL handlers: tap,tap,dbltap focuses once, never re-pushes, and ends expanded in member shape', () => {
+  const w = loadGroupFocusWiring()
+  w.bind() // the real cy.on('tap'|'dbltap', …) registrations
+  // --- tap #1: ENTRY into the group focus ---
+  w.tap(w.card('bundle'))
+  assert.deepEqual(w.state.focus, { rootId: 'g:bundle', depth: 1, packages: false },
+    'a single group-card tap selects AND roots the group focus (card shape while collapsed)')
+  assert.equal(w.state.selected, 'g:bundle', 'the card is the selection too (details panel rides it)')
+  assert.deepEqual(w.state.viewport, { zoom: 1.35, pan: { x: -40, y: 90 } }, 'the entry snapshot armed the exit glide')
+  assert.deepEqual(w.LOG, ['peek-off', 'details', 'sync', 'paint:keep:focus', 'animate'])
+  w.LOG.length = 0
+  // --- tap #2 (the dbl-tap first click): same root = fully inert for the stack ---
+  w.tap(w.card('bundle'))
+  assert.deepEqual(w.state.focus, { rootId: 'g:bundle', depth: 1, packages: false })
+  assert.deepEqual(w.state.pathStack, [], 'SAME-ROOT SECOND TAP PUSHES NOTHING (the brief pin)')
+  assert.deepEqual(w.LOG, ['peek-off', 'details', 'sync', 'paint:keep:focus'], 'repaints, but no second snapshot, no glide')
+  assert.deepEqual(w.state.viewport, { zoom: 1.35, pan: { x: -40, y: 90 } }, 'the entry snapshot was not overwritten')
+  w.LOG.length = 0
+  // --- dbltap (the real gesture that follows the two taps): expand, focus STAYS ---
+  w.dbltap(w.card('bundle'))
+  assert.deepEqual([...w.state.view.collapsedGroups].sort(), ['fs'],
+    'the materialized all-collapsed default opens ONLY the tapped group')
+  assert.deepEqual(w.state.focus, { rootId: 'g:bundle', depth: 1, packages: true },
+    'the focus survives and flips to the member shape (the group is now expanded)')
+  assert.deepEqual(w.state.pathStack, [], 'the dbl-tap sequence never touched the stack')
+  assert.deepEqual(w.LOG, ['paint:refit:focus'], 'the toggle repaints through paint() — the only structure path')
+  // --- dbltap again: collapse back, member shape inverts, focus stays ---
+  w.LOG.length = 0
+  w.dbltap(w.card('bundle'))
+  assert.deepEqual([...w.state.view.collapsedGroups].sort(), ['bundle', 'fs'])
+  assert.deepEqual(w.state.focus, { rootId: 'g:bundle', depth: 1, packages: false })
+  // --- a walk to the neighbor, then the dbl-tap semantics hold on the NEW root ---
+  w.LOG.length = 0
+  w.tap(w.card('fs'))
+  assert.equal(w.state.focus.rootId, 'g:fs', 'walking to a neighbor card re-roots the group focus')
+  assert.deepEqual(w.state.pathStack, ['g:bundle'], 'the previous group root entered the stack')
+  w.dbltap(w.card('fs'))
+  assert.equal(w.state.focus.packages, true, 'the focus root card toggles in every group focus')
+  // a NON-root card stays the documented inert (no surprise layout re-cut under the reader)
+  w.LOG.length = 0
+  w.dbltap(w.card('bundle'))
+  assert.deepEqual(w.LOG, [], 'dbltap on a non-root card inside a group focus is inert')
+  // --- a live PACKAGE focus keeps the V2.2b full inertness ---
+  w.pkgFocus()
+  w.LOG.length = 0
+  w.dbltap(w.card('bundle'))
+  assert.deepEqual(w.LOG, [], 'inside a package path a dbl-tap never re-cuts the structure')
+  assert.equal(w.ANIMS.length, 2, 'across the whole battery the camera glided exactly twice — the entry and the walk (toggles stay glide-free)')
+})
+
+// ---------- fake-cy: applyClasses on the group focus (the disjoint-both contract) ----------
+
+test('V24b applyClasses (fake cy, groups mode): both-side card carries f-both and NEVER dim; aggs light by side', () => {
+  const Model = loadModel()
+  const graph = gfFixture()
+  const view = { focus: { rootId: 'g:gA', depth: 1 } }
+  const run = classesApplied(Model, graph, view, { rootId: 'g:gA', depth: 1 }, 'g:gA',
+    { edgeKinds: null, granularity: 'groups' })
+  const cls = (id) => run.fake.classesOf(id)
+  // the controller ruling: groupFocusSets is DISJOINT — applyClasses must light the third side explicitly
+  assert.ok(cls('g:gB').includes('f-both'), 'a both-side neighbor CARD (marked only via sets.both) carries f-both')
+  assert.ok(!cls('g:gB').includes('dim'), '…and NOT dim (the V2.4a hand-over concern, groups mode)')
+  assert.ok(cls('g:gC').includes('f-down') && !cls('g:gC').includes('f-up'), 'down-side card is amber only')
+  assert.ok(cls('g:gD').includes('f-up') && !cls('g:gD').includes('f-down'), 'up-side card is teal only')
+  const root = cls('g:gA')
+  assert.ok(root.includes('in-focus') && root.includes('selected'), 'the root card keeps the gold rings')
+  for (const f of ['f-down', 'f-up', 'f-both']) assert.ok(!root.includes(f), `the root card carries no ${f}`)
+  assert.ok(!root.includes('dim'), 'the root card never dims')
+  // aggregate edges light by DIRECTION OF THE BUCKET, not by the dominant kind:
+  // the down bucket here is dep+peer (dep dominant) and the up side of gB is a dep too
+  assert.ok(cls('agg:g:gA|g:gB').includes('f-e-down'), 'down-side agg (agg:root|neighbor)')
+  assert.ok(!cls('agg:g:gA|g:gB').includes('f-e-up'), '…and only that side')
+  assert.ok(cls('agg:g:gB|g:gA').includes('f-e-up'), 'up-side agg (agg:neighbor|root)')
+  assert.ok(cls('agg:g:gA|g:gC').includes('f-e-down'))
+  assert.ok(cls('agg:g:gD|g:gA').includes('f-e-up'))
+  for (const e of ['agg:g:gA|g:gB', 'agg:g:gB|g:gA', 'agg:g:gA|g:gC', 'agg:g:gD|g:gA']) {
+    assert.ok(cls(e).includes('in-focus') && !cls(e).includes('dim'), `${e}: rendered, kept, never dim`)
+  }
+  // the focus render set IS the neighborhood: nothing on screen dims
+  for (const el of run.elements) {
+    assert.ok(cls(el.data.id).includes('in-focus'), `${el.data.id}: in-focus`)
+    assert.ok(!cls(el.data.id).includes('dim'), `${el.data.id}: nothing dims inside the groups-mode focus`)
+  }
+})
+
+test('V24b applyClasses (fake cy, packages mode): both-side MEMBER carries f-both and never dim; root members stay neutral', () => {
+  const Model = loadModel()
+  const graph = gfFixture()
+  const view = { focus: { rootId: 'g:gA', depth: 1, packages: true }, granularity: 'packages' }
+  const run = classesApplied(Model, graph, view, { rootId: 'g:gA', depth: 1, packages: true }, 'g:gA',
+    { edgeKinds: null, granularity: 'packages' })
+  const cls = (id) => run.fake.classesOf(id)
+  assert.ok(cls('x').includes('f-both') && !cls('x').includes('dim'),
+    'the pkgsBoth member is marked ONLY via sets.pkgsBoth — the explicit third side must light it (packages mode)')
+  assert.ok(cls('y').includes('f-down') && !cls('y').includes('dim'))
+  assert.ok(cls('z').includes('f-up') && !cls('z').includes('dim'))
+  for (const rid of ['r1', 'r2', 'g:gA']) {
+    const c = cls(rid)
+    assert.ok(c.includes('in-focus'), `${rid}: root-side element is in-focus`)
+    for (const f of ['f-down', 'f-up', 'f-both']) assert.ok(!c.includes(f), `${rid}: root-side element carries no ${f}`)
+    assert.ok(!c.includes('dim'), `${rid}: a ROOT MEMBER must never dim (packages mode)`)
+  }
+  assert.ok(cls('e:r1|x|dep').includes('f-e-down'), 'root-incident real edges ride downEdges/upEdges keys verbatim')
+  assert.ok(cls('e:x|r1|dep').includes('f-e-up'))
+  assert.ok(cls('e:z|r1|mount').includes('f-e-up'), 'the mount climb lights on the up side')
+  for (const el of run.elements) assert.ok(!cls(el.data.id).includes('dim'), `${el.data.id}: nothing dims (render set = neighborhood)`)
+})
+
+// ---------- pure: buildRelatedGroups ----------
+
+test('V24b buildRelatedGroups: dir/sort/count/kinds/brokenZone + junk defense, both tiers', () => {
+  const Model = loadModel()
+  const { buildRelatedGroups } = loadAppPure()
+  const g = gfFixture()
+  const sets = Model.groupFocusSets(g, 'gA')
+  const meta = new Map([['gA', 'kernel'], ['gB', 'kernel'], ['gC', 'broken'], ['gD', 'kernel']])
+  const rows = buildRelatedGroups(sets, g, meta, 'groups')
+  assert.deepEqual(JSON.parse(JSON.stringify(rows)), [
+    { gid: 'gC', name: 'gC', count: 1, kinds: ['dep'], dir: 'down', brokenZone: true },
+    { gid: 'gD', name: 'gD', count: 1, kinds: ['mount'], dir: 'up', brokenZone: false },
+    { gid: 'gB', name: 'gB', count: 3, kinds: ['dep', 'peer'], dir: 'both', brokenZone: false },
+  ], 'dir(down,up,both)→name→gid; count = the A-side aggregate counts summed over the bucketed root-incident '
+    + 'edge keys (gB: 2 down + 1 up); kinds are the deduped reaching kinds in EDGE_KINDS_ALL order; brokenZone = the neighbor zone')
+  const prows = buildRelatedGroups(sets, g, meta, 'packages')
+  assert.deepEqual(JSON.parse(JSON.stringify(prows.map((r) => [r.gid, r.dir, r.count]))),
+    [['y', 'down', 1], ['z', 'up', 1], ['x', 'both', 3]],
+    'the packages tier keys rows by package id (row click = path mode there)')
+  assert.deepEqual(prows.map((r) => r.name), ['y', 'z', 'x'], 'package rows show the node name (fallback id)')
+  assert.equal(prows[2].brokenZone, false, 'the both-side package sits in a kernel group — no broken flag')
+  // junk battery: never throws, never invents rows
+  assert.deepEqual(buildRelatedGroups(null, null, null, 'groups'), [], 'junk sets')
+  assert.deepEqual(buildRelatedGroups({}, g, meta, 'groups'), [], 'an empty container (unknown gid degeneration)')
+  const junk = { rootGid: 'gA', downEdges: new Set(['junk', 'e:x', 'e:zz@9|nothere@1|dep', 'e:x|y|dep']), upEdges: new Set() }
+  assert.deepEqual(buildRelatedGroups(junk, g, meta, 'groups'),
+    [{ gid: 'gC', name: 'gC', count: 1, kinds: ['dep'], dir: 'down', brokenZone: true }],
+    'malformed keys drop; a key whose neighbor node is unknown drops; the down side keys on the TARGET node\'s group')
+  // zero mutation on a frozen graph
+  const frozen = deepFreeze(gfFixture())
+  const fsets = Model.groupFocusSets(g, 'gA')
+  const fr = buildRelatedGroups(fsets, frozen, meta, 'groups')
+  assert.equal(fr.length, 3, 'a deep-frozen graph reads fine')
+})
+
+// ---------- DOM: the related sections of the details panel ----------
+
+test('V24b related sections: header (N), sorted rows with badges + brokenZone, click walks (groups) / re-roots (packages)', () => {
+  const dom = loadDetailsDom()
+  const g = gfFixture()
+  dom.state.graph = g
+  dom.state.byId = byIdMap(g)
+  dom.state.groupZone = zoneTable(g)
+  dom.state.focus = { rootId: 'g:gA', depth: 1 }
+  const box = new dom.El('div')
+  dom.relatedSection(box, 'g:gA')
+  assert.equal(box.children[0].text, 'RELGRP(3)', 'bilingual 相关组（N） header through t(relatedGroupsLabel)')
+  const rows = box.children.filter((c) => c.className === 'jump')
+  assert.equal(rows.length, 3)
+  assert.deepEqual(rows.map((c) => c.children[0].text), ['\u2193 gC \u00d71', '\u2191 gD \u00d71', '\u2195 gB \u00d73'],
+    'dir arrow + name + ×count (A-side count), down→up→both order')
+  assert.deepEqual(rows[2].children.filter((c) => c.className === 'badge').map((c) => c.text), ['dep', 'peer'], 'kind badges')
+  assert.deepEqual(rows[0].children.filter((c) => c.className === 'brk').map((c) => c.text), [' \u26a0 BROKEN'],
+    'the broken-zone neighbor flags with the shared .brk treatment')
+  assert.equal(rows[2].children.filter((c) => c.className === 'brk').length, 0)
+  rows[0].handlers.click()
+  rows[2].handlers.click()
+  assert.deepEqual(dom.SELECTED, ['g:gC', 'g:gB'], 'a group row click = selectNode(g:gid) = the walk through focusFlowAction')
+  // packages tier: 相关包（N）, rows re-root path mode
+  dom.state.focus = { rootId: 'g:gA', depth: 1, packages: true }
+  dom.SELECTED.length = 0
+  const pbox = new dom.El('div')
+  dom.relatedSection(pbox, 'g:gA')
+  assert.equal(pbox.children[0].text, 'RELPKG(3)', 'bilingual 相关包（N） at the member tier')
+  const prows = pbox.children.filter((c) => c.className === 'jump')
+  prows[2].handlers.click()
+  assert.deepEqual(dom.SELECTED, ['x'], 'a package row click = path mode there (selectNode(pkg id))')
+})
+
+test('V24b XSS: an attacker-controlled package NAME reaches the related rows as TEXT only', () => {
+  const dom = loadDetailsDom()
+  const g = gfFixture()
+  const evil = '<img src=x onerror=alert(1)>'
+  g.nodes.find((n) => n.id === 'x').name = evil
+  dom.state.graph = g
+  dom.state.byId = byIdMap(g)
+  dom.state.groupZone = zoneTable(g)
+  dom.state.focus = { rootId: 'g:gA', depth: 1, packages: true }
+  const box = new dom.El('div')
+  dom.relatedSection(box, 'g:gA')
+  const texts = domTexts(box)
+  assert.equal(texts.filter((s) => s.includes(evil)).length, 1,
+    'the attacker string lands exactly once, through textContent (the fake setter WIPES children — markup composition would show)')
+  assert.equal(JSON.stringify(box).includes('innerHTML'), false, 'no innerHTML anywhere in the built tree')
+})
+
+// ---------- pure: the assembled view (packages tier forces showRealCross) ----------
+
+test('V24b assembleView: the packages tier forces showRealCross at view-assembly without touching the user view', () => {
+  const { assembleView } = loadAppPure()
+  const userView = { granularity: 'packages', showRealCross: false, focus: { rootId: 'g:gA', depth: 1, packages: true } }
+  const built = assembleView(userView)
+  assert.notEqual(built, userView, 'a forced build returns a COPY')
+  assert.equal(built.showRealCross, true, '包级档 always assembles with real cross edges ON (R43 made the zero-edge LOD a UX regression; brief ruling)')
+  assert.equal(userView.showRealCross, false, 'the user checkbox intent survives — the forcing is display-level, assembled per build')
+})
+
+test('V24b assembleView (continued): groups tier passes the view through untouched', () => {
+  const { assembleView } = loadAppPure()
+  const gv = { granularity: 'groups', showRealCross: false }
+  assert.equal(assembleView(gv), gv, 'the 组级 tier is passed through by reference — zero behavior change')
+  const on = { granularity: 'packages', showRealCross: true }
+  assert.equal(assembleView(on), on, 'already-on forces nothing (no copy churn)')
+  assert.deepEqual(assembleView(null), {}, 'junk arrives as an empty object at the model (which carries its own defense)')
+})
+
+// ---------- fake DOM: the depth select during a group focus ----------
+
+test('V24b syncFocusCtl: the depth select disables with the 1-hop title hint during a group focus, re-enables on exit/walk', () => {
+  const dom2 = loadFocusCtlDom()
+  dom2.state.focus = { rootId: 'g:bundle', depth: 1 }
+  dom2.sync()
+  assert.equal(dom2.SEL.disabled, true, '组聚焦期间深度下拉 disabled')
+  assert.equal(dom2.SEL.title, 'groupFocusDepth', 'the title hint explains why (fake t returns the key)')
+  assert.equal(dom2.SEL.value, '1', 'the fixed 1 hop round-trips into the select')
+  dom2.state.focus = { rootId: 'a@1', depth: null }
+  dom2.sync()
+  assert.equal(dom2.SEL.disabled, false, 'walked to a package root → re-enabled')
+  assert.equal(dom2.SEL.title, '', 'and the hint is gone')
+  dom2.state.focus = null
+  dom2.sync()
+  assert.equal(dom2.SEL.disabled, false, 'exit → re-enabled too')
+})
+
+test('V24b breadcrumb: group roots render their names through the existing id→label resolution', () => {
+  const dom2 = loadFocusCtlDom()
+  dom2.state.focus = { rootId: 'g:llm', depth: 1 }
+  dom2.state.pathStack = ['g:bundle', 'a@1']
+  dom2.state.byId = new Map([['a@1', { id: 'a@1', kind: 'package', name: '@deepseek-ai/a' }]])
+  dom2.sync()
+  assert.equal(dom2.BACK.textContent, '\u2190 BACK (bundle \u2192 a \u2192 llm)',
+    'idToLabel already maps g: ids to the group name — the breadcrumb needs no new plumbing')
+})
+
+// ---------- wiring: focusNode as the authoritative group re-root ----------
+
+function loadGroupRevealWiring() {
+  const src = readFileSync(join(WEB, 'app.js'), 'utf8')
+  const body = [
+    'var LOG = []\n',
+    'function depthOfCtl() { return null }\n',
+    'function t(k) { return k }\n',
+    'function paint(refit) { LOG.push("paint:" + (refit === false ? "keep" : "refit") + (state.focus ? ":focus" : ":nofocus")) }\n',
+    'function renderDetails(id) { LOG.push("details:" + id) }\n',
+    'function syncFocusCtl() { LOG.push("sync") }\n',
+    'function flashReveal(id) { LOG.push("flash:" + id) }\n',
+    'var state = {\n',
+    '  graph: null, byId: new Map(), groupIds: new Set(["bundle"]), groupZone: new Map([["bundle", "kernel"]]),\n',
+    '  cy: { pan: function () { return { x: 3, y: 4 } }, zoom: function () { return 1.1 } }, tableMode: false,\n',
+    '  focus: null, selected: null, pathStack: [], viewport: null,\n',
+    '  view: { collapsedCats: new Set(["kernel"]), collapsedGroups: null, filterCats: new Set(["kernel"]) },\n',
+    '}\n',
+    extractBalanced(src, 'function normalizeDepth(depth) {') + '\n',
+    extractBalanced(src, 'function gidOf(n) {') + '\n',
+    extractBalanced(src, 'function isGroupRootId(id) {') + '\n',
+    extractBalanced(src, 'function isFocusRoot(id) {') + '\n',
+    extractBalanced(src, 'function focusForId(id) {') + '\n',
+    extractBalanced(src, 'function expandPath(n) {') + '\n',
+    extractBalanced(src, 'function snapshotViewport() {') + '\n',
+    extractBalanced(src, 'function focusNode(rootId, depth, selectId) {') + '\n',
+    'return { state: state, LOG: LOG, focus: focusNode, reset: function (g) {\n'
+    + '  state.graph = g; state.byId = new Map(g.nodes.map(function (n) { return [n.id, n] }));\n'
+    + '  state.focus = null; state.selected = null; state.pathStack = []; state.viewport = null;\n'
+    + '  state.view.collapsedCats = new Set(["kernel"]); state.view.collapsedGroups = null; state.view.filterCats = new Set(["kernel"]);\n'
+    + '  LOG.length = 0 } }',
+  ].join('')
+  return new Function('AtlasModel', body)(loadModel())
+}
+
+test('V24b focusNode: a g: re-root installs the group focus (packages flag derived), the package path keeps {rootId, depth}', () => {
+  const h = loadGroupRevealWiring()
+  h.focus('g:bundle', null, 'g:bundle')
+  assert.deepEqual(h.state.focus, { rootId: 'g:bundle', depth: 1, packages: false },
+    'the deep-link/breadcrumb re-root keeps the group semantics (never a stale depth-only shape)')
+  assert.deepEqual(h.state.viewport, { zoom: 1.1, pan: { x: 3, y: 4 } }, 'an entry re-root snapshots once')
+  assert.deepEqual(h.state.pathStack, [], 'an authoritative re-root never touches the stack')
+  assert.deepEqual(h.LOG, ['paint:refit:focus', 'sync', 'details:g:bundle', 'flash:g:bundle'],
+    'the reveal chain runs the full V22b order for a card root (flash rides the card id)')
+  assert.equal(h.state.selected, 'g:bundle')
+  // the package root keeps the old shape and the expandPath side effect verbatim
+  const pkgGraph = { nodes: [{ id: 'a@1', kind: 'package', name: 'a', group: 'bundle', category: 'kernel' }], edges: [] }
+  h.reset(pkgGraph)
+  h.focus('a@1', 2, 'a@1')
+  assert.deepEqual(h.state.focus, { rootId: 'a@1', depth: 2 })
+  assert.deepEqual([...h.state.view.collapsedCats], [], 'expandPath still opens the zone for a package root')
+})
+
+test('V24b deep-link #node=g:... is wired through the isFocusRoot gate and focuses the group', () => {
+  const src = readFileSync(join(WEB, 'app.js'), 'utf8')
+  const i = src.indexOf('/node=(.+)$/.exec(hash)')
+  assert.ok(i >= 0, 'the #node= deep-link branch still exists')
+  const block = src.slice(i, src.indexOf('paint()', i))
+  assert.match(block, /isGroupRootId\(m\[1\]\)/, 'a g: anchor is branched before the byId lookup')
+  assert.match(block, /isFocusRoot\(m\[1\]\)/, 'the group anchor passes the SAME gate a card tap uses')
+  assert.match(block, /focusNode\(m\[1\], null, m\[1\]\)/, 'it re-roots authoritatively at the fixed depth, selecting the card')
+  assert.match(block, /focusNode\(n\.id, null, n\.id\)/, 'the package branch survives verbatim (R35 gate intact)')
+})
+
+// ---------- grep guards: the paint assembly, the recalculation hooks, legend + README ----------
+
+test('V24b wiring guards: assembled view in paint, group-focus fit guard, focus recalculation, details hook', () => {
+  const src = readFileSync(join(WEB, 'app.js'), 'utf8')
+  assert.match(src, /window\.AtlasModel\.buildView\(state\.graph, assembleView\(state\.view\)\)/,
+    'paint feeds the model ONLY the assembled view (the one structural path stays single)')
+  assert.match(src, /if \(focusApplied && pathFitEles\(state\.cy\)\.length\)/,
+    'a groups-mode group focus (no pkg members) falls back to the whole-view refit instead of fitting an empty set')
+  assert.match(src, /state\.focus = focusForId\('g:' \+ gid\)/,
+    'toggleGroup recalculates a group focus rooted on THIS card (the packages flag follows the expansion)')
+  assert.match(src, /if \(state\.focus && isGroupRootId\(state\.focus\.rootId\)\) state\.focus = focusForId\(state\.focus\.rootId\)/,
+    'a tier switch re-derives a live group focus (packages flag vs granularity, never a stale shape)')
+  const grp = src.slice(src.indexOf('function detailsGroup(box, gid) {'), src.indexOf('function detailsEdge(box, id) {'))
+  assert.match(grp, /if \(state\.focus && String\(state\.focus\.rootId\) === 'g:' \+ gid\) relatedSection\(box, 'g:' \+ gid\)/,
+    'the 相关组/相关包 section rides the ROOT group card only (the walk target shows ITS own neighborhood)')
+  const rel = src.slice(src.indexOf('function relatedSection(box, rootCardId) {'))
+  assert.match(rel, /t\('relatedPkgsLabel'\)/, 'the packages-tier header is a literal t() key (i18n parity scan reaches it)')
+  assert.match(rel, /t\('relatedGroupsLabel'\)/, 'the groups-tier header is a literal t() key')
+  assert.match(rel, /selectNode\(pkgs \? r\.gid : 'g:' \+ r\.gid\)/, 'rows walk (group) or re-root path mode (package) through selectNode')
+  assert.match(src, /state\.groupIds && state\.groupIds\.has\(s\.slice\(2\)\)/,
+    'isFocusRoot admits g: ids only for KNOWN groups (the applyGraph rescan guard keeps working)')
+  // the depth select wiring
+  assert.match(src, /sel\.disabled = !!gf/, 'syncFocusCtl writes the disabled state')
+  assert.match(src, /gf \? t\('groupFocusDepth'\) : ''/, 'the hint title rides the same branch (bilingual)')
+  // legend + README carry the group-focus story
+  const I18N = new Function(extractBalanced(src, 'var I18N = {') + '\nreturn I18N')()
+  assert.match(I18N.zh.egAgg, /组聚焦/, 'zh legend: the aggregate swatch says when it appears')
+  assert.match(I18N.en.egAgg, /group focus/i, 'en legend: same story')
+  const readme = readFileSync(join(WEB, '..', 'README.md'), 'utf8')
+  assert.match(readme, /组聚焦/, 'README covers group focus (feature chapter)')
+  assert.match(readme, /相关组/, 'README covers the related lists')
+  assert.match(readme, /聚合边.{0,60}组聚焦|组聚焦.{0,60}聚合边/, 'README: aggregate edges live inside group focus (R43 story)')
 })
 

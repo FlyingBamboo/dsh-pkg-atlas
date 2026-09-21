@@ -1530,3 +1530,46 @@ test('V24-12 two-mode render sets are distinct by design (groups cards vs member
   assert.ok(gm.has('g:plugin') && pm.has('g:plugin') && pm.has(X1), 'plugin neighbor lights in both modes')
   assert.ok(!gm.has('g:profiles') && !pm.has('g:profiles'), 'profiles never touched a llm edge — absent in both modes')
 })
+
+// ---------- V2.4b review hand-over (A): test hardening for the two silent-edit ----------
+// ---------- seams the V2.4a battery left open. Model source untouched. ----------
+
+test('V24-13 (hardened from review A) focus agg dominance is by COUNT, not first-inserted kind — pins graph-model.js:833', () => {
+  const M = loadModel()
+  const n = (id, group) => node(id + '@1.0.0', id, 'package', 'official', group, 'kernel', [])
+  const g = {
+    schema: 1, generatedAt: 'x', dshHome: '$DSH_HOME', warnings: [],
+    categories: [{ id: 'kernel', zh: 'k', en: 'k' }], profiles: [],
+    groups: [
+      { id: 'gA', kind: 'official', category: 'kernel', packageCount: 2 },
+      { id: 'gB', kind: 'official', category: 'kernel', packageCount: 2 },
+    ],
+    nodes: [n('r1', 'gA'), n('r2', 'gA'), n('x', 'gB'), n('w', 'gB')],
+    edges: [
+      { from: 'r1@1.0.0', to: 'x@1.0.0', kind: 'dep' },  // bucket kinds: dep ×1 (inserted FIRST)
+      { from: 'r1@1.0.0', to: 'w@1.0.0', kind: 'peer' }, // …and peer ×2 — the COUNT MAJORITY
+      { from: 'r2@1.0.0', to: 'w@1.0.0', kind: 'peer' },
+    ],
+  }
+  const m = elMap(M.buildView(g, Object.assign(EXPANDED(), { focus: { rootId: 'g:gA' } })))
+  assert.deepEqual(plain(m.get('agg:g:gA|g:gB')), {
+    group: 'edges',
+    data: { id: 'agg:g:gA|g:gB', source: 'g:gA', target: 'g:gB', count: 3, kind: 'peer' },
+    classes: ['e-agg', 'e-peer'],
+  }, 'dominantKind follows the unequal count ({dep:1, peer:2} → peer) — flipping the :833 comparator '
+    + 'to `c > bestC + 1` (or any first-inserted/tie-order shortcut) lands this on dep and reddens here')
+})
+
+test('V24-14 (hardened from review A) packages-mode g: focus renders the pkgsBoth union — pins graph-model.js:493', () => {
+  const M = loadModel()
+  // bothGraph's x is in pkgsBoth (dep-OUT r1→x AND dep-IN x→r1); fixture()'s g:bundle focus
+  // has an EMPTY pkgsBoth, which is why V24-06 alone never noticed the missing gAdd line.
+  const res = M.buildView(bothGraph(), Object.assign(EXPANDED(), { focus: { rootId: 'g:gA', packages: true } }))
+  const rendered = new Set(res.elements.map((e) => e.data.id))
+  assert.ok(rendered.has('x@1.0.0'),
+    'a BOTH-side neighbor member joins the rendered union (rootPkgs ∪ pkgsDown ∪ pkgsUp ∪ pkgsBoth) — '
+    + 'deleting the `gSets.pkgsBoth.forEach(gAdd)` line at graph-model.js:493 drops x and reddens here')
+  assert.deepEqual(plain(res.meta.focus),
+    { rootKind: 'group', rootId: 'g:gA', depth: 1, members: 5, edges: 4 },
+    'meta members count the both-side member too (5 = r1 r2 x y z, 4 = the four root-incident keys)')
+})

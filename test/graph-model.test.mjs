@@ -182,10 +182,10 @@ test('V4-01 default view = all groups collapsed: zones+cards only, ordered per r
   assert.deepEqual(kindIds(res, 'group'), ['g:bundle', 'g:util', 'g:tools', 'g:llm', 'g:plugin', 'g:profiles', 'g:broken'])
   assert.deepEqual(kindIds(res, 'pkg'), [])
   assert.deepEqual(kindIds(res, 'profile'), [])
-  // no order bands violated: zones < groups < pkgs < edges
+  // no order bands violated: zones < groups (R43: the default build carries no
+  // edges anymore — "edges last" is pinned by the focus and real-cross builds)
   const idx = (id) => ids(res).indexOf(id)
   assert.ok(idx('cat:broken') < idx('g:bundle'), 'zones precede groups')
-  assert.ok(idx('g:broken') < idx(edgeEls(res)[0].data.id), 'groups precede edges')
 
   const m = elMap(res)
   // rule 1: pkg→group = node.group, group→zone = groups[].category → parents
@@ -210,7 +210,11 @@ test('V4-01 default view = all groups collapsed: zones+cards only, ordered per r
     assert.ok(m.get(z).classes.includes('cat-' + z.slice(4)))
   }
   assertFiniteAll(res, 'default view')
-  assert.deepEqual(plain(res.meta), { zones: 6, groups: 7, pkgs: 0, profiles: 0, realEdges: 0, aggEdges: 10, edges: 10 })
+  // R43 (V2.4a, user ruling): the group-level base view emits ZERO edges — the
+  // aggregate emission this test used to pin (aggEdges 10) is retired on purpose;
+  // the agg element shape + dominance live on in the g: focus branch (V24-05).
+  assert.deepEqual(plain(res.meta), { zones: 6, groups: 7, pkgs: 0, profiles: 0, realEdges: 0, aggEdges: 0, edges: 0 })
+  assert.deepEqual(plain(edgeEls(res)), [], 'no edges at all in the overview (R43)')
 })
 
 test('V4-02 defensive: packageCount=0 group (ghost) renders nowhere', () => {
@@ -312,56 +316,47 @@ test('V4-04e R26 filterProfile never moves coordinates of surviving elements (ru
 // =========================================================================
 // Rule 4 — endpoint resolution, aggregation, dominance, ties, self-loops
 // =========================================================================
-test('V4-05 rule 4: collapsed endpoints resolve to group cards; self-loops dropped', () => {
+test('V4-05 rule 4 (R43-updated): collapsed endpoints — the base path now emits no edges at all', () => {
   const M = loadModel()
   const res = M.buildView(fixture(), {})
-  for (const e of edgeEls(res)) {
-    assert.notEqual(e.data.source, e.data.target, `${e.data.id} self-loop must be dropped`)
-    assert.ok(/^(g:|cat:)/.test(e.data.source), `collapsed build resolves source to container, got ${e.data.source}`)
-    assert.ok(/^(g:|cat:)/.test(e.data.target))
-    assert.ok(e.data.id.startsWith('agg:'), `default build edges are aggregated, got ${e.data.id}`)
-  }
-  const m = elMap(res)
-  // e4 (llm→llm) and e5 collapsed (profiles→profiles) vanish as self-loops
-  assert.ok(!edgeEls(res).some((e) => e.data.id === 'agg:g:llm|g:llm'))
-  assert.ok(!edgeEls(res).some((e) => e.data.id === 'agg:g:profiles|g:profiles'))
-  assert.ok(m.has('agg:g:util|g:llm'), 'simple cross-group aggregate present')
-  // e12 dangling endpoint (node not in graph) is dropped — nothing references ghost node id
-  assert.ok(!edgeEls(res).some((e) => String(e.data.target).includes('ghost:missing')))
+  // R43 retired the group-level aggregate emission (user ruling). The endpoint
+  // resolution the agg buckets used to make visible stays exercised by the g:
+  // focus aggregates (V24-05: same bucketing/dominance code path, restricted
+  // set) and by showRealCross real edges (V4-08). Here: zero edges, no agg: ids.
+  assert.deepEqual(plain(edgeEls(res)), [], 'default build emits no edges (R43)')
+  assert.equal(res.meta.aggEdges, 0)
+  assert.equal(res.meta.edges, 0)
+  // dangling endpoint still cannot leak anywhere near the render set
+  assert.ok(!ids(res).some((id) => String(id).includes('ghost:missing')))
 })
 
-test('V4-06 rule 4: aggregate count = member-pair total; dominant kind by count; ties dep>mount>peer>peer-optional', () => {
+test('V4-06 rule 4 (R43-updated): base aggregate counts/dominance gone from the base path', () => {
   const M = loadModel()
   const res = M.buildView(fixture(), {})
-  const m = elMap(res)
-  // agg g:bundle→g:llm: e1 dep, e9 peer, e14 mount, e15 mount → count 4, mount 2 dominates
-  const b2l = m.get('agg:g:bundle|g:llm')
-  assert.equal(b2l.data.count, 4)
-  assert.equal(b2l.data.kind, 'mount')
-  assert.deepEqual(plain(b2l.classes), ['e-agg', 'e-mount'])
-  // agg g:tools→g:llm: peer-optional 1 + peer 1 → tie → peer wins (fixed order)
-  const t2l = m.get('agg:g:tools|g:llm')
-  assert.equal(t2l.data.count, 2)
-  assert.equal(t2l.data.kind, 'peer')
-  assert.deepEqual(plain(t2l.classes), ['e-agg', 'e-peer'])
-  // agg g:broken→g:bundle: single peer-optional
-  assert.equal(m.get('agg:g:broken|g:bundle').data.kind, 'peer-optional')
+  // R43: the buckets this test enumerated (g:bundle→g:llm count 4 / mount-
+  // dominance, g:tools→g:llm peer tie, g:broken→g:bundle) no longer emit in the
+  // BASE path. The bucketing + dominantKind code they pinned is exercised, with
+  // EQUAL strength (exact deepEqual shape incl. a dep>peer tie and a mount
+  // up-side), by the g: focus agg comparison in V24-05 — intentional product
+  // decision (user ruling R43), not a dropped invariant.
+  assert.deepEqual(plain(edgeEls(res)), [], 'base emits no aggregates (R43)')
+  const focused = M.buildView(fixture(), Object.assign(EXPANDED(), { focus: { rootId: 'g:bundle' } }))
+  const fm = elMap(focused)
+  assert.ok(fm.has('agg:g:bundle|g:llm'), 'the same bucketing still runs inside the g: focus branch')
 })
 
-test('V4-07 rule 4: zone-collapse resolves endpoints to the zone shell', () => {
+test('V4-07 rule 4 (R43-updated): zone-collapse keeps the shell; the pkg→zone-shell aggregates are retired', () => {
   const M = loadModel()
   const res = M.buildView(fixture(), { collapsedCats: new Set(['llm']), collapsedGroups: new Set() })
   const m = elMap(res)
-  // zone shell kept with total member count; group cards hidden
+  // node-side behavior unchanged: zone shell with total member count, no cards, no members
   assert.equal(m.get('cat:llm').data.count, 2)
   assert.ok(!m.has('g:llm'))
   assert.ok(!m.has(P1), 'members of a collapsed zone are hidden')
-  // edges into collapsed llm resolve to cat:llm; sources are the EXPANDED bundle pkgs
-  assert.ok(m.has('agg:' + A1 + '|cat:llm'), 'bundle pkgs (expanded) now aggregate into the zone shell')
-  assert.equal(m.get('agg:' + A1 + '|cat:llm').data.count, 4) // e1 dep, e9 peer, e14 mount, e15 mount
-  assert.equal(m.get('agg:' + A1 + '|cat:llm').data.kind, 'mount')
-  assert.ok(m.has('agg:' + U1 + '|cat:llm')) // e2
-  assert.ok(!m.has('agg:g:bundle|g:llm'), 'group-level bucket must not exist when target zone collapsed')
+  // R43: what used to resolve INTO the shell (agg:A1|cat:llm count 4 mount-
+  // dominant, agg:U1|cat:llm) no longer emits — the base path drops every edge
+  // that is not a packages-tier real cross edge. Intentional product decision.
+  assert.deepEqual(plain(edgeEls(res)), [], 'no pkg→zone aggregates in the base path (R43)')
 })
 
 test('V4-08 rule 4 + showRealCross: expanded pkg↔pkg endpoints switch agg→real', () => {
@@ -380,11 +375,12 @@ test('V4-08 rule 4 + showRealCross: expanded pkg↔pkg endpoints switch agg→re
 
   const noReal = M.buildView(graph, Object.assign(EXPANDED(), { showRealCross: false }))
   const ne = edgeEls(noReal)
-  // 16 − e4 self − e12 dangling − 3 parallel-pair merges (e1+e14, e9+e15, e10+e16) = 11
-  assert.equal(ne.length, 11)
-  assert.ok(ne.every((e) => e.data.id.startsWith('agg:')), 'without showRealCross pkg pairs still aggregate')
-  assert.ok(elMap(noReal).has('agg:' + A2 + '|' + A1))
-  assert.equal(elMap(noReal).get('agg:' + A1 + '|' + P1).data.count, 2, 'mixed kinds → ONE aggregate')
+  // R43: the 11 pkg-level aggregate buckets this half pinned (e.g. agg:A1|P1
+  // 'mixed kinds → ONE aggregate') are retired from the base path — without
+  // showRealCross the base view simply has no edges. The REAL half above
+  // (14 cross edges, exact meta) is UNTOUCHED by R43 and still pinned.
+  assert.deepEqual(plain(ne.map((e) => e.data.id)), [], 'without showRealCross the base path emits nothing (R43)')
+  assert.equal(noReal.meta.aggEdges, 0)
 })
 
 // =========================================================================
@@ -416,17 +412,21 @@ test('V4-09 filterCats prunes whole zones incl. edges touching them; agg recompu
   }
 })
 
-test('V4-10 edgeKinds prunes real edges BEFORE aggregation (counts reflect visible kinds)', () => {
+test('V4-10 edgeKinds prunes real edges BEFORE aggregation (R43: base path = prune then nothing to aggregate)', () => {
   const M = loadModel()
   const res = M.buildView(fixture(), {
     collapsedCats: new Set(), collapsedGroups: new Set(['bundle', 'llm', 'profiles']),
     filterCats: null, filterScope: 'all', edgeKinds: new Set(['mount']), filterProfile: null, showRealCross: false,
   })
-  const m = elMap(res)
-  // mount edges only: e5(profiles→bundle), e8(bundle→profiles), e14+e15(bundle→llm)
-  assert.deepEqual(plain(edgeEls(res).map((e) => e.data.id)).sort(), ['agg:g:bundle|g:llm', 'agg:g:bundle|g:profiles', 'agg:g:profiles|g:bundle'])
-  assert.equal(m.get('agg:g:bundle|g:llm').data.count, 2, 'count = only visible kinds')
-  assert.equal(m.get('agg:g:bundle|g:llm').data.kind, 'mount')
+  // R43: the mount-only agg buckets ('agg:g:bundle|g:llm' count 2 …) are gone —
+  // the pruned edges now fall to nothing instead of to a bucket. The prune
+  // itself is still enforced, which the packages-tier REAL half below pins.
+  assert.deepEqual(plain(edgeEls(res)), [], 'edgeKinds mount-only ⇒ the mount aggregates are retired with the rest (R43)')
+  const real = M.buildView(fixture(), Object.assign(EXPANDED(), { edgeKinds: new Set(['mount']), showRealCross: true }))
+  assert.deepEqual(plain(edgeEls(real).map((e) => e.data.id)), [
+    'e:' + WB + '|' + A1 + '|mount', 'e:' + A1 + '|' + WB + '|mount',
+    'e:' + A1 + '|' + P1 + '|mount', 'e:' + A1 + '|' + P2 + '|mount',
+  ], 'packages-tier REAL edges still honor the kind filter (e5/e8/e14/e15) — prune stays in front')
 })
 
 test('V4-11 filterProfile keeps profile node + mountedBy survivors; empty zones/groups vanish', () => {
@@ -440,11 +440,18 @@ test('V4-11 filterProfile keeps profile node + mountedBy survivors; empty zones/
   const pk = plain(els(res).filter((e) => e.data.kind === 'pkg' || e.data.kind === 'profile').map((e) => e.data.id))
   assert.deepEqual(pk, [A1, P1, U1, A2, WB, X1])
   assert.ok(!m.has('cat:broken') && !m.has('g:broken'), 'zone with zero survivors does not render')
-  // this view renders EXPANDED groups → pkg-level buckets; e10/e16 died with p2 → bucket gone, not stale
-  assert.ok(!m.has('agg:' + A2 + '|' + P2))
-  // survivors-only recount with recomputed dominance: e1 dep + e14 mount → tie → dep
-  assert.equal(m.get('agg:' + A1 + '|' + P1).data.count, 2)
-  assert.equal(m.get('agg:' + A1 + '|' + P1).data.kind, 'dep')
+  // R43: the survivors-only AGGREGATE recount this pinned (agg:A1|P1 count 2,
+  // dep-beats-mount tie after e10/e16 died with p2) has no base-path emission
+  // anymore. The survivor rule itself stays pinned by the REAL build below:
+  // every surviving edge references survivors; p2/b1-touched edges are gone.
+  assert.deepEqual(plain(edgeEls(res)), [], 'no aggregates in the filtered base view (R43)')
+  const real = M.buildView(fixture(), {
+    collapsedCats: new Set(), collapsedGroups: new Set(), filterCats: null,
+    filterScope: 'all', edgeKinds: null, filterProfile: 'web', showRealCross: true,
+  })
+  assert.deepEqual(plain(edgeEls(real).map((e) => e.data.kind)),
+    ['dep', 'dep', 'dep', 'mount', 'dep', 'dep', 'mount', 'dep', 'mount'],
+    'e1,e2,e3,e5,e6,e7,e8,e13,e14 — e9/e10/e15↔P2 and e11↔B1 edges died with their endpoints')
   assert.equal(m.get('cat:profiles').data.count, 1)
   assertFiniteAll(res, 'profile filter')
 })
@@ -461,29 +468,38 @@ test('V4-11b filterScope official/third-party pruning; profiles are scope-immune
   const pm = elMap(off)
   assert.ok(!pm.has(X1) && !pm.has('cat:plugin'), 'third-party + its zone pruned')
   assert.ok(pm.has(B1), 'broken node is scope official → stays')
-  assert.equal(pm.get('agg:' + A1 + '|' + P1).data.count, 2, 'e1+e14 only (x1 edges pruned with x1)')
-  assert.ok(!pm.has('agg:' + X1 + '|' + P1) && !pm.has('agg:' + X1 + '|' + U1))
+  // R43: the official-only aggregate recount (agg:A1|P1 count 2 — e1+e14 after
+  // x1's edges pruned with x1) has no base emission. The scope prune itself is
+  // pinned via the REAL build: x1-touched edges are gone, all others stay.
+  const offReal = M.buildView(fixture(), Object.assign(EXPANDED(), { filterScope: 'official', showRealCross: true }))
+  assert.deepEqual(plain(edgeEls(offReal).map((e) => e.data.id)), [
+    'e:' + A1 + '|' + P1 + '|dep', 'e:' + U1 + '|' + P1 + '|dep', 'e:' + A2 + '|' + A1 + '|dep',
+    'e:' + WB + '|' + A1 + '|mount', 'e:' + A1 + '|' + WB + '|mount', 'e:' + A1 + '|' + P2 + '|peer',
+    'e:' + A2 + '|' + P2 + '|peer-optional', 'e:' + B1 + '|' + A1 + '|peer-optional', 'e:' + A2 + '|' + U1 + '|dep',
+    'e:' + A1 + '|' + P1 + '|mount', 'e:' + A1 + '|' + P2 + '|mount', 'e:' + A2 + '|' + P2 + '|peer',
+  ], '12 real edges (14 minus x1\'s e6/e7) — no agg:X1|* to begin with (R43)')
 
   const offCollapsed = M.buildView(fixture(), { filterScope: 'official' })
-  assert.equal(elMap(offCollapsed).get('agg:g:bundle|g:llm').data.count, 4, 'group-level recount official-only')
+  assert.deepEqual(plain(edgeEls(offCollapsed)), [], 'the group-level official recount is retired with all base aggregates (R43)')
 })
 
 // =========================================================================
 // Rule 8 — output order
 // =========================================================================
-test('V4-12 rule 8: edges ordered agg(s,d) first, then real edges in graph.edges order', () => {
+test('V4-12 rule 8 (R43-updated): base edges are REAL-only in graph.edges order; agg ordering lives in g: focus', () => {
   const M = loadModel()
   const res = M.buildView(fixture(), {})
-  const pairs = plain(edgeEls(res).map((e) => [e.data.source, e.data.target]))
-  const sorted = [...pairs].sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0))
-  assert.deepEqual(pairs, sorted, 'aggregates sorted by (source, target)')
-  assert.equal(pairs.length, 10)
+  // R43: the default build carries no edges, so the 'aggregates sorted by
+  // (source,target)' half of this rule moved — the identical sort now orders
+  // the g: focus aggregates and is pinned there (V24-05 exact id order).
+  assert.deepEqual(plain(edgeEls(res)), [], 'no edges in the default base build (R43)')
 
   const mixed = M.buildView(fixture(), Object.assign(EXPANDED(), { showRealCross: true }))
   const expectedRealOrder = ['dep', 'dep', 'dep', 'mount', 'dep', 'dep', 'mount', 'peer', 'peer-optional', 'peer-optional', 'dep', 'mount', 'mount', 'peer']
     // graph order minus e4 (self) and e12 (dangling)
   const gotReal = edgeEls(mixed).filter((e) => !e.data.id.startsWith('agg:'))
   assert.deepEqual(plain(gotReal.map((e) => e.data.kind)), expectedRealOrder)
+  assert.equal(gotReal.length, edgeEls(mixed).length, 'base path emits real edges only (R43)')
 })
 
 // =========================================================================
@@ -973,7 +989,8 @@ test('V22-09 focus root A1: member packages + ancestor containers (ctx) + induce
   }
   assert.deepEqual(plain(res.meta), {
     zones: 5, groups: 5, pkgs: 5, profiles: 1, realEdges: 6, aggEdges: 0, edges: 6,
-    focus: { rootId: A1, depth: null, members: 6, edges: 6 },
+    // V2.4a adds rootKind to meta.focus (brief §2) — the only intended shape change on the pkg path.
+    focus: { rootKind: 'package', rootId: A1, depth: null, members: 6, edges: 6 },
   })
   assert.ok(member, 'pin of the member set (documentation only)')
 })
@@ -992,10 +1009,10 @@ test('V22-10 focus depth re-cuts M and the induced set (root P1: depth 1 vs unli
     'e:' + A1 + '|' + P1 + '|dep', 'e:' + U1 + '|' + P1 + '|dep',
     'e:' + X1 + '|' + P1 + '|dep', 'e:' + X1 + '|' + U1 + '|dep', 'e:' + A1 + '|' + P1 + '|mount',
   ], 'the P1→P1 dep self-loop is induced but never rendered as an edge')
-  assert.deepEqual(plain(one.meta.focus), { rootId: P1, depth: 1, members: 4, edges: 5 })
+  assert.deepEqual(plain(one.meta.focus), { rootKind: 'package', rootId: P1, depth: 1, members: 4, edges: 5 })
 
   const two = M.buildView(g, Object.assign(EXPANDED(), { focus: { rootId: P1, depth: 2 } }))
-  assert.deepEqual(plain(two.meta.focus), { rootId: P1, depth: 2, members: 7, edges: 10 },
+  assert.deepEqual(plain(two.meta.focus), { rootKind: 'package', rootId: P1, depth: 2, members: 7, edges: 10 },
     'depth 2 adds A2/WB/B1 via layer-2 up edges (e14 parallel edge counts once per key)')
 })
 
@@ -1008,7 +1025,7 @@ test('V22-11 R39 filter applies to focus members: excluded-zone members drop out
   assert.ok(!m.has(B1) && !m.has('g:broken') && !m.has('cat:broken'), 'B1 was a member — the zone exclusion evicts it')
   assert.ok(!edgeEls(res).some((e) => String(e.data.id).includes(B1)), 'e11 died with its endpoint')
   assert.ok(m.has(A1) && m.has(P1) && m.has(WB), 'surviving members stay rendered')
-  assert.deepEqual(plain(res.meta.focus), { rootId: A1, depth: null, members: 5, edges: 5 })
+  assert.deepEqual(plain(res.meta.focus), { rootKind: 'package', rootId: A1, depth: null, members: 5, edges: 5 })
 })
 
 test('V22-12 same-group members emit REAL induced edges — aggregates are never produced', () => {
@@ -1151,4 +1168,365 @@ test('V22-18 focus view dedupes fully-duplicate (from,to,kind) edge lines', () =
   assert.deepEqual(plain(edgeEls(res).map((e) => e.data.id)), [`e:${R}|${D}|dep`, `e:${R}|${D}|peer`],
     'exactly one element per DISTINCT (from,to,kind) — the dup collapses, the distinct kind survives')
   assert.equal(res.meta.focus.edges, 2, 'meta agrees with the emitted element count')
+})
+
+// =========================================================================
+// Task V2.4a — R42 group focus (groupFocusSets + focus g: root) and R43
+// base aggregate-edge retirement.
+// =========================================================================
+
+/** A groupFocusSets container is only comparable across realms through its Sets. */
+function serGSets(s) {
+  return JSON.stringify({
+    rootGid: s.rootGid,
+    down: [...s.down], up: [...s.up], both: [...s.both],
+    pkgsDown: [...s.pkgsDown], pkgsUp: [...s.pkgsUp], pkgsBoth: [...s.pkgsBoth],
+    downEdges: [...s.downEdges], upEdges: [...s.upEdges], rootPkgs: [...s.rootPkgs],
+  })
+}
+
+/** One zone, groups gA (root members r1,r2), gB (x), gC (y), gD (z). R42 matrix fixture. */
+function bothGraph() {
+  const n = (id, group) => node(id + '@1.0.0', id, 'package', 'official', group, 'kernel', ['web'])
+  return {
+    schema: 1, generatedAt: 'x', dshHome: '$DSH_HOME', warnings: [],
+    categories: [{ id: 'kernel', zh: 'k', en: 'k' }], profiles: [],
+    groups: ['gA', 'gB', 'gC', 'gD'].map((id) => ({ id, kind: 'official', category: 'kernel', packageCount: 1 })),
+    nodes: [n('r1', 'gA'), n('r2', 'gA'), n('x', 'gB'), n('y', 'gC'), n('z', 'gD')],
+    edges: [
+      { from: 'r1@1.0.0', to: 'x@1.0.0', kind: 'dep' },            // DOWN: x∈gB lit down
+      { from: 'x@1.0.0', to: 'r1@1.0.0', kind: 'dep' },            // UP:   x also up → x and gB land in both
+      { from: 'r2@1.0.0', to: 'y@1.0.0', kind: 'peer-optional' },  // DOWN: y∈gC
+      { from: 'z@1.0.0', to: 'r1@1.0.0', kind: 'mount' },          // UP:   mount climbs (gD)
+      { from: 'r1@1.0.0', to: 'r2@1.0.0', kind: 'dep' },           // internal — excluded from the neighborhood
+      { from: 'r2@1.0.0', to: 'r1@1.0.0', kind: 'dep' },           // internal, reverse
+      { from: 'r2@1.0.0', to: 'r2@1.0.0', kind: 'dep' },           // internal self-loop
+      { from: 'r2@1.0.0', to: 'x@1.0.0', kind: 'mount' },          // mount-OUT of the root: R37-style, never DOWN
+      { from: 'r1@1.0.0', to: 'ghost@9.9.9', kind: 'dep' },        // dangling endpoint: skipped
+    ],
+  }
+}
+
+test('V24-00 export surface: groupFocusSets joins the frozen AtlasModel surface', () => {
+  const M = loadModel()
+  assert.equal(typeof M.groupFocusSets, 'function', 'AtlasModel.groupFocusSets must be exported')
+  assert.deepEqual(Object.keys(M).sort(), ['ZONE_LAYOUT', 'buildView', 'groupFocusSets', 'pathSets'],
+    'the frozen surface is exactly {buildView, pathSets, groupFocusSets, ZONE_LAYOUT}')
+  const s = M.groupFocusSets(fixture(), 'bundle')
+  assert.deepEqual(Object.keys(s).sort(),
+    ['both', 'down', 'downEdges', 'pkgsBoth', 'pkgsDown', 'pkgsUp', 'rootGid', 'rootPkgs', 'up', 'upEdges'],
+    'container field names (applyClasses reuse contract)')
+})
+
+test('V24-01 groupFocusSets directions: OUT dep/peer/peer-opt vs IN +mount; mount-OUT stays out; keys as pathSets', () => {
+  const M = loadModel()
+  const s = M.groupFocusSets(fixture(), 'bundle') // rootPkgs = {A1}
+  assert.equal(s.rootGid, 'bundle')
+  assert.deepEqual([...s.rootPkgs], [A1], 'one member, group bundle')
+  // DOWN (OUT, dep/peer/peer-opt): e1 A1→P1 dep, e9 A1→P2 peer. Mount-outs e8 (A1→WB),
+  // e14 (A1→P1), e15 (A1→P2) are NOT down kinds (R37 lineage) — WB is not a down neighbor at all.
+  assert.deepEqual([...s.down], ['llm'])
+  assert.deepEqual([...s.pkgsDown], [P1, P2])
+  assert.deepEqual([...s.downEdges], ['e:' + A1 + '|' + P1 + '|dep', 'e:' + A1 + '|' + P2 + '|peer'],
+    'insertion order = graph.edges order; key = e:from|to|kind, the pathSets key form')
+  // UP (IN, +mount): e3 A2→A1 dep, e5 WB→A1 mount (the profile climb), e11 B1→A1 peer-optional.
+  assert.deepEqual([...s.up], ['tools', 'profiles', 'broken'], 'group tier updated by the same edge batch')
+  assert.deepEqual([...s.pkgsUp], [A2, WB, B1])
+  assert.deepEqual([...s.upEdges], ['e:' + A2 + '|' + A1 + '|dep', 'e:' + WB + '|' + A1 + '|mount', 'e:' + B1 + '|' + A1 + '|peer-optional'])
+  assert.equal(s.down.has('bundle') || s.up.has('bundle') || s.pkgsDown.has(A1), false, 'the root group is never its own neighbor')
+  assert.equal(s.down.has('plugin') || s.pkgsUp.has(X1), false, 'edges not touching a root member stay out entirely')
+})
+
+test('V24-02 groupFocusSets root members are ANY kind; both = intersection, subtracted from both tiers', () => {
+  const M = loadModel()
+  const anyKind = M.groupFocusSets(fixture(), 'profiles') // rootPkgs = the profile node WB
+  assert.deepEqual([...anyKind.rootPkgs], [WB], 'a profile-kind group still has root members (any kind, R42)')
+  assert.deepEqual([...anyKind.up], ['bundle'], 'e8 A1→WB mount is an IN mount')
+  assert.deepEqual([...anyKind.down], [], 'WB→A1 mount is mount-OUT: not a DOWN kind')
+
+  const s = M.groupFocusSets(bothGraph(), 'gA')
+  assert.deepEqual([...s.rootPkgs], ['r1@1.0.0', 'r2@1.0.0'])
+  assert.deepEqual([...s.pkgsBoth], ['x@1.0.0'], 'x dep-out AND dep-in → both')
+  assert.deepEqual([...s.pkgsDown], ['y@1.0.0'], 'subtracted from pkgsDown')
+  assert.deepEqual([...s.pkgsUp], ['z@1.0.0'], 'subtracted from pkgsUp')
+  assert.deepEqual([...s.both], ['gB'], 'group tier: gB is both')
+  assert.deepEqual([...s.down], ['gC'], 'gB subtracted from down (parallel tier)')
+  assert.deepEqual([...s.up], ['gD'], 'gB subtracted from up')
+  // the edge sets keep BOTH sides of a mutual pair (kind/direction is a per-edge fact)
+  assert.deepEqual([...s.downEdges], ['e:r1@1.0.0|x@1.0.0|dep', 'e:r2@1.0.0|y@1.0.0|peer-optional'])
+  assert.deepEqual([...s.upEdges], ['e:x@1.0.0|r1@1.0.0|dep', 'e:z@1.0.0|r1@1.0.0|mount'])
+})
+
+test('V24-03 groupFocusSets same-group exclusion + defensive junk + zero mutation', () => {
+  const M = loadModel()
+  const s = M.groupFocusSets(bothGraph(), 'gA')
+  for (const set of [s.downEdges, s.upEdges]) {
+    assert.equal([...set].some((k) => /\|r[12]@1\.0\.0\|/.test(k) && /^e:r[12]@1\.0\.0\|/.test(k)), false,
+      'r1↔r2 internal edges (both endpoints in gA) never enter the neighborhood, in either direction')
+  }
+  assert.equal([...s.rootPkgs].every((p) => p.startsWith('r')), true, 'root members still collected')
+  assert.equal([...s.pkgsDown].includes('ghost@9.9.9') || [...s.downEdges].some((k) => k.includes('ghost')), false,
+    'a dangling endpoint has no group — the edge is skipped, container stays internally consistent')
+  for (const [label, g, gid, wantRoot] of [
+    ['no graph', null, 'x', []], ['no nodes', {}, 'x', []],
+    ['malformed edges', { nodes: [{ id: 'p', group: 'g' }], edges: [null, {}, { from: 'p' }, { to: 'p' }] }, 'g', ['p']],
+    ['unknown gid', fixture(), 'nope', []], ['empty gid', fixture(), '', []],
+  ]) {
+    const j = M.groupFocusSets(g, gid)
+    assert.equal(j.rootGid, String(gid), `${label}: rootGid is still set`)
+    assert.deepEqual([...j.rootPkgs], wantRoot, `${label}: rootPkgs (the member node survives every malformed edge line)`)
+    for (const key of ['down', 'up', 'both', 'pkgsDown', 'pkgsUp', 'pkgsBoth', 'downEdges', 'upEdges']) {
+      assert.deepEqual([...j[key]], [], `${label}: ${key} empty`)
+    }
+  }
+  const frozen = deepFreeze(bothGraph())
+  const a = M.groupFocusSets(frozen, 'gA')
+  const b = M.groupFocusSets(frozen, 'gA')
+  assert.equal(serGSets(a), serGSets(b), 'two calls over a deep-frozen graph serialize equal')
+  const live = bothGraph()
+  const before = JSON.stringify(live)
+  M.groupFocusSets(live, 'gA')
+  assert.equal(JSON.stringify(live), before, 'a live graph comes back byte-identical')
+})
+
+test('V24-04 groupFocusSets determinism: Set insertion order + shuffled graph, same membership', () => {
+  const M = loadModel()
+  const g = fixture()
+  const base = M.groupFocusSets(g, 'bundle')
+  const again = M.groupFocusSets(g, 'bundle')
+  assert.deepEqual([...base.downEdges], [...again.downEdges], 'repeat call: identical iteration order')
+  const shuffled = { nodes: g.nodes.slice().reverse(), edges: g.edges.slice().reverse() }
+  const sh = M.groupFocusSets(shuffled, 'bundle')
+  for (const key of ['down', 'up', 'both', 'pkgsDown', 'pkgsUp', 'pkgsBoth', 'downEdges', 'upEdges', 'rootPkgs']) {
+    assert.deepEqual([...sh[key]].sort(), [...base[key]].sort(), `${key}: membership is order-free`)
+  }
+})
+
+/** g:-focus structural invariant (group mode MAY carry agg edges — unlike pkg focus). */
+function assertGroupFocus(res, label) {
+  const ids = new Set()
+  const seen = new Set()
+  for (const e of els(res)) {
+    assert.ok(!ids.has(e.data.id), `${label}: duplicate id ${e.data.id}`)
+    ids.add(e.data.id)
+    assert.ok(e.classes.length > 0, `${label}: classes on ${e.data.id}`)
+  }
+  for (const e of els(res)) {
+    if (e.group === 'nodes') {
+      assert.ok(Number.isFinite(e.data.x) && Number.isFinite(e.data.y), `${label}: finite x/y on ${e.data.id}`)
+      if (e.data.parent != null) {
+        assert.ok(ids.has(e.data.parent), `${label}: parent ${e.data.parent} of ${e.data.id} renders`)
+        assert.ok(seen.has(e.data.parent), `${label}: parent ${e.data.parent} precedes ${e.data.id}`)
+      }
+    } else {
+      assert.ok(ids.has(e.data.source) && ids.has(e.data.target), `${label}: edge ${e.data.id} endpoints render`)
+      assert.notEqual(e.data.source, e.data.target, `${label}: no self-loop edges`)
+      assert.ok(String(e.data.source).slice(2) === 'bundle' || String(e.data.target).slice(2) === 'bundle',
+        `${label}: ${e.data.id} is not root-incident`)
+    }
+    seen.add(e.data.id)
+  }
+}
+
+test('V24-05 focus g:bundle groups mode: root + neighbor cards (no ctx), ctx zones, ONLY root-incident agg edges', () => {
+  const M = loadModel()
+  const res = M.buildView(fixture(), Object.assign(EXPANDED(), { focus: { rootId: 'g:bundle' } }))
+  assertGroupFocus(res, 'g:bundle groups')
+  const m = elMap(res)
+
+  assert.deepEqual(kindIds(res, 'zone'), ['cat:kernel', 'cat:tools', 'cat:llm', 'cat:profiles', 'cat:broken'],
+    'zones in category order; member-free zones absent')
+  assert.deepEqual(kindIds(res, 'group'), ['g:bundle', 'g:tools', 'g:llm', 'g:profiles', 'g:broken'])
+  assert.deepEqual(kindIds(res, 'pkg'), [], 'groups mode renders cards only, never members')
+
+  // ctx rides on ZONES only: the focus card is the subject, neighbor cards carry no ctx (brief §2)
+  for (const z of kindIds(res, 'zone')) {
+    assert.deepEqual(plain(m.get(z).classes), ['zone', 'cat-' + z.slice(4), 'ctx'], `${z}: ctx appended`)
+  }
+  assert.equal(m.get('cat:kernel').data.count, 1, 'zone count = survivors of its rendered groups')
+  for (const gid of ['bundle', 'tools', 'llm', 'profiles', 'broken']) {
+    assert.ok(!m.get('g:' + gid).classes.includes('ctx'), `g:${gid}: no ctx in groups mode`)
+    assert.ok(m.get('g:' + gid).classes.includes('collapsed'), `g:${gid}: group card`)
+    assert.equal(m.get('g:' + gid).data.w, M.ZONE_LAYOUT.CARD_W)
+    assert.equal(m.get('g:' + gid).data.h, M.ZONE_LAYOUT.CARD_H)
+  }
+  assert.equal(m.get('g:llm').data.count, 2, 'card count = the whole group\'s surviving members')
+  assert.equal(m.get('g:bundle').data.parent, 'cat:kernel')
+
+  // Agg edges — root-incident pairs only, sorted (s,d), and the OLD base agg shape verbatim:
+  // down side agg:G|H, up side agg:H|G. e1+e9 bucket onto g:bundle→g:llm (count 2, dep>peer tie).
+  assert.deepEqual(plain(edgeEls(res).map((e) => e.data.id)), [
+    'agg:g:broken|g:bundle', 'agg:g:bundle|g:llm', 'agg:g:profiles|g:bundle', 'agg:g:tools|g:bundle',
+  ])
+  assert.deepEqual(plain(m.get('agg:g:bundle|g:llm')), {
+    group: 'edges',
+    data: { id: 'agg:g:bundle|g:llm', source: 'g:bundle', target: 'g:llm', count: 2, kind: 'dep' },
+    classes: ['e-agg', 'e-dep'],
+  }, 'aggregate shape compared to base pre-R43 emission (id/source/target/count/kind + e-agg/e-kind, NO cross)')
+  assert.equal(m.get('agg:g:profiles|g:bundle').data.kind, 'mount', 'mount is an UP kind: profiles→bundle lights')
+  assert.ok(!m.has('agg:g:bundle|g:profiles'), 'mount-OUT (e8 A1→WB) never produces a down-side agg (R37 lineage)')
+  assert.ok(!m.has('agg:g:tools|g:llm'), 'neighbor↔neighbor pairs are NEVER aggregated here (e2 lives in no set)')
+
+  assert.deepEqual(plain(res.meta), {
+    zones: 5, groups: 5, pkgs: 0, profiles: 0, realEdges: 0, aggEdges: 4, edges: 4,
+    focus: { rootKind: 'group', rootId: 'g:bundle', depth: 1, members: 5, edges: 4 },
+  }, 'meta.focus group-mode shape: depth is FIXED 1, members = rendered group cards')
+})
+
+test('V24-06 focus g:bundle packages mode: members in place, G frame no-ctx, neighbor frames ctx, root-incident real edges only', () => {
+  const M = loadModel()
+  const res = M.buildView(fixture(), Object.assign(EXPANDED(), { focus: { rootId: 'g:bundle', packages: true } }))
+  assertFocusSet(res, 'g:bundle packages') // no agg: allowed here — real induced edges only
+  const m = elMap(res)
+
+  assert.deepEqual(kindIds(res, 'zone'), ['cat:kernel', 'cat:tools', 'cat:llm', 'cat:profiles', 'cat:broken'])
+  assert.deepEqual(kindIds(res, 'group'), ['g:bundle', 'g:tools', 'g:llm', 'g:profiles', 'g:broken'])
+  assert.deepEqual(
+    plain(els(res).filter((e) => e.data.kind === 'pkg' || e.data.kind === 'profile').map((e) => e.data.id)),
+    [A1, P1, P2, A2, B1, WB], 'rootPkgs ∪ pkgsDown ∪ pkgsUp ∪ pkgsBoth in graph.nodes order')
+
+  assert.deepEqual(plain(m.get('g:bundle').classes), ['group', 'gk-official'], 'the root frame never carries ctx')
+  assert.ok(!m.get('g:bundle').classes.includes('collapsed'), 'frames render at expanded slot size')
+  for (const gid of ['tools', 'llm', 'profiles', 'broken']) {
+    assert.deepEqual(plain(m.get('g:' + gid).classes.slice(-1)), ['ctx'], `neighbor frame g:${gid} carries ctx`)
+  }
+  for (const z of kindIds(res, 'zone')) {
+    assert.deepEqual(plain(m.get(z).classes), ['zone', 'cat-' + z.slice(4), 'ctx'])
+  }
+  assert.equal(m.get('g:llm').data.h, 46, 'expanded slot dims (never the 36 card) — slot layout reused')
+
+  // downEdges ∪ upEdges ∩ both-endpoints-alive, AND (from∈rootPkgs ∨ to∈rootPkgs):
+  // e1, e3, e5, e9, e11. e8 (mount-out) is in NO set; e14/e15 (mount A1→P1/P2) are in no set;
+  // e10/e16 (A2↔P2) are member↔member but touch no root member → dark.
+  assert.deepEqual(plain(edgeEls(res).map((e) => e.data.id)), [
+    'e:' + A1 + '|' + P1 + '|dep', 'e:' + A2 + '|' + A1 + '|dep', 'e:' + WB + '|' + A1 + '|mount',
+    'e:' + A1 + '|' + P2 + '|peer', 'e:' + B1 + '|' + A1 + '|peer-optional',
+  ])
+  for (const e of edgeEls(res)) {
+    assert.deepEqual(plain(e.classes), ['e-' + e.data.kind, 'cross'], 'real cross shape, same as pkg focus')
+  }
+  assert.deepEqual(plain(res.meta), {
+    zones: 5, groups: 5, pkgs: 5, profiles: 1, realEdges: 5, aggEdges: 0, edges: 5,
+    focus: { rootKind: 'group', rootId: 'g:bundle', depth: 1, members: 6, edges: 5 },
+  }, 'packages mode members = rendered member nodes (profiles included)')
+})
+
+test('V24-07 coordinate constancy under group focus (both modes) + frozen graph + depth ignored', () => {
+  const M = loadModel()
+  const g = fixture()
+  const pk = elMap(M.buildView(g, Object.assign(EXPANDED(), { granularity: 'packages' })))
+  for (const extra of [{}, { packages: true }]) {
+    const focus = elMap(M.buildView(g, Object.assign(EXPANDED(), { focus: Object.assign({ rootId: 'g:bundle' }, extra) })))
+    let checked = 0
+    for (const e of focus.values()) {
+      if (e.group !== 'nodes') continue
+      assert.ok(pk.has(e.data.id), `focus element ${e.data.id} exists in the packages view`)
+      assert.equal(pk.get(e.data.id).data.x, e.data.x, `${e.data.id}.x must be identical to the packages view`)
+      assert.equal(pk.get(e.data.id).data.y, e.data.y, `${e.data.id}.y must be identical to the packages view`)
+      checked++
+    }
+    assert.ok(checked >= 8, `${JSON.stringify(extra)}: positioned elements compared (${checked})`)
+  }
+  // depth is FIXED at 1 for group focus (R42): a depth request changes nothing, meta reports 1
+  const deep = M.buildView(g, Object.assign(EXPANDED(), { focus: { rootId: 'g:bundle', depth: 3 } }))
+  assert.equal(JSON.stringify(deep), JSON.stringify(M.buildView(g, Object.assign(EXPANDED(), { focus: { rootId: 'g:bundle' } }))),
+    'depth is inert for g: roots')
+  assert.equal(deep.meta.focus.depth, 1)
+  // frozen determinism battery, both modes (V22-17 lineage extended)
+  const frozen = deepFreeze(fixture())
+  for (const focus of [{ rootId: 'g:bundle' }, { rootId: 'g:bundle', packages: true }]) {
+    const view = Object.assign(EXPANDED(), { focus })
+    deepFreeze(view)
+    const a = JSON.stringify(M.buildView(frozen, view))
+    assert.equal(JSON.stringify(M.buildView(frozen, view)), a, 'frozen graph + ' + JSON.stringify(focus) + ' builds twice, identical')
+  }
+})
+
+test('V24-08 group focus filters (R39): neighbor eviction + edge re-cut; root-zone exclusion falls back', () => {
+  const M = loadModel()
+  const g = fixture()
+
+  const grp = M.buildView(g, Object.assign(EXPANDED(), { filterCats: ['llm'], focus: { rootId: 'g:bundle' } }))
+  const gm = elMap(grp)
+  assert.ok(!gm.has('g:llm') && !gm.has('agg:g:bundle|g:llm'), 'the all-dead neighbor group and its agg edge are gone')
+  assert.ok(gm.has('g:tools') && gm.has('g:profiles'), 'unaffected neighbors stay')
+  assert.deepEqual(plain(grp.meta.focus), { rootKind: 'group', rootId: 'g:bundle', depth: 1, members: 4, edges: 3 })
+
+  const pkg = M.buildView(g, Object.assign(EXPANDED(), { filterCats: ['llm'], focus: { rootId: 'g:bundle', packages: true } }))
+  const pm = elMap(pkg)
+  assert.ok(!pm.has(P1) && !pm.has(P2) && !pm.has('g:llm'), 'dead members and their frame drop out')
+  assert.ok(pm.has(A1) && pm.has(A2) && pm.has(WB) && pm.has(B1))
+  assert.deepEqual(plain(edgeEls(pkg).map((e) => e.data.id)), [
+    'e:' + A2 + '|' + A1 + '|dep', 'e:' + WB + '|' + A1 + '|mount', 'e:' + B1 + '|' + A1 + '|peer-optional',
+  ], 'edges re-cut over survivors: e1/e9 died with their endpoints')
+  assert.deepEqual(plain(pkg.meta.focus), { rootKind: 'group', rootId: 'g:bundle', depth: 1, members: 4, edges: 3 })
+
+  // root group filtered out ⇒ fall back to base + meta.focus=null (three-state rule preserved)
+  for (const overrides of [{ filterCats: ['kernel'] }, { filterScope: 'third-party' }]) {
+    const starved = M.buildView(g, Object.assign(EXPANDED(), Object.assign({}, overrides, { focus: { rootId: 'g:bundle' } })))
+    assert.equal(JSON.stringify(starved.elements),
+      JSON.stringify(M.buildView(g, Object.assign(EXPANDED(), overrides)).elements),
+      JSON.stringify(overrides) + ': root-group starvation renders the base view')
+    assert.equal(starved.meta.focus, null, 'requested-but-not-applied focus records null')
+  }
+})
+
+test('V24-09 g: fallback + three-state meta.focus: illegal gid ⇒ base byte-identical + null; absent ⇒ NO key', () => {
+  const M = loadModel()
+  const g = fixture()
+  const base = M.buildView(g, EXPANDED())
+  for (const bad of ['g:nope', 'g:', 'g:ghost']) {
+    const res = M.buildView(g, Object.assign(EXPANDED(), { focus: { rootId: bad } }))
+    assert.equal(JSON.stringify(res.elements), JSON.stringify(base.elements), `${bad}: base path renders`)
+    assert.equal(res.meta.focus, null, `${bad}: null records the request that did not apply`)
+  }
+  const noFocus = M.buildView(g, EXPANDED())
+  assert.ok(!('focus' in plain(noFocus.meta)), 'no focus requested → no focus key at all')
+})
+
+test('V24-10 meta.focus rootKind on the package path; packages flag is inert there', () => {
+  const M = loadModel()
+  const g = fixture()
+  const plainFocus = M.buildView(g, Object.assign(EXPANDED(), { focus: { rootId: A1, depth: null } }))
+  assert.equal(plainFocus.meta.focus.rootKind, 'package', 'pkg root gains rootKind:"package" (the one intended meta.focus change)')
+  const flagged = M.buildView(g, Object.assign(EXPANDED(), { focus: { rootId: A1, depth: null, packages: true } }))
+  assert.equal(JSON.stringify(flagged), JSON.stringify(plainFocus), 'packages is meaningful only for g: roots')
+})
+
+test('V24-11 R43 base aggregate edges retired: overview/expanded emit ZERO edges; real cross paths untouched; focus unaffected', () => {
+  const M = loadModel()
+  const g = fixture()
+  for (const [label, view] of [
+    ['default all-collapsed', {}],
+    ['expanded (groups granularity)', EXPANDED()],
+    ['zone-collapsed', { collapsedCats: new Set(['llm']), collapsedGroups: new Set() }],
+    ['edgeKinds subset', Object.assign(EXPANDED(), { edgeKinds: new Set(['mount']) })],
+    ['packages granularity, showRealCross off', Object.assign(EXPANDED(), { granularity: 'packages' })],
+  ]) {
+    const res = M.buildView(g, view)
+    assert.deepEqual(plain(edgeEls(res)), [], `${label}: base emits no edges at all (R43)`)
+    assert.equal(res.meta.aggEdges, 0, `${label}: meta.aggEdges is 0`)
+    assert.equal(res.meta.edges, res.meta.realEdges, `${label}: edges = real only`)
+  }
+  const real = M.buildView(g, Object.assign(EXPANDED(), { showRealCross: true }))
+  assert.equal(edgeEls(real).length, 14, 'packages-tier REAL/cross edges UNTOUCHED (e4 self + e12 dangling drop as before)')
+  assert.ok(edgeEls(real).every((e) => !String(e.data.id).startsWith('agg:')))
+  assert.equal(real.meta.edges, 14)
+  const pkgFocus = M.buildView(g, Object.assign(EXPANDED(), { focus: { rootId: A1 } }))
+  assert.equal(edgeEls(pkgFocus).length, 6, 'package-root focus induction untouched by R43')
+  const grpFocus = M.buildView(g, Object.assign(EXPANDED(), { focus: { rootId: 'g:bundle' } }))
+  assert.ok(edgeEls(grpFocus).length > 0 && edgeEls(grpFocus).every((e) => String(e.data.id).startsWith('agg:')),
+    'g: groups focus still emits its root-incident aggregates (R43 retires BASE emission only)')
+})
+
+test('V24-12 two-mode render sets are distinct by design (groups cards vs members in place)', () => {
+  const M = loadModel()
+  const g = fixture()
+  const gm = new Set(ids(M.buildView(g, Object.assign(EXPANDED(), { focus: { rootId: 'g:llm' } }))))
+  const pm = new Set(ids(M.buildView(g, Object.assign(EXPANDED(), { focus: { rootId: 'g:llm', packages: true } }))))
+  assert.ok(gm.has('g:llm') && !gm.has(P1), 'groups mode: cards only')
+  assert.ok(pm.has('g:llm') && pm.has(P1) && pm.has(P2), 'packages mode: the members render in place')
+  assert.ok(gm.has('g:bundle') && pm.has(A1), 'both modes light the up-side neighbor (bundle) as card vs member')
+  assert.ok(gm.has('g:plugin') && pm.has('g:plugin') && pm.has(X1), 'plugin neighbor lights in both modes')
+  assert.ok(!gm.has('g:profiles') && !pm.has('g:profiles'), 'profiles never touched a llm edge — absent in both modes')
 })

@@ -289,14 +289,14 @@ test('AtlasModel: default view (all-collapsed) emits a well-formed, parent-safe 
   for (const k of ['gk-official', 'gk-plugin', 'gk-profile', 'gk-broken', 'gk-vendor', 'gk-ungrouped']) {
     assert.ok(gkinds.has(k), `fixture must emit ${k} so the palette stays covered`)
   }
-  // aggregated edges exist (groups resolved) and carry count + dominant kind
-  const agg = elements.filter((e) => e.group === 'edges')
-  assert.ok(agg.length > 0)
-  for (const e of agg) {
-    assert.ok(String(e.data.id).startsWith('agg:'), 'aggregate id prefix')
-    assert.ok(Number.isFinite(e.data.count) && e.data.count > 0, 'agg count')
-    assert.ok(e.classes.includes('e-agg') && e.classes.some((c) => /^e-(dep|mount|peer|peer-optional)$/.test(c)), 'edge classes')
-  }
+  // R43 (V2.4a, user ruling): the base group-level path emits ZERO edges — the
+  // aggregate emission this section pinned is retired on purpose (see the model
+  // suite V24-05/V24-11 for the new intended state and the retained agg shape,
+  // now living in the g: focus branch).
+  const edges = elements.filter((e) => e.group === 'edges')
+  assert.equal(edges.length, 0, 'default view emits no edges (R43)')
+  assert.equal(meta.aggEdges, 0)
+  assert.equal(meta.edges, 0)
 })
 
 test('AtlasModel: fully expanded view keeps every invariants and the same coordinates', () => {
@@ -350,6 +350,9 @@ test('STYLE↔MODEL: every class AtlasModel emits has an app.js selector (derive
     { filterProfile: 'web' },
     // V22b: the focus subgraph emits the ctx class — its STYLE rule must exist
     { focus: { rootId: A1, depth: null } },
+    // V24a/R43: base aggregates are gone, so the agg classes (e-agg, e-mount …)
+    // now enter the emitted universe through the g: focus aggregates.
+    { focus: { rootId: 'g:bundle' } },
   ]
   const emitted = new Set()
   let nodesSeen = 0
@@ -1440,7 +1443,19 @@ test('V21 fix1 (R37): aggregate edges take the kind-aware rule (agg mount betwee
   const Model = loadModel()
   const logic = loadFocusLogic()
   const graph = aggMountGraph()
-  const cy = makeFakeCy(paintElements(Model, graph, {})) // default: every group collapsed
+  // R43 (V2.4a): the BASE path no longer emits aggregates, so the agg elements
+  // this rule must keep coloring are the g: focus ones task B wires up. They are
+  // layered onto the (unchanged) model node set in the g: focus emission shape
+  // (V24-05 pins that shape in the model) — the applyClasses agg branch itself
+  // is untouched and stays pinned here.
+  const els = paintElements(Model, graph, {})
+  const mkAgg = (s, t, kind, count) => ({
+    group: 'edges', classes: ['e-agg', 'e-' + kind],
+    data: { id: `agg:g:${s}|g:${t}`, source: `g:${s}`, target: `g:${t}`, count, kind },
+  })
+  els.push(mkAgg('gr', 'gb', 'dep', 1), mkAgg('gr', 'gx', 'dep', 1), mkAgg('gx', 'gy', 'dep', 1),
+    mkAgg('gb', 'gx', 'mount', 1), mkAgg('gp', 'gr', 'mount', 1))
+  const cy = makeFakeCy(els)
   logic.apply({
     cy, graph, byId: byIdMap(graph), groupZone: zoneTable(graph),
     focus: { rootId: 'r', depth: null }, selected: 'g:gr',

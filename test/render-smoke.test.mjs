@@ -1922,10 +1922,11 @@ test('V21 R35 controls: depth 0 option ships selected (unlimited), and the wirin
     'syncFocusCtl maps null depth → "0"')
   assert.match(src, /focusNode\(n\.id, null, n\.id\)/, 'the #node= deep link starts at unlimited depth')
   assert.match(src, /state\.focus = null/, 'focus clears (blank tap / non-package / #focus-clear)')
-  // R35 tap wiring: a package tap focuses, anything else clears — one shared decision fn
-  assert.match(src, /function focusForId\(id\) \{/, 'R35 routes focus through selectNode/revealNode')
+  // V2.6 (R46): the shared decision fn gained the nav flag — a COLD tap declines,
+  // explicit navigation (the selectNode(id, true) call sites) still roots.
+  assert.match(src, /function focusForId\(id, nav\) \{/, 'R35 routes focus through selectNode/revealNode')
   assert.match(src, /n\.kind === 'package'/, 'only kind=package nodes can be a focus root')
-  assert.match(src, /return focusTransition\(focusForId\(id\)\)/,
+  assert.match(src, /return focusTransition\(focusForId\(id, nav\)\)/,
     'the selection funnel installs the focus through the V2.5 transition recorder')
   // rescan guard: a focus root that vanished OR stopped being a package is dropped
   assert.match(src, /state\.focus && \!isFocusRoot\(state\.focus\.rootId\)\) state\.focus = null/,
@@ -2433,27 +2434,39 @@ function loadFocusFlow() {
     extractBalanced(src, 'function pushPathStack(stack, id, cap) {') + '\n',
     extractBalanced(src, 'function isGroupRootId(id) {') + '\n',
     extractBalanced(src, 'function isFocusRoot(id) {') + '\n',
-    extractBalanced(src, 'function focusForId(id) {') + '\n',
+    extractBalanced(src, 'function focusForId(id, nav) {') + '\n',
     extractBalanced(src, 'function groupFocusShape(rootId) {') + '\n',
     extractBalanced(src, 'function focusTransition(next) {') + '\n',
     extractBalanced(src, 'function exitFocus() {') + '\n',
-    extractBalanced(src, 'function focusFlowAction(id) {') + '\n',
+    extractBalanced(src, 'function focusFlowAction(id, nav) {') + '\n',
     'return { state: state, CALLS: CALLS,\n'
     + '  reset: function (o) { state.byId = new Map(); state.focus = null; state.selected = null; state.pathStack = [];\n'
     + '    state.viewport = null; CALLS.length = 0; Object.assign(state, o || {}) },\n'
-    + '  depth: function (d) { DEPTH = d }, act: function (sel) { return focusFlowAction(sel) } }',
+    // V2.6 (R46): `nav` rides the second arg exactly like the real call sites:
+    // the tap door passes nothing, the explicit doors pass true.
+    + '  depth: function (d) { DEPTH = d }, act: function (sel, nav) { return focusFlowAction(sel, nav) } }',
   ].join('')
   return new Function(body)()
 }
 
 const PKG = (id) => ({ id, kind: 'package', name: id })
 
-test('V22b focus flow: entry snapshots once, walking pushes the previous root, repeat-tap pushes nothing', () => {
+// V2.6 MIGRATION (R46): this V2.2b test entered path mode with the package act
+// (the old cold-tap door). The door retired, so ENTRY now rides the nav flag —
+// exactly what selectNode(id, true) hands the funnel from the menu command and
+// every row/jump/table call site. The cold branch is pinned FIRST, and the
+// whole walk/snapshot/stack battery below is UNCHANGED.
+test('V2.6 R46 focus flow: the cold package act is inert; NAV enters, walking pushes the previous root, repeat-tap pushes nothing', () => {
   const flow = loadFocusFlow()
   const byId = new Map([['a@1', PKG('a')], ['b@1', PKG('b')], ['c@1', PKG('c')]])
   flow.reset({ byId })
-  let act = flow.act('a@1')
-  assert.deepEqual([act.entered, act.walked, act.exited], [true, false, false], 'package tap from plain view = ENTRY')
+  let act = flow.act('a@1') // the TAP door: no nav flag, cold state
+  assert.deepEqual([act.entered, act.walked, act.exited], [false, false, false], 'cold package tap = NO transition of any kind')
+  assert.equal(flow.state.focus, null, '…no focus…')
+  assert.deepEqual(flow.CALLS, [], '…and not one snapshot/glide side effect')
+  assert.equal(flow.state.selected, 'a@1', 'the tap still selects (details panel rides it)')
+  act = flow.act('a@1', true)
+  assert.deepEqual([act.entered, act.walked, act.exited], [true, false, false], 'nav-driven ENTRY (menu 路径模式 / row / table)')
   assert.deepEqual(flow.state.focus, { rootId: 'a@1', depth: null })
   assert.deepEqual(flow.CALLS, ['snapshot'], 'entry saves the viewport exactly once')
   assert.deepEqual(flow.state.pathStack, [], 'a fresh root starts with an empty stack')
@@ -2474,7 +2487,7 @@ test('V22b focus flow: entry snapshots once, walking pushes the previous root, r
 test('V22b focus flow: exit clears focus+stack and arms the viewport restore; edge taps keep the path', () => {
   const flow = loadFocusFlow()
   flow.reset({ byId: new Map([['a@1', PKG('a')], ['b@1', PKG('b')]]) })
-  flow.act('a@1')
+  flow.act('a@1', true) // V2.6 (R46): path mode is entered by explicit nav now
   flow.act('b@1')
   let act = flow.act(null)
   assert.deepEqual([act.entered, act.walked, act.exited], [false, false, true], 'blank tap = EXIT')
@@ -2485,7 +2498,7 @@ test('V22b focus flow: exit clears focus+stack and arms the viewport restore; ed
     'the snapshot itself SURVIVES exitFocus — restoreViewport() is the only thing allowed to spend it (nulling it here made the animate-back guard bail)')
   // an edge tap keeps the current focus (edges are not roots, R35)
   flow.reset({ byId: new Map([['a@1', PKG('a')]]) })
-  flow.act('a@1')
+  flow.act('a@1', true) // V2.6 (R46): nav entry, then the walk-side battery is unchanged
   act = flow.act('agg:g:x|g:y')
   assert.deepEqual([act.entered, act.walked, act.exited], [false, false, false], 'an edge tap is inert for the path')
   assert.equal(flow.state.focus.rootId, 'a@1', 'focus survives')
@@ -2505,7 +2518,7 @@ test('V22b focus flow: the depth control flows through focusForId with the ctl v
   const flow = loadFocusFlow()
   flow.reset({ byId: new Map([['a@1', PKG('a')]]) })
   flow.depth(2)
-  const act = flow.act('a@1')
+  const act = flow.act('a@1', true) // V2.6 (R46): the nav door still honors the ctl depth
   assert.equal(act.entered, true)
   assert.deepEqual(flow.state.focus, { rootId: 'a@1', depth: 2 }, 'the slider value rides the entry')
 })
@@ -2820,10 +2833,10 @@ function loadExitWiring() {
     extractBalanced(src, 'function pushPathStack(stack, id, cap) {') + '\n',
     extractBalanced(src, 'function isGroupRootId(id) {') + '\n',
     extractBalanced(src, 'function isFocusRoot(id) {') + '\n',
-    extractBalanced(src, 'function focusForId(id) {') + '\n',
+    extractBalanced(src, 'function focusForId(id, nav) {') + '\n',
     extractBalanced(src, 'function groupFocusShape(rootId) {') + '\n',
     extractBalanced(src, 'function focusTransition(next) {') + '\n',
-    extractBalanced(src, 'function focusFlowAction(id) {') + '\n',
+    extractBalanced(src, 'function focusFlowAction(id, nav) {') + '\n',
     extractBalanced(src, 'function exitFocus() {') + '\n',
     extractBalanced(src, 'function exitFocusCommand() {') + '\n',
     extractBalanced(src, 'function afterFocusChange(act, id) {') + '\n',
@@ -2834,7 +2847,7 @@ function loadExitWiring() {
     extractBalanced(src, 'function onCtxTapBackground(evt) {') + '\n',
     extractBalanced(src, 'function onCanvasGesture() {') + '\n',
     extractBalanced(src, 'function onCanvasMouseDown() {') + '\n',
-    extractBalanced(src, 'function selectNode(id) {') + '\n',
+    extractBalanced(src, 'function selectNode(id, nav) {') + '\n',
     extractBalanced(src, 'function snapshotViewport() {') + '\n',
     extractBalanced(src, 'function restoreViewport() {') + '\n',
     extractBalanced(src, 'function pathFitEles(cy) {') + '\n',
@@ -2846,6 +2859,11 @@ function loadExitWiring() {
     'return { state: state, cy: cy, BOX: BOX, LOG: LOG, ANIMS: ANIMS,\n'
     + '  bind: function () { bindCy() },\n'
     + '  tap: function (target) { cy.trigger("tap", target) },\n'
+    // V2.6 (R46): the browser hands selectNode(id, true) from menu-row/details-row/
+    // table-row click handlers; selectNode here is the REAL extracted function, so
+    // this is the honest stand-in for those call sites (the tap handler itself can
+    // no longer enter — pinned by the lightweight assertion in the test below).
+    + '  navSelect: function (id) { selectNode(id, true) },\n'
     + '  esc: function () { onGlobalKey({ key: "Escape", target: { tagName: "BODY" } }) },\n'
     + '  pkg: function () { return GRAPH_NODES[0] },\n'
     + '  liveZoom: function () { return vp.zoom },\n'
@@ -2859,9 +2877,15 @@ test('V22b exit wiring: the registered blank-tap handler repaints the plain view
   const w = loadExitWiring()
   w.bind() // the real cy.on('tap', …) registration, no manual state poking
   const animsOf = () => w.ANIMS.length
-  // --- ENTRY through the same handler the browser fires ---
+  // V2.6 MIGRATION (R46): the cold tap used to BE the entry. The registered tap
+  // handler is pinned LIGHTWEIGHT right here — then ENTRY rides the nav door.
   w.tap(w.pkg())
-  assert.deepEqual(w.state.focus, { rootId: 'a@1', depth: null }, 'a package tap roots the path')
+  assert.equal(w.state.focus, null, 'the registered tap handler roots NOTHING from the cold state')
+  assert.equal(w.state.selected, 'a@1', '…but the tap still selects')
+  assert.equal(animsOf(), 0, '…and moves the camera zero times')
+  // --- ENTRY through the explicit nav door (menu 路径模式 / row / table) ---
+  w.navSelect('a@1')
+  assert.deepEqual(w.state.focus, { rootId: 'a@1', depth: null }, 'explicit nav roots the path')
   assert.deepEqual(w.state.viewport, { zoom: 1.35, pan: { x: -40, y: 90 } },
     'the entry snapshot holds the pre-entry viewport, taken once')
   assert.equal(animsOf(), 1, 'entry glides once')
@@ -2895,7 +2919,7 @@ test('V22b exit wiring: the registered blank-tap handler repaints the plain view
 test('V22b exit wiring: Esc runs the same chain (order + one-spend), and 退出路径 keeps the paint-then-glide order', () => {
   const w = loadExitWiring()
   w.bind()
-  w.tap(w.pkg())
+  w.navSelect('a@1') // V2.6 (R46): entry via the explicit nav door (see the test above)
   w.moveCamera(2.4, 500, 500)
   w.LOG.length = 0
   w.esc()
@@ -3207,7 +3231,7 @@ function loadMembersDom() {
     extractBalanced(src, 'function gidOf(n) {') + '\n',
     extractBalanced(src, 'function isGroupRootId(id) {') + '\n',
     extractBalanced(src, 'function isFocusRoot(id) {') + '\n',
-    extractBalanced(src, 'function focusForId(id) {') + '\n',
+    extractBalanced(src, 'function focusForId(id, nav) {') + '\n',
     extractBalanced(src, 'function expandPath(n) {') + '\n',
     extractBalanced(src, 'function exitFocus() {') + '\n',
     extractBalanced(src, 'function snapshotViewport() {') + '\n',
@@ -3399,7 +3423,7 @@ function loadGestureWiring() {
     '}\n',
     extractBalanced(src, 'function isGroupRootId(id) {') + '\n',
     extractBalanced(src, 'function isFocusRoot(id) {') + '\n',
-    extractBalanced(src, 'function focusForId(id) {') + '\n',
+    extractBalanced(src, 'function focusForId(id, nav) {') + '\n',
     extractBalanced(src, 'function groupFocusShape(rootId) {') + '\n',
     extractBalanced(src, 'function menuIsOpen() {') + '\n',
     extractBalanced(src, 'function closeMenu() {') + '\n',
@@ -3658,14 +3682,14 @@ function loadMenuWiring() {
     extractBalanced(src, 'function pushPathStack(stack, id, cap) {') + '\n',
     extractBalanced(src, 'function isGroupRootId(id) {') + '\n',
     extractBalanced(src, 'function isFocusRoot(id) {') + '\n',
-    extractBalanced(src, 'function focusForId(id) {') + '\n',
+    extractBalanced(src, 'function focusForId(id, nav) {') + '\n',
     extractBalanced(src, 'function groupFocusShape(rootId) {') + '\n',
     extractBalanced(src, 'function focusTransition(next) {') + '\n',
-    extractBalanced(src, 'function focusFlowAction(id) {') + '\n',
+    extractBalanced(src, 'function focusFlowAction(id, nav) {') + '\n',
     extractBalanced(src, 'function exitFocus() {') + '\n',
     extractBalanced(src, 'function exitFocusCommand() {') + '\n',
     extractBalanced(src, 'function afterFocusChange(act, id) {') + '\n',
-    extractBalanced(src, 'function selectNode(id) {') + '\n',
+    extractBalanced(src, 'function selectNode(id, nav) {') + '\n',
     extractBalanced(src, 'function snapshotViewport() {') + '\n',
     extractBalanced(src, 'function restoreViewport() {') + '\n',
     extractBalanced(src, 'function pathFitEles(cy) {') + '\n',
@@ -4385,5 +4409,103 @@ test('V2.5 chrome ships: the ⌂ reset-view button (i18n-title), the clickable #
   }
   assert.ok(I18N.zh.menuCanvas && I18N.en.menuCanvas, 'the blank-canvas header has a locale name too')
   assert.match(readFileSync(join(WEB, '..', 'README.md'), 'utf8'), /右键/, 'README covers the right-click command surface')
+})
+
+// =========================================================================
+// Task V2.6 — R46 nav-surface audit + R47 toolbar segmentation guards.
+// The terminal wiring of every nav door has its own call-site in the audit
+// below; the semantic battery runs for real in test/ctx-menu-wiring.test.mjs
+// (registered handlers over the REAL vendored cytoscape + bubbling fake DOM).
+// =========================================================================
+
+test('V2.6 R46 nav audit: the tap is the ONE nav-free selection door; menu/rows/jumps/table/reveal pass true; group doors never do', () => {
+  const src = readFileSync(join(WEB, 'app.js'), 'utf8')
+  const tapBody = extractBalanced(src, "cy.on('tap', 'node, edge', function (evt) {")
+  assert.match(tapBody, /hidePeek\(\); selectNode\(evt\.target\.id\(\)\)/,
+    'the canvas tap calls selectNode WITHOUT the nav flag — R46: a cold tap stays lightweight')
+  assert.doesNotMatch(tapBody, /,\s*true\)/, '…and no nav argument can sneak into the tap door')
+  assert.match(src, /hidePeek\(\); selectNode\(null\)/, 'the blank tap deselects plainly (no nav)')
+  // the five explicit doors (brief-verified call sites)
+  assert.match(src, /if \(cmd === 'pkg-path'\) \{ selectNode\(String\(target\.id\), true\); return \}/,
+    'menu 路径模式 = explicit nav (:1621 chain)')
+  assert.match(src, /jumpButton\(box, t\('depsLabel'\) \+ ' ' \+ idToLabel\(src\), function \(\) \{ selectNode\(String\(src\), true\) \}\)/,
+    '依赖 jump button = explicit nav')
+  assert.match(src, /jumpButton\(box, idToLabel\(tgt\) \+ ' ' \+ t\('dependentsLabel'\), function \(\) \{ selectNode\(String\(tgt\), true\) \}\)/,
+    '被依赖 jump button = explicit nav')
+  assert.equal((src.match(/selectNode\(r\.id, true\)/g) || []).length, 2,
+    'both path-list row kinds (tier rows + mount-out rows) pass nav')
+  assert.match(src, /tr\.addEventListener\('click', function \(\) \{ selectNode\(n\.id, true\) \}\)/,
+    'the table row passes nav (cold row click roots the path)')
+  assert.match(src, /state\.focus = focusForId\(n\.id, true\)/,
+    'revealNode (search reveal / member rows / non-package deep link) stays focus-following — R35 survives R46')
+  // the group doors stay exactly R44: nav must NOT appear
+  assert.doesNotMatch(src, /selectNode\('cat:' \+ z?id, true\)/, 'zone breadcrumbs never pass nav')
+  assert.doesNotMatch(src, /selectNode\('g:' \+ gid, true\)/, 'the group breadcrumb never passes nav')
+  assert.match(src, /relatedRow\(box, r, function \(\) \{ selectNode\(pkgs \? r\.gid : 'g:' \+ r\.gid\) \}\)/,
+    'related-group rows stay nav-free (cold = select, in-focus = walk, R44 verbatim)')
+  // the cold gate itself: the package branch mirrors the group branch
+  assert.match(src, /if \(!state\.focus && !nav\) return null/,
+    'focusForId package branch: no focus and no nav ⇒ null (the R46 gate)')
+  // README interaction prose moved with the door (left-click semantics + entry list)
+  const readme = readFileSync(join(WEB, '..', 'README.md'), 'utf8')
+  assert.match(readme, /冷态下单击（左键）任何节点 = 纯选中/, 'README: cold left-click is plain selection for BOTH kinds')
+  assert.match(readme, /路径模式/, 'README keeps the path-mode vocabulary')
+})
+
+// ---------- V2.6 R47: the segmented toolbar (display layer only) ----------
+
+/** balanced <div> content of every .tb-seg wrapper, in document order */
+function segBlocks(region) {
+  const out = []
+  const open = /<div class="tb-seg[^"]*">/g
+  let m
+  while ((m = open.exec(region))) {
+    const tags = /<div\b[^>]*>|<\/div>/g
+    tags.lastIndex = open.lastIndex
+    let depth = 1, t
+    while (depth > 0 && (t = tags.exec(region))) depth += t[0] === '</div>' ? -1 : 1
+    assert.ok(depth === 0, 'segment wrappers are balanced')
+    out.push(region.slice(open.lastIndex, t.index))
+  }
+  return out
+}
+
+test('V2.6 R47 toolbar segmentation: four .tb-seg segments, the brief membership per segment, every JS hook still inside the header', () => {
+  const html = readFileSync(join(WEB, 'index.html'), 'utf8')
+  const header = /<header>[\s\S]*?<\/header>/.exec(html)
+  assert.ok(header, 'the header block exists')
+  const segs = segBlocks(header[0])
+  assert.equal(segs.length, 4, 'exactly four .tb-seg segments')
+  // ① ⌂ 复位 + 粒度两段
+  assert.ok(segs[0].includes('id="reset-view"') && segs[0].includes('id="lod-ctl"'), 'segment ①: ⌂ reset + the granularity segment')
+  assert.ok(!segs[0].includes('id="search"'), 'segment ① owns only its two controls')
+  // ② 聚焦控件 + 面包屑（聚焦时出现，无聚焦不占位 — focus-ctl ships hidden,
+  //    and the V22b guard above pins #path-back INSIDE #focus-ctl）
+  assert.ok(segs[1].includes('id="focus-ctl"'), 'segment ②: the focus control (+ its breadcrumb)')
+  assert.match(segs[1], /id="focus-ctl"\s+hidden/, 'segment ② ships collapsed (no placeholder unfocused)')
+  // ③ chips + 全显示/全隐藏 (the row-tail buttons are BUILT inside #zone-chips)
+  assert.ok(segs[2].includes('id="zone-chips"'), 'segment ③: the zone chips (+ built-in show-all/hide-all)')
+  // ④ 搜索 + 语言 + 主题跟随 + 重扫 (theme is prefers-color-scheme — no chrome hook,
+  //    so segment ④ carries the three real controls the header has)
+  assert.ok(segs[3].includes('id="search"') && segs[3].includes('id="lang-btn"') && segs[3].includes('id="refresh"'),
+    'segment ④: search + language + rescan')
+  // document order ① ② ③ ④ through the header
+  const marks = ['reset-view', 'focus-ctl', 'zone-chips', 'search'].map((id) => header[0].indexOf(`id="${id}"`))
+  assert.ok(marks.every((i) => i >= 0), 'every anchored control is in the header')
+  assert.deepEqual(marks, [...marks].sort((a, b) => a - b), 'segments ship left→right: ① reset ② focus ③ chips ④ search')
+  // ZERO hook loss: every id/class the JS binds must ship exactly once in the header
+  for (const idOfIt of ['reset-view', 'lod-ctl', 'focus-ctl', 'path-back', 'focus-depth', 'focus-clear', 'zone-chips',
+    'search', 'lang-btn', 'refresh', 'scope-filter', 'profile-filter', 'edge-kinds', 'show-real-cross', 'meta']) {
+    assert.equal((header[0].match(new RegExp(`id="${idOfIt}"`, 'g')) || []).length, 1, `#${idOfIt} ships exactly once`)
+  }
+  assert.equal((header[0].match(/data-seg="/g) || []).length, 2, 'the two granularity buttons survived the wrap')
+  // the CSS half: segmented flex, 1px separators + breathing gaps, wrapping pane
+  const css = readFileSync(join(WEB, 'style.css'), 'utf8')
+  assert.match(header[0], /class="tb-seg tb-div"/, 'the separator variant ships on the inner segments')
+  assert.match(css, /\.tb-seg \{[^}]*display:\s*inline-flex[^}]*align-items:\s*center[^}]*gap:\s*\d+px/, 'segments are centered inline-flex boxes with internal gaps')
+  assert.match(css, /\.tb-seg\.tb-div \{[^}]*border-left:\s*1px solid/, '1px separator between segments')
+  assert.match(css, /\.tb-seg\.tb-div \{[^}]*padding-left:\s*(1[0-9]|[6-9])px/, '…plus a breathing gap around it')
+  assert.match(css, /header \{[^}]*flex-wrap:\s*wrap/, 'the header wraps → the chips segment moves to the next line whole on narrow panes')
+  assert.match(css, /\.tb-seg \{[^}]*flex-wrap:\s*wrap/, 'and a segment lets its own controls wrap inside it')
 })
 

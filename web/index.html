@@ -10,12 +10,18 @@
   <header>
     <h1 data-i18n="title">dsh-pkg-atlas</h1>
     <span class="grow"></span>
-    <input id="search" type="search" data-i18n-ph="search" autocomplete="off">
-    <span id="zone-chips" class="chips"></span>
-    <span id="lod-ctl" data-i18n-title="lodLabel">
-      <button data-seg="groups" data-i18n="lodGroups">组级</button>
-      <button data-seg="packages" data-i18n="lodPkgs">包级</button>
-    </span>
+    <!-- V2.6 R47 顶栏四分区：纯展示层 wrapper，不改任何 id/class 钩子，JS 零改动。
+         ① ⌂ 复位 + 粒度两段 | ② 聚焦控件（面包屑在其中，聚焦时出现，无聚焦不占位）
+         | ③ 大类 chips（行尾 全部显示/全部隐藏 由应用层建在 #zone-chips 内）
+         | ④ 搜索 + 语言 +（主题随 prefers-color-scheme，无控件）+ 重扫。
+         段间 1px 分隔线 + 呼吸间距见 style.css .tb-seg/.tb-div。 -->
+    <div class="tb-seg">
+      <button id="reset-view" data-i18n-title="menuResetView">⌂</button>
+      <span id="lod-ctl" data-i18n-title="lodLabel">
+        <button data-seg="groups" data-i18n="lodGroups">组级</button>
+        <button data-seg="packages" data-i18n="lodPkgs">包级</button>
+      </span>
+    </div>
     <label class="ctl"><span data-i18n="scopeLabel">类型</span><select id="scope-filter"></select></label>
     <label class="ctl"><span data-i18n="profileLabel">Profile</span><select id="profile-filter"></select></label>
     <span id="edge-kinds" class="chips" data-i18n-title="edgeKindsLabel">
@@ -25,10 +31,17 @@
       <label><input type="checkbox" data-kind="peer-optional" checked>peer-opt</label>
     </span>
     <label class="ctl"><input id="show-real-cross" type="checkbox"><span data-i18n="realCrossLabel">真实跨包线</span></label>
-    <span id="focus-ctl" hidden><button id="path-back" hidden></button><span data-i18n="focusLabel">聚焦深度</span><select id="focus-depth"><option value="0" data-i18n="focusUnlimited" selected>不限</option><option value="1">1</option><option value="2">2</option><option value="3">3</option></select><button id="focus-clear" data-i18n="focusOff">退出路径</button></span>
-    <button id="refresh" data-i18n="refresh"></button>
-    <button id="reset-view" data-i18n-title="menuResetView">⌂</button>
-    <button id="lang-btn" data-i18n="langSwitch">EN</button>
+    <div class="tb-seg tb-div">
+      <span id="focus-ctl" hidden><button id="path-back" hidden></button><span data-i18n="focusLabel">聚焦深度</span><select id="focus-depth"><option value="0" data-i18n="focusUnlimited" selected>不限</option><option value="1">1</option><option value="2">2</option><option value="3">3</option></select><button id="focus-clear" data-i18n="focusOff">退出路径</button></span>
+    </div>
+    <div class="tb-seg tb-div">
+      <span id="zone-chips" class="chips"></span>
+    </div>
+    <div class="tb-seg tb-div">
+      <input id="search" type="search" data-i18n-ph="search" autocomplete="off">
+      <button id="lang-btn" data-i18n="langSwitch">EN</button>
+      <button id="refresh" data-i18n="refresh"></button>
+    </div>
     <span id="meta"></span>
   </header>
   <div id="progress-bar" hidden>

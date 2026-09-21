@@ -341,6 +341,12 @@ async function ready() {
 await ready()
 const CORE_DOWN = { n: 0 }
 S().cy.on('mousedown', () => { CORE_DOWN.n++ }) // observation only
+// V2.6 (R46): the camera audit — EVERY cy.animate flows through here. Wrapping
+// the real animate (never replacing it) is observation-only, same pattern as
+// CORE_DOWN above; the matrix tests count what each gesture does to the camera.
+const ANIMS = []
+const CY_ANIMATE = S().cy.animate.bind(S().cy)
+S().cy.animate = function (opts) { ANIMS.push(opts); return CY_ANIMATE(opts) }
 
 // ---------------- gesture helpers (all DOM-level) ----------------
 const canvas = graphEl._desc().find((c) => c.getContext) || graphEl
@@ -423,11 +429,14 @@ test('C1(b): the click reaches the row handler and its terminal effect runs, the
   assert.ok(cg && !cg.has('bundle'), '展开 RAN: collapsedGroups opened the bundle (' + JSON.stringify(cg && [...cg]) + ')')
   assert.equal(S().cy.getElementById('r1@1').length, 1, 'REPAINT happened through the real paint(): member r1@1 now renders')
   assert.equal(menuEl().hidden, true, 'the menu closed within the command dispatch, after the effect')
-  // the next real tap behaves normally — the press armed no swallow
+  // V2.6 MIGRATION (R46): this asserted the RETIRED cold-tap-enters-focus door.
+  // The pin here is the SWALLOW lifecycle — the next tap must behave NORMALLY,
+  // and "normal" now means the lightweight R46 tap: selection, zero focus.
   const r = rp('r1@1')
   leftAt(r.x, r.y)
   await sleep(350)
-  assert.ok(S().focus && S().focus.rootId === 'r1@1', 'no stale swallow: the next tap entered path mode (' + JSON.stringify(S().focus) + ')')
+  assert.equal(S().selected, 'r1@1', 'no stale swallow: the next tap selected normally')
+  assert.equal(S().focus, null, '…and stayed lightweight (R46: the cold tap roots nothing)')
   leftAt(6, 6) // back to plain view for the next test
   await sleep(350)
 })
@@ -469,6 +478,124 @@ test('C1(c): menu-EXTERNAL lifecycle unchanged — a bubbling container press st
   leftAt(f.x, f.y) // and the NEXT tap is normal again
   await sleep(60)
   assert.equal(S().selected, 'g:fs', 'no stale swallow after the container-press dismissal')
+})
+
+// =========================================================================
+// V2.6 R46 — the SEMANTIC MATRIX, wired. Cold left-click is lightweight for
+// BOTH node kinds (the v2.1 auto-highlight door is retired for real); path
+// mode enters through the explicit doors only. Gestures run through the real
+// registered handlers on the real vendored cytoscape; camera ops are counted
+// on the wrapped cy.animate (observation only).
+// =========================================================================
+
+const jumpRows = () => {
+  const det = doc.getElementById('details')
+  return det._desc().filter((el) => el.className === 'jump')
+}
+const waitFocus = async (pred, ms = 200) => {
+  for (let i = 0; i < ms / 25; i++) {
+    if (pred()) return true
+    await sleep(25)
+  }
+  return false
+}
+
+test('R46 matrix 1: COLD package tap = select + details, ZERO focus, ZERO camera ops', async () => {
+  assert.equal(S().focus, null, 'cold start (previous tests left the plain view)')
+  const anims0 = ANIMS.length
+  const r = rp('r1@1')
+  assert.ok(r, 'r1@1 renders (its group was expanded by the C1(b) toggle command)')
+  leftAt(r.x, r.y)
+  await sleep(120)
+  assert.equal(S().selected, 'r1@1', 'the tap selected the package')
+  assert.equal(S().focus, null, 'R46: the cold tap roots NOTHING')
+  assert.deepEqual(S().pathStack, [], 'no walk stack was started')
+  assert.equal(ANIMS.length - anims0, 0, 'the tap moved the camera ZERO times — no fit, no glide, no flash')
+  const det = doc.getElementById('details')
+  assert.ok(!det.hidden && det.children.length > 0, 'the details panel opened through the real renderDetails chain')
+})
+
+test('R46 matrix 2: menu 路径模式 enters from the cold state (+fit glide); INSIDE the focus a package tap re-roots AND pushes the stack', async () => {
+  // The depth slider is a genuine user control — the C1(b2) group focus wrote
+  // '1' through syncFocusCtl (V2.2b mapping). Flip it back to 不限 exactly the
+  // way the user would: control state, not a stubbed function.
+  doc.getElementById('focus-depth').value = '0'
+  const anims0 = ANIMS.length
+  const p = rp('r1@1')
+  rightAt(p.x, p.y)
+  await sleep(60)
+  assert.deepEqual(rows().map((b) => b.text), ['路径模式'], 'package menu = the one command')
+  pressRow(rows()[0], { clientX: p.x, clientY: p.y })
+  await sleep(350)
+  assert.deepEqual(S().focus, { rootId: 'r1@1', depth: null }, 'the menu command ENTERS path mode from the cold state')
+  assert.equal(ANIMS.length - anims0, 1, 'entry glides exactly once')
+  assert.equal(ANIMS[ANIMS.length - 1].fit.padding, 40, '…as the animateFitPath fit (padding 40), not a snapshot glide')
+  assert.deepEqual(S().pathStack, [], 'entry starts a fresh stack')
+  // INSIDE the live focus, a package tap still WALKS (the R46 rule only closed the COLD door)
+  const walkAnims = ANIMS.length
+  const d = rp('d1@1')
+  assert.ok(d, 'd1@1 renders inside the r1@1 focus (its dependent — collapse dims cannot hide a path member)')
+  leftAt(d.x, d.y)
+  await sleep(350)
+  assert.equal(S().focus && S().focus.rootId, 'd1@1', 'in-focus tap RE-ROOTS on the tapped package')
+  assert.deepEqual(S().pathStack, ['r1@1'], '…and PUSHES the previous root onto the stack')
+  assert.equal(ANIMS.length - walkAnims, 1, 'the walk glides once (entry snapshot NOT re-taken)')
+  assert.deepEqual(S().viewport, { zoom: S().viewport.zoom, pan: S().viewport.pan }, 'walk keeps the entry snapshot armed for the exit')
+  // leave the way every path ends: the blank tap + its one-shot restore glide
+  const exitAnims = ANIMS.length
+  leftAt(6, 6)
+  await sleep(350)
+  assert.equal(S().focus, null, 'blank tap exits the focus')
+  assert.equal(ANIMS.length - exitAnims, 1, 'the exit spends the armed snapshot: exactly one restore glide')
+  assert.equal(ANIMS[ANIMS.length - 1].fit, undefined, '…a zoom/pan restore, not a fit')
+})
+
+test('R46 matrix 3: a details path-row click from the cold state ENTERS path mode (explicit navigation)', async () => {
+  doc.getElementById('focus-depth').value = '0' // same control-state note as matrix 2
+  const anims0 = ANIMS.length
+  const r = rp('r1@1')
+  leftAt(r.x, r.y)
+  await sleep(120)
+  assert.equal(S().focus, null, 'the tap that opened the details stayed lightweight')
+  const row = jumpRows().find((b) => b.children[0] && b.children[0].text.startsWith('d1'))
+  assert.ok(row, 'the real renderDetails painted the path lists — a d1@1 row exists in #details')
+  fire(row, 'click')
+  await sleep(350)
+  assert.deepEqual(S().focus, { rootId: 'd1@1', depth: null }, 'the row click ROOTED path mode from the cold state (nav=true)')
+  assert.deepEqual(S().pathStack, [], 'an entry, not a walk')
+  assert.equal(ANIMS.length - anims0, 1, 'exactly the entry glide — nothing extra')
+  leftAt(6, 6) // back to the plain view
+  await sleep(350)
+  assert.equal(S().focus, null, 'exit intact after the row-driven entry')
+})
+
+test('R46 matrix 4: the #node= deep link still focuses from the cold state (retry re-runs the real boot path)', async () => {
+  W.location.hash = '#node=x@1'
+  const retry = doc.getElementById('retry')
+  fire(retry, 'click') // the real loadGraph(false, false) → applyGraph boot branch
+  const ok = await waitFocus(() => S().focus && S().focus.rootId === 'x@1')
+  await sleep(350)
+  W.location.hash = ''
+  assert.ok(ok, 'the deep link focused through the untouched focusNode path')
+  assert.deepEqual(S().focus, { rootId: 'x@1', depth: null }, '…at UNLIMITED depth, the R35 default')
+  assert.equal(S().selected, 'x@1', 'and it selected the anchored node')
+})
+
+test('R46 matrix 5: the cold GROUP tap stays lightweight (R44 doctrine, untouched by R46)', async () => {
+  const exitAnims = ANIMS.length
+  leftAt(6, 6) // the deep-link focus is live: end it the standard way
+  await waitFocus(() => S().focus === null, 600)
+  await sleep(350) // let the restore glide settle before counting
+  assert.equal(S().focus, null, 'back to the cold state (boot path re-defaulted: all groups collapsed)')
+  void exitAnims
+  const anims0 = ANIMS.length
+  const g = rp('g:bundle')
+  assert.ok(g, 'the group card renders in the plain view')
+  leftAt(g.x, g.y)
+  await sleep(120)
+  assert.equal(S().selected, 'g:bundle', 'the card is the selection (details panel rides it)')
+  assert.equal(S().focus, null, 'a cold group tap roots NOTHING (R44, re-pinned under R46)')
+  assert.equal(ANIMS.length - anims0, 0, 'zero camera ops')
 })
 
 test('C1 hygiene: no unhandled rejections, boot warnings clean', () => {

@@ -6,6 +6,14 @@ header h1 { font-size: 15px; margin: 0; }
 header .grow { flex: 1; }
 header label { white-space: nowrap; }
 header label.ctl { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; }
+/* V2.6 R47: 顶栏四分区（纯展示层）——① ⌂+粒度 ② 聚焦控件 ③ chips ④ 搜索+语言+重扫。
+   段 = inline-flex 容器；.tb-div 给段间 1px 分隔线 + 呼吸间距；header 的 flex-wrap
+   让窄屏下 chips 段整体换行（段内控件再按各自 wrap 折行）。JS 钩子零改动。 */
+.tb-seg { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.tb-seg.tb-div { border-left: 1px solid #8884; padding-left: 14px; }
+/* 无聚焦 ⇒ #focus-ctl 隐藏 ⇒ ② 段是空的：分隔线跟着内容一起消失，
+   否则 1px 线会孤悬。:has 是 2023+ 基线，不支持时最坏多一根细线，无害降级。 */
+.tb-seg:has(> #focus-ctl[hidden]) { border-left: 0; padding-left: 0; }
 input[type=search] { width: 220px; padding: 4px 8px; }
 button { padding: 3px 10px; }
 select { font-size: 11px; }

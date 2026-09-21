@@ -1203,6 +1203,8 @@
     // moved on — and the click's repaint would destroy the peeked element).
     // V2.5 R44: while the context menu is open (or its swallow is armed), the
     // tap only DISMISSES — no peek-off, no selection, no focus change.
+    // V2.6 R46: the tap passes NO nav flag — a cold tap (package or group) is
+    // pure select+details; path mode is entered by menu/rows/nav call sites.
     cy.on('tap', 'node, edge', function (evt) {
       if (swallowMenuTap()) return
       hidePeek(); selectNode(evt.target.id())
@@ -1238,7 +1240,13 @@
   // Selecting anything that is neither (broken/profile node, zone shell, or a
   // blank tap) clears the focus; tapping an EDGE leaves it alone (an edge is not
   // a root, and selecting one must not drop the path being read).
-  function focusForId(id) {
+  // V2.6 (R46): the second arg is the EXPLICIT-NAVIGATION flag. selectNode(id, true)
+  // is what the menu 路径模式 command, the details jump buttons, the path-list /
+  // mount rows, the table row and revealNode pass; the canvas tap handler passes
+  // nothing, so a COLD selection (package OR group) is fully lightweight —
+  // select + details, zero focus, zero camera. Inside a live focus the flag is
+  // irrelevant: the tap still walks (entry/walk/exit unchanged, V2.5 recorder).
+  function focusForId(id, nav) {
     var s = String(id == null ? '' : id)
     if (!s) return null
     if (isGroupRootId(s)) {
@@ -1255,7 +1263,12 @@
       if (s.indexOf('agg:') === 0 || s.indexOf('e:') === 0) return state.focus
       return null
     }
-    return isFocusRoot(s) ? { rootId: s, depth: depthOfCtl() } : null
+    // V2.6 (R46): the PACKAGE door mirrors the group branch above — a cold tap
+    // selects and does nothing else. Entry now rides the right-click command and
+    // every explicit-nav call site; INSIDE a focus the walk shape is unchanged.
+    if (!isFocusRoot(s)) return null
+    if (!state.focus && !nav) return null
+    return { rootId: s, depth: depthOfCtl() }
   }
   // V2.5 (R44): the GROUP focus shape, ONE builder for every entry door — the
   // menu command, focusNode's g: branch (deep link / breadcrumb), toggleGroup's
@@ -1301,9 +1314,9 @@
   // V22b path mode — the ENTRY/WALK/EXIT decision for one selection. V2.5: the
   // transition itself moved into focusTransition; this stays the tap-side
   // funnel (selection + focus in one step) so the semantics never fork.
-  function focusFlowAction(id) {
+  function focusFlowAction(id, nav) {
     state.selected = id
-    return focusTransition(focusForId(id))
+    return focusTransition(focusForId(id, nav))
   }
   // Exit half, shared by blank-tap, the Esc key and the 退出路径 button: focus
   // gone, stack gone, and IF an entry snapshot exists it is left in place, armed
@@ -1335,8 +1348,11 @@
     paint()
     restoreViewport()
   }
-  function selectNode(id) {
-    afterFocusChange(focusFlowAction(id), id)
+  // V2.6 (R46): `nav` marks the EXPLICIT doors (menu 路径模式, jump buttons, path/
+  // mount rows, table row) — they may enter path mode from the cold state. The
+  // canvas tap handler calls this WITHOUT the flag; taps are lightweight.
+  function selectNode(id, nav) {
+    afterFocusChange(focusFlowAction(id, nav), id)
   }
   // V2.5 (R45): the shared tail of every focus transition (tap chain + menu
   // focus command): chrome, ONE viewport-kept repaint, and only then the
@@ -1364,7 +1380,10 @@
     var was = !!state.focus
     expandPath(n)
     state.selected = n.id
-    state.focus = focusForId(n.id) // search reveal selects → R35 focus follows
+    // V2.6 (R46): a reveal IS explicit navigation (search result, member row,
+    // deep-link fallback) — nav=true keeps the R35 focus-follows contract alive
+    // while the COLD TAP door stays closed.
+    state.focus = focusForId(n.id, true) // search reveal selects → R35 focus follows
     // V22b: a REVEAL re-roots authoritatively (search/deep-link), it is not a
     // walk — the back stack restarts; the viewport snapshot is only taken when
     // this reveal is itself the entry into path mode.
@@ -1618,7 +1637,9 @@
       paint()
       return
     }
-    if (cmd === 'pkg-path') { selectNode(String(target.id)); return }
+    // V2.6 (R46): the menu IS the package entry door — explicit nav, so a cold
+    // 路径模式 command still enters (the tap that once did this does not).
+    if (cmd === 'pkg-path') { selectNode(String(target.id), true); return }
     if (cmd === 'reset-view') { resetView(); return }
     if (cmd === 'exit-focus') { exitFocusCommand(); return }
   }
@@ -2080,8 +2101,8 @@
     var count = el.data('count')
     head(box, String(kind) + (count > 0 ? ' ×' + count : ''))
     var src = el.data('source'), tgt = el.data('target')
-    jumpButton(box, t('depsLabel') + ' ' + idToLabel(src), function () { selectNode(String(src)) })
-    jumpButton(box, idToLabel(tgt) + ' ' + t('dependentsLabel'), function () { selectNode(String(tgt)) })
+    jumpButton(box, t('depsLabel') + ' ' + idToLabel(src), function () { selectNode(String(src), true) })
+    jumpButton(box, idToLabel(tgt) + ' ' + t('dependentsLabel'), function () { selectNode(String(tgt), true) })
   }
 
   function detailsNode(box, n, tok) {
@@ -2171,8 +2192,9 @@
   }
 
   // ---------- V21 R35 path-list blocks ----------
-  // One row = `name@version · d{layer} · kind badges · ⚠`, click = selectNode(row.id)
-  // which re-roots the focus on that row. Row text (attacker-influenced third-party
+  // One row = `name@version · d{layer} · kind badges · ⚠`, click = selectNode(row.id, true)
+  // — explicit nav (V2.6 R46): the row ENTERS path mode from the cold state and
+  // re-roots/walks inside a live one. Row text (attacker-influenced third-party
   // names) goes through escText only; the classes reuse .jump/.badge/.unsat.
   function pathRow(box, row, onClick) {
     var b = document.createElement('button'); b.className = 'jump'
@@ -2221,7 +2243,7 @@
     box.appendChild(head)
     box.appendChild(holder)
     tier.rows.slice(0, PATH_ROW_CAP).forEach(function (r) {
-      pathRow(holder, r, function () { selectNode(r.id) })
+      pathRow(holder, r, function () { selectNode(r.id, true) })
     })
     if (tier.rows.length > PATH_ROW_CAP) kvRow(holder, '', t('moreLabel').replace('{n}', tier.rows.length - PATH_ROW_CAP))
   }
@@ -2251,7 +2273,7 @@
     rows.sort(function (a, b) { return a.name < b.name ? -1 : a.name > b.name ? 1 : a.id < b.id ? -1 : 1 })
     secTitle(box, t('mountsLabel') + ' · ' + rows.length)
     rows.slice(0, PATH_ROW_CAP).forEach(function (r) {
-      pathRow(box, r, function () { selectNode(r.id) })
+      pathRow(box, r, function () { selectNode(r.id, true) })
     })
     if (rows.length > PATH_ROW_CAP) kvRow(box, '', t('moreLabel').replace('{n}', rows.length - PATH_ROW_CAP))
   }
@@ -2400,7 +2422,7 @@
     }).forEach(function (n) {
       var tr = document.createElement('tr')
       ;[n.group, n.name, n.version, n.scope, (n.mountedBy || []).join(',')].forEach(function (v) { var td = document.createElement('td'); escText(td, v); tr.appendChild(td) })
-      tr.addEventListener('click', function () { selectNode(n.id) })
+      tr.addEventListener('click', function () { selectNode(n.id, true) })
       tbody.appendChild(tr)
     })
     table.appendChild(tbody); box.appendChild(table)

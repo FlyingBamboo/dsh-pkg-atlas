@@ -2762,6 +2762,13 @@ function loadExitWiring() {
     extractBalanced(src, 'function menuIsOpen() {') + '\n',
     extractBalanced(src, 'function closeMenu() {') + '\n',
     extractBalanced(src, 'function swallowMenuTap() {') + '\n',
+    // V2.7-fix d2: the dbl-tap gate rides the tap stream — REAL functions and
+    // REAL constants extracted, same doctrine (only doors are stubs).
+    /var DBL_TAP_WINDOW_MS = [^\n]+/.exec(src)[0] + '\n',
+    /var VOID_TAP = '[^']*'/.exec(src)[0] + '\n',
+    'var tapLast = null\nvar tapPair = null\n',
+    extractBalanced(src, 'function noteTap(id, swallowed) {') + '\n',
+    extractBalanced(src, 'function dblTapIsDeliberate(id) {') + '\n',
     extractBalanced(src, 'function onCtxTap(evt) {') + '\n',
     extractBalanced(src, 'function onCtxTapBackground(evt) {') + '\n',
     extractBalanced(src, 'function onCanvasGesture() {') + '\n',
@@ -3330,6 +3337,12 @@ function loadGestureWiring() {
     extractBalanced(src, 'function menuIsOpen() {') + '\n',
     extractBalanced(src, 'function closeMenu() {') + '\n',
     extractBalanced(src, 'function swallowMenuTap() {') + '\n',
+    // V2.7-fix d2: the gate rides the tap stream — REAL functions/constants (see loadExitWiring).
+    /var DBL_TAP_WINDOW_MS = [^\n]+/.exec(src)[0] + '\n',
+    /var VOID_TAP = '[^']*'/.exec(src)[0] + '\n',
+    'var tapLast = null\nvar tapPair = null\n',
+    extractBalanced(src, 'function noteTap(id, swallowed) {') + '\n',
+    extractBalanced(src, 'function dblTapIsDeliberate(id) {') + '\n',
     extractBalanced(src, 'function onCtxTap(evt) {') + '\n',
     extractBalanced(src, 'function onCtxTapBackground(evt) {') + '\n',
     extractBalanced(src, 'function onCanvasGesture() {') + '\n',
@@ -3599,6 +3612,12 @@ function loadMenuWiring() {
     extractBalanced(src, 'function menuIsOpen() {') + '\n',
     extractBalanced(src, 'function closeMenu() {') + '\n',
     extractBalanced(src, 'function swallowMenuTap() {') + '\n',
+    // V2.7-fix d2: the gate rides the tap stream — REAL functions/constants (see loadExitWiring).
+    /var DBL_TAP_WINDOW_MS = [^\n]+/.exec(src)[0] + '\n',
+    /var VOID_TAP = '[^']*'/.exec(src)[0] + '\n',
+    'var tapLast = null\nvar tapPair = null\n',
+    extractBalanced(src, 'function noteTap(id, swallowed) {') + '\n',
+    extractBalanced(src, 'function dblTapIsDeliberate(id) {') + '\n',
     extractBalanced(src, 'function menuHeader(target) {') + '\n',
     extractBalanced(src, 'function positionMenu(m, px, py) {') + '\n',
     extractBalanced(src, 'function openMenuAt(target, evt) {') + '\n',
@@ -4835,7 +4854,7 @@ test('V2.7 R51 source guards: level classes on the details container, chip in th
   assert.doesNotMatch(zd, /selectNode\([^\n]*true\)/, 'the group-header door carries NO nav flag (cold select, in-focus walk)')
   assert.match(zd, /var rows = document\.createElement\('div'\); rows\.className = 'gmem'/, 'member rows sit in an indented .gmem wrapper')
   assert.match(zd, /res\.rows\.slice\(0, ZONE_GROUP_CAP\)/, 'members capped per section')
-  assert.match(zd, /kvRow\(box, '', t\('groupMoreLabel'\)\.replace\('\{n\}', res\.total - ZONE_GROUP_CAP\)\)/, '还有 N tail counts exactly what the cap hid')
+  assert.match(zd, /kvRow\(rows, '', t\('groupMoreLabel'\)\.replace\('\{n\}', res\.total - ZONE_GROUP_CAP\)\)[\s\S]{0,80}?box\.appendChild\(rows\)/, "还有 N tail counts exactly what the cap hid — and rides INSIDE the .gmem wrapper (V2.7-fix d1: kvRow takes rows, before the wrapper is hung)")
   assert.match(zd, /if \(!res\.total\) return/, 'zero-member groups stay invisible')
 })
 
@@ -4947,9 +4966,12 @@ test('V2.7 R51 zone details list BY GROUP through the real builders: chip, alpha
   assert.deepEqual(heads.map((h) => h.text), ['alpha ×2', 'beta ×13', 'zeta ×1'], 'sections are alphabetical with TRUE totals…')
   assert.equal(heads.some((h) => h.text.startsWith('empty')), false, '…and the zero-member group is invisible (the flat list showed nothing for it either)')
   const gmems = box.children.filter((c) => c.className === 'gmem')
-  assert.deepEqual(gmems.map((g) => g.children.length), [2, dom.CAP, 1], 'each section lists AT MOST CAP indented rows')
-  const more = box.children.filter((c) => c.className === 'kv' && c.children[1].text === 'MORE:3')
-  assert.equal(more.length, 1, 'the cut beta section tails with 还有 3 (13-10, exactly what the cap hid)')
+  assert.deepEqual(gmems.map((g) => g.children.length), [2, dom.CAP + 1, 1], 'each section lists AT MOST CAP member rows inside its wrapper…')
+  assert.ok(gmems[1].children.slice(0, dom.CAP).every((c) => c.className === 'jump'), '…the first CAP children of the capped section are member rows…')
+  const more = gmems.reduce((acc, g) => acc.concat(g.children.filter((c) => c.className === 'kv' && c.children[1].text === 'MORE:3')), [])
+  assert.equal(more.length, 1, 'the cut beta section tails with 还有 3 (13-10, exactly what the cap hid)…')
+  assert.equal(gmems[1].children[dom.CAP] === more[0], true, '…INSIDE its .gmem wrapper as the last child (V2.7-fix d1 — the indent wraps the tail too)…')
+  assert.equal(box.children.filter((c) => c.className === 'kv' && c.children[1].text === 'MORE:3').length, 0, '…and NOT loose under the panel box (BASE leak pin)')
   // the header door: the REAL click → selectNode('g:'+gid) with NO nav flag
   heads[1].handlers.click()
   assert.deepEqual(dom.LOG, ['select:g:beta:bare'], 'the group header opens the group WITHOUT nav (cold = select, in-focus = walk)')

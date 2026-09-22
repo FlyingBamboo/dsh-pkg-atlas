@@ -288,12 +288,20 @@ const GRAPH = {
   categories: [{ id: 'kernel', zh: '内核', en: 'Kernel' }, { id: 'tools', zh: '工具', en: 'Tools' }],
   profiles: [],
   groups: [
-    { id: 'bundle', kind: 'official', category: 'kernel', packageCount: 2 },
+    { id: 'bundle', kind: 'official', category: 'kernel', packageCount: 13 },
     { id: 'fs', kind: 'official', category: 'tools', packageCount: 1 },
     { id: 'db', kind: 'official', category: 'tools', packageCount: 1 },
   ],
   nodes: [n('r1@1', 'r1', 'bundle', 'kernel'), n('r2@1', 'r2', 'bundle', 'kernel'),
-    n('x@1', 'x', 'fs', 'tools'), n('d1@1', 'd1', 'db', 'tools')],
+    n('x@1', 'x', 'fs', 'tools'), n('d1@1', 'd1', 'db', 'tools'),
+    // v27-fix: bundle (kernel zone) grows to 13 members so the zone details'
+    // GROUP section exceeds ZONE_GROUP_CAP=10 and MUST print its 还有 N tail —
+    // the cap-row structure test needs a real capped section. The additions
+    // carry NO edges (path lists, focus sets, every existing assertion keep
+    // their fixtures), and the group stays collapsed by default, so the
+    // render sets the untouched matrices assert on are untouched.
+    ...['b3', 'b4', 'b5', 'b6', 'b7', 'b8', 'b9', 'b10', 'b11', 'b12', 'b13']
+      .map((nm) => n(nm + '@1', nm, 'bundle', 'kernel'))],
   edges: [
     { from: 'r1@1', to: 'x@1', kind: 'dep' },
     { from: 'd1@1', to: 'r1@1', kind: 'dep' },
@@ -712,6 +720,108 @@ test('R51 leveled details wiring: package panel levels with its 包 chip, the zo
   assert.ok(String(det.className).split(' ').includes('lvl-group'), 'the group container carries lvl-group')
   const gh2 = det.children.find((c) => c.tagName === 'H2')
   assert.ok(gh2.children[0] && gh2.children[0].className === 'lvl' && gh2.children[0].text === '组', 'the group header chip names its level')
+})
+
+// =========================================================================
+// V2.7 FIX ROUND — two micro fixes, pinned through the real handlers:
+// (1) the zone section's 还有 N cap row lives INSIDE its .gmem wrapper (the
+//     R51 indent must wrap the tail too — structure assertion on real DOM);
+// (2) the dependency-graph dbltap door is GATED at the app level. Frozen-dist
+//     premises, probe-proven on this exact harness (report §v27-fix): the
+//     250ms debounce is time-only and the dbltap target is the hit-test at the
+//     SECOND press — `tap:a | tap:b | dbltap:b` fires on cross-target pairs;
+//     only LEFT mouseups feed the dbl clock (the which===3 branch never sets
+//     it), so the reachable menu-dismiss shape is tap → right-click (menu) →
+//     dismissing tap, and the trailing dbltap lands ON the package.
+// =========================================================================
+
+test('v27-fix 1: the 还有 N cap row nests INSIDE its section .gmem wrapper', async () => {
+  await sleep(300) // clear the dbl window of any previous gesture
+  assert.equal(S().focus, null, 'cold start')
+  // open bundle through the REAL menu command (kernel holds only bundle)
+  const g = rp('g:bundle')
+  assert.ok(g, 'the bundle card renders in the plain view')
+  rightAt(g.x, g.y)
+  await sleep(60)
+  const expand = rows().find((b) => b.text === '展开')
+  assert.ok(expand, 'the cold collapsed card offers 展开')
+  pressRow(expand, { clientX: g.x, clientY: g.y })
+  await sleep(150)
+  // reach the kernel zone panel through the REAL crumb route: pkg details → 内核
+  const r = rp('r1@1')
+  assert.ok(r, 'r1@1 renders after the expand')
+  leftAt(r.x, r.y)
+  await sleep(120)
+  const det = doc.getElementById('details')
+  const crumb = det._desc().find((el) => el.className === 'crumb' && el.text === '内核')
+  assert.ok(crumb, 'the 内核 crumb rides r1@1 details')
+  fire(crumb, 'click')
+  await sleep(120)
+  assert.equal(S().selected, 'cat:kernel', 'the zone details are open')
+  const heads = det._desc().filter((el) => String(el.className).split(' ').includes('ghead'))
+  assert.deepEqual(heads.map((b) => b.text), ['bundle \u00d713'], 'fixture: bundle now carries 13 members (11 added over the cap)')
+  // Scalars only, deliberately: an assert on an array of FEl DOM nodes sends
+  // node:assert's myersDiff into recursive inspection of the whole element
+  // graph (circular parentNode chains) — a 3-minute GC death spiral instead of
+  // a clean red (found the hard way during this round).
+  const mems = det._desc().filter((el) => el.className === 'gmem')
+  assert.equal(mems.length, 1, 'kernel is exactly one section')
+  const caps = det._desc().filter((el) => el.className === 'kv' && el.children[1] && /还有/.test(el.children[1].text))
+  assert.equal(caps.length, 1, 'the section is capped exactly once')
+  assert.equal(caps[0].children[1].text, '还有 3', 'the tail names the hidden count (13-10)')
+  assert.equal(String(caps[0].parentNode.className), 'gmem', 'the cap row lives INSIDE the .gmem wrapper — the indent wraps the tail too (BASE leak: parent is the panel box, class ' + String(caps[0].parentNode.className) + ')')
+  assert.equal(caps[0].parentNode === mems[0], true, 'and it is THE section wrapper, not a sibling section')
+  assert.equal(mems[0].children.length, 11, 'wrapper = the 10 member rows + the cap tail as its last child')
+  assert.equal(mems[0].children[10] === caps[0], true, 'the cap row is the wrapper last child')
+  assert.ok(mems[0].children.slice(0, 10).every((c) => c.className === 'jump'), 'the first ten children are member rows')
+})
+
+test('v27-fix 2 case A: two quick taps on DIFFERENT packages stay lightweight — the cross-target dbltap must not enter', async () => {
+  await sleep(300) // settle out of the previous gesture's dbl window
+  assert.equal(S().focus, null, 'cold start')
+  const a = rp('d1@1'), b0 = rp('x@1')
+  assert.ok(a && b0, 'd1@1 and x@1 both render (db and fs are expanded)')
+  leftAt(a.x, a.y)
+  const b = rp('x@1') || b0
+  leftAt(b.x, b.y) // same ms: the frozen dist now synthesizes a dbltap ON x@1 (probe S[cross-target])
+  await sleep(350)
+  assert.equal(S().focus, null, 'A: the cross-target pair must NOT open the dependency graph (BASE lands at focus=' + JSON.stringify(S().focus) + ')')
+  assert.equal(S().selected, 'x@1', 'the second tap just selected — plain lightweight R46 semantics')
+  assert.deepEqual(S().pathStack, [], 'no walk stack was started')
+})
+
+test('v27-fix 2 case B: a menu-dismissing press pair on the SAME package never enters (real tap, right-click opens the menu, swallowing tap)', async () => {
+  await sleep(300)
+  if (S().focus) { leftAt(6, 6); await sleep(350) } // self-normalize: the cold precondition is MINE, not the predecessor's
+  assert.equal(S().focus, null, 'cold start')
+  const x1 = rp('x@1')
+  leftAt(x1.x, x1.y) // tap 1: a real lightweight tap — it arms the dist dbl clock
+  assert.equal(S().selected, 'x@1', 'tap 1 selected normally (nothing swallowed yet)')
+  const x2 = rp('x@1') || x1
+  rightAt(x2.x, x2.y) // the menu opens ON x@1 (cxttap is a right press — the dbl clock is untouched)
+  assert.equal(menuEl().hidden, false, 'the menu is open before the dismissing press')
+  const x3 = rp('x@1') || x2
+  leftAt(x3.x, x3.y) // tap 2: the mousedown closes + arms the swallow; the tap is EATEN —
+  await sleep(350)   // …yet the dist still emits a dbltap here (probe + IDX 294099: up3-up1 < 250ms)
+  assert.equal(menuEl().hidden, true, 'the press dismissed the menu')
+  assert.equal(S().focus, null, 'B: a pair containing a swallowed tap NEVER enters (BASE lands at focus=' + JSON.stringify(S().focus) + ')')
+  assert.equal(S().selected, 'x@1', 'the swallow is intact: the dismissing tap stole no selection')
+})
+
+test('v27-fix 2 case C: a true same-target double-click still ENTERS with zero camera (the gate keeps the door)', async () => {
+  await sleep(300)
+  if (S().focus) { leftAt(6, 6); await sleep(350) } // self-normalize (see case B)
+  doc.getElementById('focus-depth').value = '0' // unlimited — the user-control default
+  assert.equal(S().focus, null, 'cold start')
+  const anims0 = ANIMS.length
+  dblAt('x@1')
+  await sleep(350)
+  assert.deepEqual(S().focus, { rootId: 'x@1', depth: null }, 'C: the deliberate same-target pair ENTERS — the gate is not a wall (the R49 door survives)')
+  assert.deepEqual(S().pathStack, [], 'an entry, not a walk')
+  assert.equal(ANIMS.length - anims0, 0, 'and it is still zero camera ops (R50 untouched)')
+  leftAt(6, 6) // back to the plain view for the hygiene test
+  await sleep(350)
+  assert.equal(S().focus, null, 'the exit is intact — the door rides the same funnel as always')
 })
 
 test('C1 hygiene: no unhandled rejections, boot warnings clean', () => {

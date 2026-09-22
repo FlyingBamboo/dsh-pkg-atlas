@@ -182,6 +182,31 @@
   // V2.5 R44: armed while a menu-dismissing mousedown waits for the tap that
   // completes the press (that tap is eaten — menu semantics, not selection).
   var menuSwallow = false
+  // V2.7-fix d2: state for the DOUBLE-TAP GATE on the package door. The frozen
+  // dist's dbl synthesis (cytoscape.min.js IDX ~294099) is time-pinned, not
+  // target-pinned: ANY left mouseup inside multiClickDebounceTime (250) of the
+  // previous one emits dbltap ON THE SECOND PRESS'S HIT-TEST — the first press
+  // may have landed on a different node entirely (probe: tap:a | tap:b |
+  // dbltap:b), and a tap the app later swallows (menu dismiss) still feeds
+  // that clock. The door therefore re-derives the gesture from the app's own
+  // single-tap stream: it opens only for two consecutive REAL taps on the SAME
+  // id inside the window. cytoscape still gates synthesis (its own 250ms bound
+  // is never exceeded); this window only absorbs Date.now() quantization.
+  var DBL_TAP_WINDOW_MS = 300
+  var VOID_TAP = '__void__' // a blank-canvas tap never pairs with a package id
+  var tapLast = null  // { id, t, sw }: the last single tap the app processed
+  var tapPair = null  // set to the id when tapLast+current form a deliberate pair
+  function noteTap(id, swallowed) {
+    var s = String(id)
+    var t = Date.now()
+    tapPair = tapLast && tapLast.id === s && !tapLast.sw && !swallowed && t - tapLast.t <= DBL_TAP_WINDOW_MS ? s : null
+    tapLast = { id: s, t: t, sw: !!swallowed }
+  }
+  function dblTapIsDeliberate(id) {
+    var ok = tapPair !== null && tapPair === String(id)
+    tapPair = null // a dbltap spends the pair: a third click must start fresh
+    return ok
+  }
   // Dependency-graph (V2.7 R48 rename) back stack + breadcrumb.
   var PATH_STACK_CAP = 20
   var CRUMB_MAX = 4
@@ -1213,8 +1238,12 @@
     // dbltap re-affirms the walked root (focusForId returns the SAME root ⇒
     // inert). Non-package dbltaps can never reach here: the zone/group handlers
     // above gate on their own front-element class, this one on 'pkg'.
+    // V2.7-fix d2: the door is GATED on the app's own tap stream — enter only
+    // on two consecutive real same-id taps (cross-target pairs and any pair
+    // containing a menu-swallow are refused; see noteTap/dblTapIsDeliberate).
     cy.on('dbltap', 'node.pkg', function (evt) {
       if (!evt.target.hasClass('pkg')) return
+      if (!dblTapIsDeliberate(evt.target.id())) return
       selectNode(evt.target.id(), true)
     })
     // single click → selection + details panel (V6 Step 4); V22b adds the path-
@@ -1225,13 +1254,19 @@
     // V2.6 R46: the tap passes NO nav flag — a cold tap (package or group) is
     // pure select+details; path mode is entered by menu/dbl-tap/rows/nav call
     // sites (the package dbl-tap door right above is one of them, V2.7 R49).
+    // V2.7-fix d2: every tap (swallowed ones too — that is the point) feeds
+    // the dbl gate via noteTap.
     cy.on('tap', 'node, edge', function (evt) {
-      if (swallowMenuTap()) return
+      var sw = swallowMenuTap()
+      noteTap(evt.target.id(), sw)
+      if (sw) return
       hidePeek(); selectNode(evt.target.id())
     })
     cy.on('tap', function (evt) {
       if (evt.target === cy) {
-        if (swallowMenuTap()) return
+        var sw2 = swallowMenuTap()
+        noteTap(VOID_TAP, sw2)
+        if (sw2) return
         hidePeek(); selectNode(null)
       }
     })
@@ -2074,8 +2109,11 @@
           if (n) revealNode(n)
         })
       })
+      // V2.7-fix d1: the 还有 N tail belongs to the SECTION — it rides inside
+      // the same .gmem indent wrapper as its member rows (BASE appended it to
+      // the panel box, so it rendered flush-left under the section).
+      if (res.total > ZONE_GROUP_CAP) kvRow(rows, '', t('groupMoreLabel').replace('{n}', res.total - ZONE_GROUP_CAP))
       box.appendChild(rows)
-      if (res.total > ZONE_GROUP_CAP) kvRow(box, '', t('groupMoreLabel').replace('{n}', res.total - ZONE_GROUP_CAP))
     })
     if (!shown) secTitle(box, t('memberPkgsLabel').replace('{n}', 0))
   }

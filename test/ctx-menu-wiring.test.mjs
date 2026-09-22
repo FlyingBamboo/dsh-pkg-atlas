@@ -369,6 +369,21 @@ const rp = (id) => {
 const leftAt = (x, y) => { fire(canvas, 'mousedown', { clientX: x, clientY: y, which: 1, button: 0 }); fire(canvas, 'mouseup', { clientX: x, clientY: y, which: 1, button: 0 }) }
 const rightAt = (x, y) => { fire(canvas, 'mousedown', { clientX: x, clientY: y, which: 3, button: 2 }); fire(canvas, 'mouseup', { clientX: x, clientY: y, which: 3, button: 2 }) }
 /**
+ * V2.8 R53/R54: details labels are COMPOSED out of spans (name / .cnt / .ver)
+ * now — this is the scalar read-out: own text + descendants, concatenated.
+ * (Scalar-only doctrine: never a node list into assert.)
+ */
+const elText = (el) => (el.text || '') + (el.children || []).map(elText).join('')
+/** A point on the ZONE SHELL's own surface: just inside its top edge, inside
+ *  the label strip + ZONE_PAD(28) band the model reserves above the first card
+ *  (graph-model.js ZONE_PAD; labels are never hit-tested in cytoscape). */
+const zonePt = (id) => {
+  const el = S().cy.getElementById(id)
+  if (!el.length) throw new Error('zonePt: ' + id + ' is not rendered')
+  const bb = el.renderedBoundingBox({ includeLabels: false, includeOverlays: false })
+  return { x: Math.round((bb.x1 + bb.x2) / 2), y: Math.round(bb.y1 + 4) }
+}
+/**
  * V2.7 R49: TWO DOM presses with NO sleep between them. The frozen dist fires
  * dbltap on the target hit-tested at the SECOND mouseup when it lands inside
  * multiClickDebounceTime (verified at cytoscape.min.js IDX ~294099). Positions
@@ -708,7 +723,8 @@ test('R51 leveled details wiring: package panel levels with its 包 chip, the zo
   assert.equal(det.getAttribute('data-zone'), 'tools', 'the zone band keys off data-zone (a palette id, never free text)')
   assert.ok(String(det.className).split(' ').includes('lvl-zone'), 'the zone container carries lvl-zone')
   const heads = det._desc().filter((el) => String(el.className).split(' ').includes('ghead'))
-  assert.deepEqual(heads.map((b) => b.text), ['db ×1', 'fs ×1'], 'GROUPED sections, alphabetical, TRUE counts (the zone holds exactly db + fs here)')
+  // V2.8 R54: every fixture member is version 1.0.0 → each section hoists it
+  assert.deepEqual(heads.map(elText), ['db ×1 · 1.0.0', 'fs ×1 · 1.0.0'], 'GROUPED sections, alphabetical, TRUE counts (the zone holds exactly db + fs here), hoisted versions')
   const mems = det._desc().filter((el) => el.className === 'gmem')
   assert.deepEqual(mems.map((m) => m.children.length), [1, 1], 'each section holds its member rows, indented in a .gmem wrapper')
   const before = S().selected
@@ -759,7 +775,7 @@ test('v27-fix 1: the 还有 N cap row nests INSIDE its section .gmem wrapper', a
   await sleep(120)
   assert.equal(S().selected, 'cat:kernel', 'the zone details are open')
   const heads = det._desc().filter((el) => String(el.className).split(' ').includes('ghead'))
-  assert.deepEqual(heads.map((b) => b.text), ['bundle \u00d713'], 'fixture: bundle now carries 13 members (11 added over the cap)')
+  assert.deepEqual(heads.map(elText), ['bundle \u00d713 \u00b7 1.0.0'], 'fixture: bundle now carries 13 members (11 added over the cap), all on 1.0.0 → hoisted (V2.8 R54)')
   // Scalars only, deliberately: an assert on an array of FEl DOM nodes sends
   // node:assert's myersDiff into recursive inspection of the whole element
   // graph (circular parentNode chains) — a 3-minute GC death spiral instead of
@@ -822,6 +838,83 @@ test('v27-fix 2 case C: a true same-target double-click still ENTERS with zero c
   leftAt(6, 6) // back to the plain view for the hygiene test
   await sleep(350)
   assert.equal(S().focus, null, 'the exit is intact — the door rides the same funnel as always')
+})
+
+// =========================================================================
+// V2.8 R57 — the DELIBERATE gate on the two structure doors (group card and
+// zone shell). The v27-fix premise already proven on this harness: the frozen
+// dist synthesizes dbltap from the 2nd LEFT mouseup within 250ms of the 1st,
+// target = hit-test at press 2, and a SWALLOWED tap still feeds that clock.
+// So the reachable false-open is tap → right-click (menu) → dismissing tap,
+// and the trailing dbltap lands on the card/zone. Both doors now share the
+// package door's gate (dblTapIsDeliberate) — the dismiss-pair must spend
+// NOTHING on the collapse toggle while a true double-click keeps it.
+// =========================================================================
+
+test('V2.8 R57 case 1: the group-card dismiss-pair (tap → cxttap → swallowing tap) must NOT toggle collapse', async () => {
+  await sleep(300) // clear the dbl window of any previous gesture
+  if (S().focus) { leftAt(6, 6); await sleep(350) } // self-normalize the cold precondition
+  fire(doc.getElementById('retry'), 'click') // the real freshView boot (same as matrix 4/6)
+  await sleep(250)
+  assert.equal(S().focus, null, 'cold start after the real boot')
+  assert.equal(S().view.collapsedGroups, null, 'freshView: the all-collapsed default (null) is back')
+  const g1 = rp('g:bundle')
+  assert.ok(g1, 'the bundle card renders')
+  leftAt(g1.x, g1.y) // tap 1: a REAL lightweight tap — arms the dist dbl clock
+  assert.equal(S().selected, 'g:bundle', 'tap 1 selected normally (nothing swallowed yet)')
+  const g2 = rp('g:bundle') || g1
+  rightAt(g2.x, g2.y) // the card menu opens (right presses never feed the dbl clock)
+  assert.equal(menuEl().hidden, false, 'the menu is open before the dismissing press')
+  const g3 = rp('g:bundle') || g2
+  leftAt(g3.x, g3.y) // mousedown closes + arms the swallow; the tap is EATEN —
+  await sleep(350)   // …yet the dist still fires a dbltap on the card here
+  assert.equal(menuEl().hidden, true, 'the press dismissed the menu')
+  assert.equal(S().view.collapsedGroups, null,
+    'R57: a pair containing a swallowed tap NEVER reaches the collapse door (BASE lands with a materialized Set — the RED case)')
+})
+
+test('V2.8 R57 case 2: a TRUE double-click on a group card still expands (the gate is not a wall)', async () => {
+  await sleep(300)
+  assert.equal(S().view.collapsedGroups, null, 'precondition owned by case 1: everything is still collapsed')
+  dblAt('g:fs') // two real same-card presses, same ms → deliberate pair
+  await sleep(350)
+  const cg = S().view.collapsedGroups
+  assert.ok(cg && cg.has('bundle') && !cg.has('fs'),
+    'the deliberate pair EXPANDED fs and left the rest of the materialized all-collapsed set alone')
+})
+
+test('V2.8 R57 case 3: the zone shell ignores the dismiss-pair but answers a true double-click', async () => {
+  await sleep(300)
+  fire(doc.getElementById('retry'), 'click') // cold, all-collapsed, nothing excluded
+  await sleep(250)
+  assert.equal(S().focus, null, 'cold start')
+  assert.equal(S().view.collapsedCats.has('kernel'), false, 'kernel starts expanded')
+  const z1 = zonePt('cat:kernel')
+  leftAt(z1.x, z1.y)
+  assert.equal(S().selected, 'cat:kernel', 'press 1 front-hit the ZONE shell itself (the padding strip above the card)')
+  const z2 = zonePt('cat:kernel')
+  rightAt(z2.x, z2.y)
+  assert.equal(menuEl().hidden, false, 'the zone menu is open')
+  const z3 = zonePt('cat:kernel')
+  leftAt(z3.x, z3.y) // the swallowing tap; the dist still emits the trailing dbltap
+  await sleep(350)
+  assert.equal(menuEl().hidden, true, 'the press dismissed the zone menu')
+  assert.equal(S().view.collapsedCats.has('kernel'), false,
+    'R57: the dismiss-pair never collapsed the zone (BASE lands with kernel collapsed — the RED case)')
+  // a TRUE double-click still collapses…
+  const za = zonePt('cat:kernel')
+  leftAt(za.x, za.y)
+  leftAt(za.x, za.y)
+  await sleep(350)
+  assert.equal(S().view.collapsedCats.has('kernel'), true, '…two deliberate presses did collapse it')
+  // …and one more deliberate double-click expands it back (leave the view clean)
+  const zb = zonePt('cat:kernel')
+  leftAt(zb.x, zb.y)
+  leftAt(zb.x, zb.y)
+  await sleep(350)
+  assert.equal(S().view.collapsedCats.has('kernel'), false, 'the toggle is a TOGGLE — the door still opens both ways')
+  leftAt(6, 6)
+  await sleep(350)
 })
 
 test('C1 hygiene: no unhandled rejections, boot warnings clean', () => {

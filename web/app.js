@@ -1207,8 +1207,12 @@
     // element kept in evt.target — only act when the FRONT element is the zone.
     // V22b: a live path owns the view — collapsedCats would only bite AFTER the
     // exit (a surprise layout change), so zone dbl-click is inert inside a path.
+    // V2.8 R57: the door takes the SAME deliberate-pair gate as the package door
+    // — a menu-swallow inside the pair (tap→cxttap→swallow→synth dbltap) is not
+    // a double-click and never spends a collapse (see noteTap/dblTapIsDeliberate).
     cy.on('dbltap', 'node.zone', function (evt) {
       if (!evt.target.hasClass('zone')) return
+      if (!dblTapIsDeliberate(evt.target.id())) return
       if (state.focus) return
       var cid = evt.target.data('name')
       state.view.collapsedCats.has(cid) ? state.view.collapsedCats.delete(cid) : state.view.collapsedCats.add(cid)
@@ -1224,8 +1228,11 @@
     // tap-then-dbltap gesture enters the group focus on the first tap and opens
     // the group on the gesture, and toggleGroup re-derives the focus shape.
     // A non-root card inside a group focus stays inert (no surprise re-cut).
+    // V2.8 R57: same deliberate-pair gate as the zone shell and the package
+    // door — the dismiss-pair's synthesized dbltap never toggles.
     cy.on('dbltap', 'node.group', function (evt) {
       if (!evt.target.hasClass('group')) return
+      if (!dblTapIsDeliberate(evt.target.id())) return
       if (state.view.granularity !== 'groups') return
       if (state.focus && !(isGroupRootId(state.focus.rootId) && state.focus.rootId === String(evt.target.data('id')))) return
       toggleGroup(String(evt.target.data('id')).replace(/^g:/, ''))
@@ -2027,24 +2034,118 @@
   }
 
   // ---------- V2.3 container member lists ----------
-  // One row = `name@version · [kind] [third-party] · ⚠断链 · ⚠未满足`. The click is
-  // the SAME authoritative reveal a search hit / the retired group jump buttons
-  // used — revealNode(graph node): un-collapse the node's zone AND group, re-root
-  // the path, center + flash it (and the repaint closes any live peek). Rows reuse
-  // .jump/.badge/.unsat, so there is no new CSS surface; `name`/`version`/`scope`
-  // are attacker-influenced third-party data and leave through escText only.
-  function memberRow(box, row, onClick) {
+  // V2.8 R53/R54: the two PURE de-duplication computes. Both decide a PANEL
+  // reading from the rows it will actually show, and both fail safe to the
+  // pre-V2.8 rendering (no omission / no hoist) on any doubt. Names and
+  // versions are attacker-influenced scan data: these functions only compare
+  // strings and count them — every string that later reaches the DOM leaves
+  // through escText or a setAttribute string.
+  /**
+   * commonScopePrefix(names) → '' | '@scope/'. The npm scope every visible
+   * row shares, computed as the longest common string prefix cut back to a
+   // completed '@…/' scope. A scope-less row drags the common string to '' on
+   * its own (it cannot start with '@'), which is exactly the "no-scope-mixed"
+   * no-omission rule; a single scoped row is a unanimous panel of one. If the
+   * cut would swallow a whole name, the omission is refused instead.
+   */
+  function commonScopePrefix(names) {
+    var list = []
+    ;(Array.isArray(names) ? names : []).forEach(function (n) {
+      if (n != null && n !== '') list.push(String(n))
+    })
+    if (!list.length) return ''
+    var lcp = list[0]
+    list.forEach(function (s) {
+      var i = 0
+      while (i < lcp.length && i < s.length && lcp.charCodeAt(i) === s.charCodeAt(i)) i++
+      lcp = lcp.slice(0, i)
+    })
+    var cut = lcp.lastIndexOf('/')
+    if (cut < 1 || lcp.charAt(0) !== '@') return ''
+    var scope = lcp.slice(0, cut + 1)
+    for (var i = 0; i < list.length; i++) if (list[i].length <= scope.length) return ''
+    return scope
+  }
+  /**
+   * versionDigest(rows) → { mode: 'all'|'majority'|'mixed'|'none', version }.
+   * rows WITHOUT a version (the '-' pseudo-node marker, '') do not vote at
+   * all. 'all' = one distinct version; 'majority' = a UNIQUE plurality of at
+   * least two; anything weaker than that — all-distinct, a tie — is 'mixed'
+   * (the header stays silent and every row shows its own version in the
+   * secondary color; only a 'majority' odd row earns the amber ver-exc).
+   */
+  function versionDigest(rows) {
+    var counts = new Map()
+    ;(Array.isArray(rows) ? rows : []).forEach(function (r) {
+      var v = r && r.version != null ? String(r.version) : ''
+      if (!v || v === '-') return
+      counts.set(v, (counts.get(v) || 0) + 1)
+    })
+    if (!counts.size) return { mode: 'none', version: null }
+    var best = null, bestN = 0, tie = false
+    counts.forEach(function (n, v) {
+      if (n > bestN) { best = v; bestN = n; tie = false }
+      else if (n === bestN) tie = true
+    })
+    if (counts.size === 1) return { mode: 'all', version: best }
+    if (bestN >= 2 && !tie) return { mode: 'majority', version: best }
+    return { mode: 'mixed', version: null }
+  }
+  // The panel header h2 — the single home of the level chip, the V2.8 scope
+  // badge and the hoisted version. Reads BOTH fake-DOM shapes (tag/tagName).
+  function h2Of(box) {
+    var kids = box.children || []
+    for (var i = 0; i < kids.length; i++) {
+      var k = kids[i]
+      if (k && (k.tagName === 'H2' || k.tag === 'h2')) return k
+    }
+    return null
+  }
+  function scopeBadge(box, scope) {
+    var h = h2Of(box)
+    if (!h) return
+    h.appendChild(document.createTextNode(' '))
+    var s = document.createElement('span'); s.className = 'badge scope'
+    escText(s, scope)
+    h.appendChild(s)
+  }
+  function headerVersion(box, ver) {
+    var h = h2Of(box)
+    if (!h) return
+    var s = document.createElement('span'); s.className = 'ver gver'
+    escText(s, ' \u00b7 ' + ver)
+    h.appendChild(s)
+  }
+  // One row = `name · [@ver (mixed/exception only)] · [kind] [third-party] · ⚠…`.
+  // V2.8 R53/R54/R56: the version left the glued name span into its own .ver
+  // channel (hoisted by default, inline only when the digest demands it), the
+  // FULL name@version is kept as the row's title attribute, and the semantic
+  // badges got their own classes (the CSS owns their color, R56.6). Rows reuse
+  // .jump/.badge/.unsat/.brk, so there is no new CSS surface beyond V2.8's own
+  // color block; every string leaves through escText or a title string.
+  function memberRow(box, row, onClick, opts) {
+    var o = opts || {}
     var b = document.createElement('button'); b.className = 'jump'
     var nm = document.createElement('span')
-    escText(nm, String(row.name) + (row.version && row.version !== '-' ? '@' + row.version : ''))
+    var name = String(row.name)
+    var label = o.omit && name.indexOf(o.omit) === 0 ? name.slice(o.omit.length) : name
+    escText(nm, label)
     b.appendChild(nm)
+    var ver = row.version != null && row.version !== '' && row.version !== '-' ? String(row.version) : ''
+    b.setAttribute('title', ver ? name + '@' + ver : name)
+    if (ver && o.ver) {
+      var vs = document.createElement('span'); vs.className = o.exc ? 'ver ver-exc' : 'ver'
+      escText(vs, '@' + ver)
+      b.appendChild(vs)
+    }
     if (row.kind && row.kind !== 'package') {
-      var k = document.createElement('span'); k.className = 'badge'
+      var k = document.createElement('span')
+      k.className = row.kind === 'profile' ? 'badge b-profile' : 'badge b-kind'
       escText(k, row.kind)
       b.appendChild(document.createTextNode(' ')); b.appendChild(k)
     }
     if (row.scope === 'third-party') {
-      var s = document.createElement('span'); s.className = 'badge'
+      var s = document.createElement('span'); s.className = 'badge b-3p'
       escText(s, row.scope)
       b.appendChild(document.createTextNode(' ')); b.appendChild(s)
     }
@@ -2063,56 +2164,93 @@
   }
   // The section both container details share: the header count is the TRUE total
   // (buildGroupMembers caps the ROWS, never the count), and the tail says what the
-  // cap hid.
+  // cap hid. V2.8 R53/R54: the group page decides its own panel-wide scope
+  // omission and version hoist — the digest runs over the WHOLE member list
+  // (an honest header describes the truth, not just the first 200 rows' tail…
+  // exactly the rows shown, which is what the cap tail then admits to).
   function memberSection(box, sel) {
     var res = buildGroupMembers(sel, state.graph)
     secTitle(box, t('memberPkgsLabel').replace('{n}', res.total))
+    var omit = commonScopePrefix(res.rows.map(function (r) { return String(r.name) }))
+    if (omit) scopeBadge(box, omit)
+    var vd = versionDigest(res.rows)
+    if (vd.version) headerVersion(box, vd.version)
     res.rows.forEach(function (r) {
+      var exc = vd.mode === 'majority' && String(r.version) !== vd.version
       memberRow(box, r, function () {
         var n = state.byId.get(String(r.id))
         if (n) revealNode(n)
-      })
+      }, { omit: omit, ver: vd.mode === 'mixed' || (vd.mode === 'majority' && exc), exc: exc })
     })
-    if (res.capped) kvRow(box, '', t('moreLabel').replace('{n}', res.total - res.rows.length))
+    if (res.capped) {
+      // R56.3: the +N tail is a STRUCTURAL count — its value gets the .cnt
+      // channel (kvRow stays shared; the class is applied at this call site).
+      var tr = kvRow(box, '', t('moreLabel').replace('{n}', res.total - res.rows.length))
+      tr.children[1].className = 'cnt'
+    }
   }
 
   // V2.7 R51: the ZONE details list BY GROUP. Alphabetical sections, each one:
-  // a clickable group header button (`gid ×total`, the TRUE count from
+  // a clickable group header button (`gid ×total · ver`, the TRUE count from
   // buildGroupMembers) whose click is the plain group door — selectNode('g:'+gid)
   // with NO nav flag (cold: select; inside a focus: walk) — then ≤ZONE_GROUP_CAP
   // indented member rows reusing the shared memberRow/revealNode reveal, and a
   // 还有 N tail when the section was cut. Groups with zero members stay
   // invisible: the old flat list showed nothing for them either. All texts are
-  // escText (group ids are scan data).
+  // escText (group ids are scan data). V2.8 rides ON TOP of that structure:
+  // R53 omits a panel-wide shared scope (badge once in the h2), R54 hoists each
+  // section's version onto its header, R56 splits the header into its
+  // name/.cnt/.ver channels.
   function detailsZone(box, cid) {
     lvlChip(head(box, zoneTitle(cid)), t('lvlZone'))
     var groups = []
     state.groupIds.forEach(function (gid) { if (state.groupZone.get(gid) === cid) groups.push(gid) })
     groups.sort()
-    kvRow(box, t('groupsLabel'), groups.length)
+    // R56.3: the 组 N count is a structural count — the value span takes .cnt.
+    var grow = kvRow(box, t('groupsLabel'), groups.length)
+    grow.children[1].className = 'cnt'
     zoneGroupSections(box, groups)
   }
   function zoneGroupSections(box, groups) {
     var shown = 0
+    var secs = []
     groups.forEach(function (gid) {
       var res = buildGroupMembers({ kind: 'group', id: gid }, state.graph)
       if (!res.total) return
+      secs.push({ gid: gid, res: res })
+    })
+    // R53: the omission is a PANEL decision over every row the panel shows.
+    var vis = []
+    secs.forEach(function (s) { s.res.rows.slice(0, ZONE_GROUP_CAP).forEach(function (r) { vis.push(String(r.name)) }) })
+    var omit = commonScopePrefix(vis)
+    if (omit) scopeBadge(box, omit)
+    secs.forEach(function (s) {
+      var res = s.res
       shown++
+      var vd = versionDigest(res.rows)
       var hb = document.createElement('button'); hb.className = 'jump ghead'
-      escText(hb, gid + ' \u00d7' + res.total)
-      hb.addEventListener('click', function () { selectNode('g:' + gid) })
+      var gs = document.createElement('span'); escText(gs, s.gid); hb.appendChild(gs)
+      var cn = document.createElement('span'); cn.className = 'cnt'; escText(cn, ' \u00d7' + res.total); hb.appendChild(cn)
+      if (vd.version) { var gv = document.createElement('span'); gv.className = 'ver'; escText(gv, ' \u00b7 ' + vd.version); hb.appendChild(gv) }
+      hb.setAttribute('title', s.gid)
+      hb.addEventListener('click', function () { selectNode('g:' + s.gid) })
       box.appendChild(hb)
       var rows = document.createElement('div'); rows.className = 'gmem'
       res.rows.slice(0, ZONE_GROUP_CAP).forEach(function (r) {
+        var exc = vd.mode === 'majority' && String(r.version) !== vd.version
         memberRow(rows, r, function () {
           var n = state.byId.get(String(r.id))
           if (n) revealNode(n)
-        })
+        }, { omit: omit, ver: vd.mode === 'mixed' || (vd.mode === 'majority' && exc), exc: exc })
       })
       // V2.7-fix d1: the 还有 N tail belongs to the SECTION — it rides inside
       // the same .gmem indent wrapper as its member rows (BASE appended it to
       // the panel box, so it rendered flush-left under the section).
-      if (res.total > ZONE_GROUP_CAP) kvRow(rows, '', t('groupMoreLabel').replace('{n}', res.total - ZONE_GROUP_CAP))
+      // V2.8 R56.3: and its value takes the amber mono .cnt channel.
+      if (res.total > ZONE_GROUP_CAP) {
+        var tr = kvRow(rows, '', t('groupMoreLabel').replace('{n}', res.total - ZONE_GROUP_CAP))
+        tr.children[1].className = 'cnt'
+      }
       box.appendChild(rows)
     })
     if (!shown) secTitle(box, t('memberPkgsLabel').replace('{n}', 0))

@@ -144,17 +144,26 @@ header .chips { display: inline-flex; gap: 6px; flex-wrap: wrap; align-items: ce
 #details.lvl-group h2 { font-size: 14px; }
 #details.lvl-pkg h2 { font-size: 13px; font-family: ui-monospace, Consolas, monospace; }
 #details h2 .lvl { font-size: 10px; font-weight: 600; border: 1px solid #8886; border-radius: 8px; padding: 0 6px; opacity: .85; white-space: nowrap; font-family: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; }
-#details .ghead { font-weight: 700; }
-#details .gmem { padding-left: 14px; }
+/* V2.8 R55/R56: group heads keep bold (bold = structure) and take the
+   platform-steel TYPE color (color = info type), with a 2px lead off the
+   previous block; the member indent tightens one notch (14 → 12px). */
+#details .ghead { font-weight: 700; color: light-dark(#4f6b8a, #8fa9c9); margin-top: 2px; }
+#details .gmem { padding-left: 12px; }
 #details .sub, #details .path { font-size: 11px; opacity: .7; overflow-wrap: anywhere; }
 #details .crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; font-size: 11px; opacity: .85; }
 #details .crumbs .crumb { border: 0; background: none; padding: 0; font: inherit; color: inherit; cursor: pointer; text-decoration: underline dotted; }
 #details .badge { border: 1px solid #8886; border-radius: 3px; padding: 0 5px; font-size: 10px; white-space: nowrap; }
 #details .desc { margin: 8px 0; }
-#details .kv { margin: 4px 0; font-size: 12px; }
+#details .kv { margin: 2px 0; font-size: 12px; }
 #details .kv span:first-child { font-weight: 600; margin-right: 6px; }
-#details .sec { margin: 10px 0 2px; font-size: 11px; font-weight: 600; opacity: .85; }
-#details .jump { display: block; width: 100%; text-align: left; border: 0; background: none; cursor: pointer; padding: 1px 4px; font: inherit; font-size: 12px; color: inherit; overflow-wrap: anywhere; }
+/* V2.8 R56.5 + R55: section labels are the LOWEST structural voice — bold is
+   gone (bold = structure, and they are annotations of it), opacity .55, and
+   since Chinese has no uppercasing, letter-spacing carries the label feel.
+   The rhythm tightens one notch (10px top margin → 6). */
+#details .sec { margin: 6px 0 2px; font-size: 11px; opacity: .55; letter-spacing: .08em; }
+/* V2.8 R55: the member row keeps its exact hit/padding box minus the 1px
+   vertical padding — across a 25-package zone panel that alone is ~50px. */
+#details .jump { display: block; width: 100%; text-align: left; border: 0; background: none; cursor: pointer; padding: 0 4px; font: inherit; font-size: 12px; color: inherit; overflow-wrap: anywhere; }
 #details .jump:hover { background: #8882; }
 #details .jump .unsat { color: #d0433f; font-size: 10px; }
 /* V2.3 container member rows: the 断链 flag is a warning of the same weight as
@@ -165,6 +174,29 @@ header .chips { display: inline-flex; gap: 6px; flex-wrap: wrap; align-items: ce
 #details .jump .badge { margin-left: 2px; }
 #details pre.readme { max-height: 40vh; overflow: auto; font-size: 11px; background: #8882; padding: 8px; white-space: pre-wrap; }
 #details .btns { margin-top: 10px; display: flex; gap: 8px; }
+/* V2.8 R56 — the info-type color system. Every hex below is a constant the
+   canvas/legend ALREADY ships (ZONE_COLORS / FOCUS_COLORS — the palette guard
+   in test/render-smoke.test.mjs sweeps this block and rejects any new hue),
+   every text pair clears WCAG-AA on BOTH panel grounds (the contrast guard
+   runs the luminance math). Discipline: bold = structure, color = info type,
+   mono = machine identifier. */
+/* versions: the secondary voice — house "secondary" is opacity on the
+   inherited ink (same treatment as .sub/.path), one size down, mono because
+   a version string is a machine identifier */
+#details .jump .ver, #details h2 .gver { font-family: ui-monospace, Consolas, monospace; font-size: 11px; opacity: .62; }
+/* the R54 version EXCEPTION is amber — the AA-clean member of the palette's
+   amber family (FOCUS down; the integration line #c9971b would only reach
+   2.6:1 on the light panel) */
+#details .jump .ver.ver-exc { opacity: 1; color: light-dark(#b45309, #f59e0b); }
+/* structural counts (×N / 组 N / 还有 N): amber mono 10px, NO bold — the
+   number is data, not structure */
+#details .cnt { font-family: ui-monospace, Consolas, monospace; font-size: 10px; color: light-dark(#b45309, #f59e0b); }
+/* semantic badge pills: gold = profile, purple = third-party / kind. Dark
+   pill text on both grounds: >= 4.59:1 (worst: purple on light) — table in
+   task-V28-report.md. The neutral badge shell stays untouched for the rest. */
+#details .badge.b-3p, #details .badge.b-kind { border-color: transparent; background: light-dark(#9a6ac2, #c194e8); color: #10141a; }
+#details .badge.b-profile { border-color: transparent; background: light-dark(#d9a441, #eec06a); color: #10141a; }
+#details .badge.scope { opacity: .75; font-family: ui-monospace, Consolas, monospace; }
 /* V2.6-fix (M2): no top/left here on purpose — positionSearchBox() anchors the
    popover on the search input's own getBoundingClientRect, and it can only do
    that against viewport space, so the box is position:fixed. The pair this rule

@@ -846,6 +846,18 @@ function domTexts(el, out) {
   return out
 }
 
+/**
+ * V2.8: the CONCATENATED visible text of a fake-DOM subtree (scalar, never a
+ * node list — the doctrine: node-array asserts walk into circular parentNode
+ * graphs and stall the diff). V2.8 rows compose their label out of spans
+ * (name / .cnt / .ver), so row-level pins read through this.
+ */
+function allText(el) {
+  let s = el.text || ''
+  ;(el.children || []).forEach((c) => { s += allText(c) })
+  return s
+}
+
 /** deepFreeze recursively — a pure helper that writes into graph/view now THROWS. */
 function deepFreeze(x) {
   if (x && typeof x === 'object' && !Object.isFrozen(x)) {
@@ -2944,12 +2956,18 @@ test('V22b wiring guards: dbl-click gates, paint mirrors focus into view, chip b
     'inside a focus only the group-focus ROOT card stays toggleable; package roots keep the full V2.2b inertness')
   assert.match(dbl, /toggleGroup\(String\(evt\.target\.data\('id'\)\)\.replace\(\/\^g:\/, ''\)\)/,
     'the groups tier routes the dbl-click to the real collapse toggle')
+  // V2.8 R57: both container doors ride the SAME deliberate-pair gate as the
+  // package door (noteTap/dblTapIsDeliberate — reuse, never reimplement).
+  assert.match(dbl, /if \(!dblTapIsDeliberate\(evt\.target\.id\(\)\)\) return/,
+    'R57: the group-card door refuses any pair it did not see as two real taps')
   // V2.7 R49: the PACKAGE dbl-tap door shares the menu's nav funnel verbatim
   assert.match(dbl, /cy\.on\('dbltap', 'node\.pkg', function \(evt\) \{[\s\S]*?if \(!evt\.target\.hasClass\('pkg'\)\) return[\s\S]*?selectNode\(evt\.target\.id\(\), true\)/,
     'R49: dbl-tapping a package enters the dependency graph through selectNode(id, true)')
   // the zone shell keeps its own gate: inert inside a path only (both tiers)
   const zdbl = src.slice(src.indexOf("cy.on('dbltap', 'node.zone'"), src.indexOf("cy.on('dbltap', 'node.group'"))
   assert.match(zdbl, /if \(state\.focus\) return/, 'zone dbl-click stays inert inside a path')
+  assert.match(zdbl, /if \(!dblTapIsDeliberate\(evt\.target\.id\(\)\)\) return/,
+    'R57: the zone-shell door takes the same gate, keyed on the zone node id')
   assert.doesNotMatch(zdbl, /granularity/, 'zone collapse is tier-independent (a collapsed zone is a collapsed zone)')
   // paint is the single place the focus mirror enters the model view
   assert.match(src, /state\.view\.focus = state\.focus/, 'paint mirrors state.focus into view.focus (view→paint flow)')
@@ -3103,9 +3121,11 @@ function loadMembersDom() {
     'function syncFocusCtl() { LOG.push(\x27sync\x27) }\n',
     'function flashReveal(id) { LOG.push(\x27flash:\x27 + id) }\n',
     'function El(tag) {\n',
-    '  this.tag = tag; this.children = []; this.className = \x27\x27; this.text = \x27\x27; this.handlers = {}; this.hidden = false\n',
+    '  this.tag = tag; this.children = []; this.className = \x27\x27; this.text = \x27\x27; this.handlers = {}; this.hidden = false; this.attrs = {}\n',
     '  this.appendChild = function (c) { this.children.push(c); return c }\n',
     '  this.addEventListener = function (k, fn) { this.handlers[k] = fn }\n',
+    '  this.setAttribute = function (k, v) { this.attrs[k] = String(v) }\n',
+    '  this.getAttribute = function (k) { return k in this.attrs ? this.attrs[k] : null }\n',
     '}\n',
     'Object.defineProperty(El.prototype, \x27textContent\x27, {\n',
     '  get: function () { return this.text },\n',
@@ -3132,7 +3152,12 @@ function loadMembersDom() {
     extractBalanced(src, 'function secTitle(box, text) {') + '\n',
     extractBalanced(src, 'function groupZoneOf(graph, gid) {') + '\n',
     extractBalanced(src, 'function buildGroupMembers(sel, graph) {') + '\n',
-    extractBalanced(src, 'function memberRow(box, row, onClick) {') + '\n',
+    extractBalanced(src, 'function commonScopePrefix(names) {') + '\n',
+    extractBalanced(src, 'function versionDigest(rows) {') + '\n',
+    extractBalanced(src, 'function h2Of(box) {') + '\n',
+    extractBalanced(src, 'function scopeBadge(box, scope) {') + '\n',
+    extractBalanced(src, 'function headerVersion(box, ver) {') + '\n',
+    extractBalanced(src, 'function memberRow(box, row, onClick, opts) {') + '\n',
     extractBalanced(src, 'function memberSection(box, sel) {') + '\n',
     extractBalanced(src, 'function gidOf(n) {') + '\n',
     extractBalanced(src, 'function isGroupRootId(id) {') + '\n',
@@ -3185,24 +3210,36 @@ test('V2.3 member rows: header count, badges and flags — every string via text
   assert.equal(box.children[0].className, 'sec', 'section header via secTitle')
   assert.equal(box.children[0].text, 'MEMBERS(3)', 'the header count is the TRUE total through t(memberPkgsLabel)')
   const rows = box.children.filter((c) => c.className === 'jump')
-  const rowOf = (label) => rows.find((c) => c.children[0].text === label)
-  assert.deepEqual(rows.map((c) => c.children[0].text), [fx.evil + '@<script>', 'alpha@1.0.0', 'pkg-broken'],
-    'rows sort by NAME (the attacker name sorts first: \x27<\x27 < \x27a\x27) — no input-order leak')
+  // the row LABEL channel only: name span + .ver span (badges/flags/#text
+  // separators are asserted through their own classes below)
+  const nv = (r) => r.children.filter((c) => c.tag === 'span' && (!c.className || String(c.className).split(' ').includes('ver'))).map((c) => c.text).join('')
+  const rowOf = (label) => rows.find((c) => nv(c) === label)
+  const badgeOf = (r) => r.children.filter((c) => String(c.className).split(' ').includes('badge'))
+  assert.deepEqual(rows.map(nv), [fx.evil + '@<script>', 'alpha@1.0.0', 'pkg-broken'],
+    'rows sort by NAME (the attacker name sorts first: \x27<\x27 < \x27a\x27) — no input-order leak; V2.8: the all-different-version group still shows every inline version (composed name + .ver)')
   const row = rowOf('alpha@1.0.0')
   assert.ok(row, 'the plain package row is there')
-  assert.equal(row.children[0].text, 'alpha@1.0.0', 'name@version, verbatim')
-  assert.deepEqual(row.children.filter((c) => c.className === 'badge').map((c) => c.text), [],
+  assert.equal(row.children[0].text, 'alpha', 'V2.8 R56: the NAME span stays the entity channel — the version moved out of it')
+  assert.deepEqual(row.children.filter((c) => String(c.className).split(' ').includes('ver')).map((c) => c.text), ['@1.0.0'],
+    'V2.8 R54/R56: an inline version rides its own .ver span (secondary color + monospace via CSS)')
+  assert.equal(row.attrs.title, 'alpha@1.0.0', 'V2.8 R53: the row title carries the FULL name@version (setAttribute string — safe)')
+  assert.deepEqual(badgeOf(row).map((c) => c.text), [],
     'a plain official package is badge-free (quiet rows)')
   assert.deepEqual(row.children.filter((c) => c.className === 'unsat').map((c) => c.text), [' ⚠ UNSAT'],
     'the touched-by-an-unsatisfied-edge flag rides the existing .unsat span')
   const evilRow = rowOf(fx.evil + '@<script>')
-  assert.equal(evilRow.children[0].text, fx.evil + '@<script>', 'attacker name@version survive VERBATIM as text')
-  assert.deepEqual(evilRow.children.filter((c) => c.className === 'badge').map((c) => c.text), ['third-party'],
+  assert.equal(nv(evilRow), fx.evil + '@<script>', 'attacker name@version survive VERBATIM as text')
+  assert.deepEqual(badgeOf(evilRow).map((c) => c.text), ['third-party'],
     'a third-party scope gets its badge (the interesting case), kind=package does not')
+  assert.deepEqual(badgeOf(evilRow).map((c) => c.className), ['badge b-3p'],
+    'V2.8 R56: the 3rd-party pill carries the semantic purple class (CSS-owned color)')
   const brkRow = rowOf('pkg-broken')
-  assert.equal(brkRow.children[0].text, 'pkg-broken', 'version \x27-\x27 (the pseudo-node marker) never renders as @-')
-  assert.deepEqual(brkRow.children.filter((c) => c.className === 'badge').map((c) => c.text), ['broken'],
+  assert.equal(nv(brkRow), 'pkg-broken', 'version \x27-\x27 (the pseudo-node marker) never renders as @-')
+  assert.equal(brkRow.attrs.title, 'pkg-broken', '…and it never pollutes the row title either')
+  assert.deepEqual(badgeOf(brkRow).map((c) => c.text), ['broken'],
     'the node kind badges only when it is not a plain package')
+  assert.deepEqual(badgeOf(brkRow).map((c) => c.className), ['badge b-kind'],
+    'V2.8 R56: kind pills get b-kind (a profile kind gets b-profile)')
   assert.deepEqual(brkRow.children.filter((c) => c.className === 'brk').map((c) => c.text), [' ⚠ BROKEN'],
     'the broken flag has its own marker class (styled with .unsat in style.css)')
   const texts = domTexts(box)
@@ -3234,7 +3271,8 @@ test('V2.3 member row click REVEALS the package: ancestors open and state.focus 
   const dom = membersDom(fx)
   const box = new dom.El('div')
   dom.memberSection(box, { kind: 'group', id: 'bundle' })
-  const rowOf = (label) => box.children.find((c) => c.className === 'jump' && c.children[0].text === label)
+  const rowOf = (label) => box.children.find((c) => c.className === 'jump'
+    && c.children.filter((k) => k.tag === 'span' && (!k.className || String(k.className).split(' ').includes('ver'))).map((k) => k.text).join('') === label)
   const alphaRow = rowOf('alpha@1.0.0')
   assert.equal(alphaRow.handlers.click instanceof Function, true, 'rows are clickable')
   alphaRow.handlers.click()
@@ -3361,20 +3399,37 @@ function loadGestureWiring() {
 
 test('V2.3 group dbl-tap: 组级 restores the expand/collapse toggle; 包级 and a live path stay inert', () => {
   const g = loadGestureWiring()
-  g.bind() // the real cy.on('dbltap', …) registrations, no hand-poked handlers
+  g.bind() // the real cy.on('tap'|'dbltap', …) registrations, no hand-poked handlers
+  // V2.8 R57 MIGRATION: the gate is REAL now — a dbltap only spends the pair the
+  // TAP stream fed it. The deliberate gesture is therefore modeled as it happens
+  // in a browser: tap → tap → dbltap (the frozen dist synthesizes the dbltap on
+  // the second press). A bare dbltap with no tap stream is the dismiss shape.
+  g.trigger('tap', g.groupCard('fs'))
+  g.trigger('tap', g.groupCard('fs'))
   g.trigger('dbltap', g.groupCard('fs'))
   assert.deepEqual([...g.state.view.collapsedGroups].sort(), ['bundle'],
     'first dbl-tap materializes the all-collapsed default and opens THIS group (V2.2 inertness undone)')
-  assert.deepEqual(g.LOG, ['paint'], 'the toggle repaints through paint() — the only structure path (V2.5: viewport kept)')
+  assert.deepEqual(g.LOG, ['peek-off', 'select:g:fs', 'peek-off', 'select:g:fs', 'paint'],
+    'two real taps (each: peek-off + select) precede the toggle repaint — the gate saw them all')
   g.LOG.length = 0
+  g.trigger('tap', g.groupCard('fs'))
+  g.trigger('tap', g.groupCard('fs'))
   g.trigger('dbltap', g.groupCard('fs'))
   assert.deepEqual([...g.state.view.collapsedGroups].sort(), ['bundle', 'fs'], 'the same card again collapses it back')
+  // R57 the other way round: a dbltap the tap stream never paired is NOT a gesture
+  // (the menu-dismiss shape — the wiring suite pins it against the REAL dist).
+  g.LOG.length = 0
+  g.trigger('dbltap', g.groupCard('fs'))
+  assert.deepEqual(g.LOG, [], 'an unpaired dbltap spends nothing on the collapse door')
+  assert.deepEqual([...g.state.view.collapsedGroups].sort(), ['bundle', 'fs'], '…state untouched')
   // 包级: the model expands every group BY DEFINITION at that tier, so a fake
   // collapse would be a lie the next repaint contradicts.
   g.LOG.length = 0
   g.state.view.granularity = 'packages'
+  g.trigger('tap', g.groupCard('fs'))
+  g.trigger('tap', g.groupCard('fs'))
   g.trigger('dbltap', g.groupCard('fs'))
-  assert.deepEqual(g.LOG, [], '包级: group dbl-tap is the documented no-op')
+  assert.deepEqual(g.LOG.slice(4), [], '包级: the deliberate pair still no-ops the toggle')
   assert.deepEqual([...g.state.view.collapsedGroups].sort(), ['bundle', 'fs'], '…and it touched no state')
   // a live path is inert at either tier (unchanged V2.2 rule)
   g.LOG.length = 0
@@ -3382,15 +3437,17 @@ test('V2.3 group dbl-tap: 组级 restores the expand/collapse toggle; 包级 and
   g.state.focus = { rootId: 'a@1', depth: null }
   g.trigger('dbltap', g.groupCard('fs'))
   assert.deepEqual(g.LOG, [], 'inside a path a dbl-tap never re-cuts the structure under the reader')
-  // zone shells keep their own, tier-independent gate
+  // zone shells keep their own, tier-independent gate — R57: and the same pair gate
   g.state.focus = null
   g.LOG.length = 0
+  g.trigger('tap', g.zone('tools'))
+  g.trigger('tap', g.zone('tools'))
   g.trigger('dbltap', g.zone('tools'))
   assert.deepEqual([...g.state.view.collapsedCats], ['tools'], 'zone dbl-tap still collapses the whole zone')
   g.state.focus = { rootId: 'a@1', depth: null }
   g.LOG.length = 0
   g.trigger('dbltap', g.zone('tools'))
-  assert.deepEqual(g.LOG, [], '…and is inert inside a path')
+  assert.deepEqual(g.LOG, [], '…and is inert inside a path (an unpaired dbltap is refused by the gate even sooner)')
   // a single tap still selects (the dbl-tap handlers must not swallow it)
   g.state.focus = null
   g.LOG.length = 0
@@ -3685,13 +3742,17 @@ test('V2.7 R50 menu entry + dbl-tap sequence through the REAL handlers: menu foc
   assert.deepEqual(w.LOG, ['peek-off', 'details', 'sync', 'paint:focus'], 'repaints — and zero camera ops')
   w.LOG.length = 0
   // --- dbltap (the root card keeps the V2.4b toggle semantics): expand, focus STAYS ---
+  // V2.8 R57: the gate is live — the dbltap must ride a REAL two-tap stream. The
+  // 3682 tap is the pair's first leg; this tap is its second (same id, same ms).
+  w.tap(w.card('bundle'))
   w.dbltap(w.card('bundle'))
   assert.deepEqual([...w.state.view.collapsedGroups].sort(), ['fs'],
     'the materialized all-collapsed default opens ONLY the toggled group')
   assert.deepEqual(w.state.focus, { rootId: 'g:bundle', depth: 1, packages: true },
     'the focus survives and flips to the member shape (the group is now expanded)')
   assert.deepEqual(w.state.pathStack, [], 'the dbl-tap never touched the stack')
-  assert.deepEqual(w.LOG, ['paint:focus'], 'the toggle repaints through paint() — the only structure path, viewport kept')
+  assert.deepEqual(w.LOG, ['peek-off', 'details', 'sync', 'paint:focus', 'paint:focus'],
+    'the gating tap (walk-inert chain) + ONE toggle repaint — the only structure path, viewport kept (V2.8 R57: the gate reads the REAL stream)')
   // --- the menu now offers the MERGE label + the member-shape focus label ---
   w.LOG.length = 0
   w.cxt(w.card('bundle'))
@@ -3707,6 +3768,7 @@ test('V2.7 R50 menu entry + dbl-tap sequence through the REAL handlers: menu foc
   w.tap(w.card('fs'))
   assert.equal(w.state.focus.rootId, 'g:fs', 'walking to a neighbor card re-roots the group focus')
   assert.deepEqual(w.state.pathStack, ['g:bundle'], 'the previous group root entered the stack')
+  w.tap(w.card('fs')) // R57: the pair's second leg — the dbltap below is now deliberate
   w.dbltap(w.card('fs'))
   assert.equal(w.state.focus.packages, true, 'the focus root card toggles in every group focus')
   // a NON-root card stays the documented inert (no surprise layout re-cut under the reader)
@@ -4849,8 +4911,11 @@ test('V2.7 R51 source guards: level classes on the details container, chip in th
   assert.match(src, /lvlChip\(head\(box, String\(n\.name == null \? n\.id : n\.name\)\), t\('lvlPkg'\)\)/, 'package header gets the 包 chip')
   const zd = src.slice(src.indexOf('function detailsZone(box, cid) {'), src.indexOf('function detailsGroup(box, gid) {'))
   assert.match(zd, /hb\.className = 'jump ghead'/, 'group headers are buttons riding the shared .jump row class')
-  assert.match(zd, /escText\(hb, gid \+ ' \\u00d7' \+ res\.total\)/, 'header text is escText(gid ×TRUE total)')
-  assert.match(zd, /hb\.addEventListener\('click', function \(\) \{ selectNode\('g:' \+ gid\) \}\)/, 'the header click IS the plain group door')
+  // V2.8 MIGRATION: the header label is COMPOSED — name span + ×N in its own
+  // .cnt span (+ the hoisted .ver span) — every piece escText, no HTML sink.
+  assert.match(zd, /var gs = document\.createElement\('span'\); escText\(gs, s\.gid\)/, 'header name span is escText(gid)')
+  assert.match(zd, /cn\.className = 'cnt'; escText\(cn, ' \\u00d7' \+ res\.total\)/, 'the ×N count is escText into its own .cnt span (TRUE total)')
+  assert.match(zd, /hb\.addEventListener\('click', function \(\) \{ selectNode\('g:' \+ s\.gid\) \}\)/, 'the header click IS the plain group door')
   assert.doesNotMatch(zd, /selectNode\([^\n]*true\)/, 'the group-header door carries NO nav flag (cold select, in-focus walk)')
   assert.match(zd, /var rows = document\.createElement\('div'\); rows\.className = 'gmem'/, 'member rows sit in an indented .gmem wrapper')
   assert.match(zd, /res\.rows\.slice\(0, ZONE_GROUP_CAP\)/, 'members capped per section')
@@ -4879,8 +4944,11 @@ test('V2.7 R51 CSS guards: accent bands per level, the fixed 13-zone palette ban
     assert.ok(css.includes(`#details.lvl-zone[data-zone="${zid}"] { border-left-color: ${hex}; }`), `zone band ${zid} → ${hex} ships`)
   }
   assert.match(css, /#details h2 \.lvl/, 'the badge chip is styled')
-  assert.match(css, /#details \.ghead \{ font-weight: 700; \}/, 'group-header buttons read as section heads')
-  assert.match(css, /#details \.gmem \{ padding-left: 14px; \}/, 'member rows indent under their header')
+  // V2.8 MIGRATION (R55/R56): .ghead gained its steel type color + a 2px lead,
+  // .gmem tightened 14px → 12px; the full color-system rules are pinned in the
+  // R56/R55 guards below.
+  assert.match(css, /#details \.ghead \{ font-weight: 700; color: light-dark\(#4f6b8a, #8fa9c9\); margin-top: 2px; \}/, 'group-header buttons: bold kept, steel type color')
+  assert.match(css, /#details \.gmem \{ padding-left: 12px; \}/, 'member rows indent under their header')
 })
 
 // ---------- R51: the grouped zone details render through the REAL builders ----------
@@ -4900,11 +4968,13 @@ function loadZoneDetailsDom() {
     'function selectNode(id, nav) { LOG.push(\x27select:\x27 + id + (nav ? \x27:nav\x27 : \x27:bare\x27)) }\n',
     'function revealNode(n) { LOG.push(\x27reveal:\x27 + n.id) }\n',
     'function El(tag) {\n',
-    '  this.tag = tag; this.children = []; this.className = \x27\x27; this.text = \x27\x27; this.handlers = {}; this.hidden = false\n',
+    '  this.tag = tag; this.children = []; this.className = \x27\x27; this.text = \x27\x27; this.handlers = {}; this.hidden = false; this.attrs = {}\n',
     '  var self = this\n',
     '  this.appendChild = function (c) { c.parentNode = self; this.children.push(c); return c }\n',
     '  this.insertBefore = function (n, ref) { var i = this.children.indexOf(ref); if (i < 0) return this.appendChild(n); n.parentNode = self; this.children.splice(i, 0, n); return n }\n',
     '  this.addEventListener = function (k, fn) { self.handlers[k] = fn }\n',
+    '  this.setAttribute = function (k, v) { self.attrs[k] = String(v) }\n',
+    '  this.getAttribute = function (k) { return k in self.attrs ? self.attrs[k] : null }\n',
     '}\n',
     'Object.defineProperty(El.prototype, \x27textContent\x27, {\n',
     '  get: function () { return this.text },\n',
@@ -4923,10 +4993,18 @@ function loadZoneDetailsDom() {
     extractBalanced(src, 'function lvlChip(h, label) {') + '\n',
     extractBalanced(src, 'function groupZoneOf(graph, gid) {') + '\n',
     extractBalanced(src, 'function buildGroupMembers(sel, graph) {') + '\n',
-    extractBalanced(src, 'function memberRow(box, row, onClick) {') + '\n',
+    extractBalanced(src, 'function commonScopePrefix(names) {') + '\n',
+    extractBalanced(src, 'function versionDigest(rows) {') + '\n',
+    extractBalanced(src, 'function h2Of(box) {') + '\n',
+    extractBalanced(src, 'function scopeBadge(box, scope) {') + '\n',
+    extractBalanced(src, 'function headerVersion(box, ver) {') + '\n',
+    extractBalanced(src, 'function crumbButton(box, label, onClick) {') + '\n',
+    extractBalanced(src, 'function memberRow(box, row, onClick, opts) {') + '\n',
+    extractBalanced(src, 'function memberSection(box, sel) {') + '\n',
     extractBalanced(src, 'function detailsZone(box, cid) {') + '\n',
     extractBalanced(src, 'function zoneGroupSections(box, groups) {') + '\n',
-    'return { state: state, LOG: LOG, El: El, CAP: ZONE_GROUP_CAP, detailsZone: detailsZone }',
+    extractBalanced(src, 'function detailsGroup(box, gid) {') + '\n',
+    'return { state: state, LOG: LOG, El: El, CAP: ZONE_GROUP_CAP, detailsZone: detailsZone, detailsGroup: detailsGroup }',
   ].join('')
   return new Function(body)()
 }
@@ -4963,8 +5041,13 @@ test('V2.7 R51 zone details list BY GROUP through the real builders: chip, alpha
   const kv = (key) => box.children.find((c) => c.className === 'kv' && c.children[0].text === key)
   assert.equal(kv('GROUPS').children[1].text, '4', 'the GROUPS row counts every group in the zone…')
   const heads = box.children.filter((c) => (c.className || '').split(' ').includes('ghead'))
-  assert.deepEqual(heads.map((h) => h.text), ['alpha ×2', 'beta ×13', 'zeta ×1'], 'sections are alphabetical with TRUE totals…')
-  assert.equal(heads.some((h) => h.text.startsWith('empty')), false, '…and the zero-member group is invisible (the flat list showed nothing for it either)')
+  // V2.8 R54 MIGRATION: this fixture's groups are all-one-version, so the
+  // version HOISTS onto the header — the composed label is gid + ×TRUE + · ver
+  // (spans: plain name / .cnt / .ver), read as one concatenated string.
+  assert.deepEqual(heads.map(allText), ['alpha ×2 · 1.0.0', 'beta ×13 · 1.0.0', 'zeta ×1 · 1.0.0'], 'sections are alphabetical with TRUE totals, hoisted verbatim versions…')
+  assert.deepEqual(heads.map((h) => h.children.filter((c) => c.className === 'cnt').map((c) => c.text)), [[' ×2'], [' ×13'], [' ×1']], '…the ×N count rides its own .cnt span (R56)…')
+  assert.deepEqual(heads.map((h) => h.children.filter((c) => c.className === 'ver').map((c) => c.text)), [[' · 1.0.0'], [' · 1.0.0'], [' · 1.0.0']], '…the hoisted version rides its own .ver span (R54)…')
+  assert.equal(heads.some((h) => allText(h).startsWith('empty')), false, '…and the zero-member group is invisible (the flat list showed nothing for it either)')
   const gmems = box.children.filter((c) => c.className === 'gmem')
   assert.deepEqual(gmems.map((g) => g.children.length), [2, dom.CAP + 1, 1], 'each section lists AT MOST CAP member rows inside its wrapper…')
   assert.ok(gmems[1].children.slice(0, dom.CAP).every((c) => c.className === 'jump'), '…the first CAP children of the capped section are member rows…')
@@ -4985,4 +5068,271 @@ test('V2.7 R51 zone details list BY GROUP through the real builders: chip, alpha
   dom.detailsZone(emptyBox, 'tools')
   assert.equal(emptyBox.children.filter((c) => c.className === 'ghead' || c.className === 'gmem').length, 0, 'no sections at all')
   assert.equal(emptyBox.children[emptyBox.children.length - 1].text, 'MEMBERS(0)', '…just the honest zero header')
+})
+
+// =========================================================================
+// Task V2.8 — details-panel de-duplication + the info-type color system.
+// R53/R54 are the two PURE computes (commonScopePrefix / versionDigest) and
+// their render contracts through the REAL details chain; R55/R56 are CSS
+// guards (palette membership + WCAG-AA contrast arithmetic). Doctrine holds:
+// scalars / stringified JSON only, never fake-DOM node trees.
+// =========================================================================
+
+function loadDedupLogic() {
+  const src = readFileSync(join(WEB, 'app.js'), 'utf8')
+  return new Function([
+    extractBalanced(src, 'function commonScopePrefix(names) {') + '\n',
+    extractBalanced(src, 'function versionDigest(rows) {') + '\n',
+    'return { commonScopePrefix: commonScopePrefix, versionDigest: versionDigest }',
+  ].join(''))()
+}
+
+test('V2.8 R53 commonScopePrefix boundaries: all-same / majority+1 / all-diff / single row / no-scope-mixed', () => {
+  const { commonScopePrefix: csp } = loadDedupLogic()
+  assert.equal(csp(['@deepseek-ai/a', '@deepseek-ai/b', '@deepseek-ai/c']), '@deepseek-ai/', 'all-same → the shared npm scope')
+  assert.equal(csp(['@deepseek-ai/a', '@deepseek-ai/b', '@other/c']), '', 'majority+1-diff → NO omission (all rows share it or nobody drops it)')
+  assert.equal(csp(['@a/x', '@b/y', '@c/z']), '', 'all-diff → no omission')
+  assert.equal(csp(['@deepseek-ai/only']), '@deepseek-ai/', 'a single row counts as all-same (one row is a unanimous panel)')
+  assert.equal(csp(['dsh-pkg-atlas']), '', 'a single UNSCALED row is never eaten (its LCP is not a scope)')
+  assert.equal(csp(['@deepseek-ai/a', 'dsh-pkg-atlas']), '', 'a scope-less row mixed in → the common string is empty → no omission')
+  assert.equal(csp(['@a/x', '@ab/y']), '', 'a partial scope (@a — the / falls outside the LCP) is NOT a scope')
+  assert.equal(csp(['@a/', '@a/']), '', 'omission would leave empty names → refused (a row must keep its name)')
+  assert.equal(csp([]), '', 'no rows → no scope')
+  assert.equal(csp(null), '', 'junk input → empty string, never a throw')
+  assert.equal(csp([null, '@a/x', undefined, '@a/y']), '@a/', 'junk entries drop out; the survivors still decide unanimously')
+})
+
+test('V2.8 R54 versionDigest boundaries: all-same / majority+1-diff / all-diff / tie / single row / no versions', () => {
+  const { versionDigest: vd } = loadDedupLogic()
+  const V = (...vers) => vers.map((v) => ({ version: v }))
+  const J = (x) => JSON.stringify(x)
+  assert.equal(J(vd(V('1.0.0', '1.0.0', '1.0.0'))), J({ mode: 'all', version: '1.0.0' }), 'all-same → header takes it, rows go silent')
+  assert.equal(J(vd(V('0.1.5', '0.1.5', '0.1.5', '0.2.0'))), J({ mode: 'majority', version: '0.1.5' }), 'majority+1-diff → header takes the plurality, the odd row is the exception')
+  assert.equal(J(vd(V('1.0.0', '2.0.0', '3.0.0'))), J({ mode: 'mixed', version: null }), 'all-diff → NO header version, every row keeps its own (secondary, not amber)')
+  assert.equal(J(vd(V('1.0.0', '1.0.0', '2.0.0', '2.0.0'))), J({ mode: 'mixed', version: null }), 'a tie has no plurality → mixed (hoisting a tied version would lie)')
+  assert.equal(J(vd(V('9.9.9'))), J({ mode: 'all', version: '9.9.9' }), 'single row → trivially all-same')
+  assert.equal(J(vd(V('0.1.5', '0.1.5', '-', ''))), J({ mode: 'all', version: '0.1.5' }), 'version-less rows never break the hoist (they simply do not vote)')
+  assert.equal(J(vd(V('-', '-'))), J({ mode: 'none', version: null }), 'nothing to hoist when no row carries a version')
+  assert.equal(J(vd([])), J({ mode: 'none', version: null }), 'no rows → none')
+  assert.equal(J(vd(null)), J({ mode: 'none', version: null }), 'junk input → none, never a throw')
+})
+
+test('V2.8 R53+R54 zone panel render: one scope badge, prefix-omitted rows, hoisted/majority/mixed headers, title=full name@version', () => {
+  const dom = loadZoneDetailsDom()
+  const mk = (id, name, version, group) => ({ id, kind: 'package', name, version, group, category: 'tools', scope: 'official' })
+  const nodes = [
+    mk('A@1', '@deepseek-ai/aa', '0.1.5', 'ds'), mk('B@1', '@deepseek-ai/bb', '0.1.5', 'ds'),
+    mk('C@1', '@deepseek-ai/cc', '0.2.0', 'ds'), mk('P@1', '@deepseek-ai/pp', '9.9.9', 'solo'),
+  ]
+  const graph = {
+    categories: [{ id: 'tools', zh: '工具', en: 'Tools' }],
+    groups: [{ id: 'ds', kind: 'official', category: 'tools' }, { id: 'solo', kind: 'official', category: 'tools' }],
+    nodes, edges: [],
+  }
+  dom.state.graph = graph
+  dom.state.byId = new Map(nodes.map((n) => [n.id, n]))
+  dom.state.groupIds = new Set(['ds', 'solo'])
+  dom.state.groupZone = new Map([['ds', 'tools'], ['solo', 'tools']])
+  const box = new dom.El('div')
+  dom.detailsZone(box, 'tools')
+  // R53: the shared scope is stated ONCE, in the header, as a small badge
+  const badges = box.children[0].children.filter((c) => String(c.className).split(' ').includes('scope'))
+  assert.equal(badges.length, 1, 'the shared scope rides the panel header exactly once')
+  assert.equal(badges[0].text, '@deepseek-ai/', 'badge text = the shared npm scope (escText)')
+  assert.equal(String(badges[0].className), 'badge scope', 'it rides the badge shell + the scope modifier (CSS-owned look)')
+  // R54 headers: majority+1 on ds, trivially-all on solo
+  const heads = box.children.filter((c) => (c.className || '').split(' ').includes('ghead'))
+  assert.deepEqual(heads.map(allText), ['ds ×3 · 0.1.5', 'solo ×1 · 9.9.9'], 'majority and all-same both hoist the version onto the group header')
+  assert.equal(heads[0].children[1].className, 'cnt', 'the ×N count is its own .cnt span (amber mono, no bold — R56)')
+  assert.equal(heads[0].attrs.title, 'ds', 'the header keeps a full-gid title (setAttribute string)')
+  heads[0].handlers.click()
+  assert.deepEqual(dom.LOG, ['select:g:ds:bare'], 'R51 doctrine INTACT under the new spans: the header door is still the bare selectNode group door')
+  // R54 rows: silence for the majority, inline AMBER for the exception
+  const gmem = box.children.filter((c) => c.className === 'gmem')
+  const rows = gmem[0].children
+  assert.deepEqual(rows.map((r) => r.children[0].text), ['aa', 'bb', 'cc'], 'R53: the shared prefix is gone from EVERY row name span')
+  assert.deepEqual(rows.map((r) => r.children.filter((c) => c.className.includes('ver')).map((c) => c.text)), [[], [], ['@0.2.0']],
+    'R54: majority rows carry NO version; the odd row gets its inline @version')
+  assert.equal(rows[2].children[1].className, 'ver ver-exc', 'the odd row is the AMBER exception class (ver-exc)')
+  assert.equal(rows[0].attrs.title, '@deepseek-ai/aa@0.1.5', 'R53: the row title = the FULL name@version — the omitted text is one hover away')
+  assert.equal(rows[2].attrs.title, '@deepseek-ai/cc@0.2.0', '…same for the exception row')
+  assert.deepEqual(gmem[1].children[0].children.map((c) => c.text), ['pp'], 'the single-row group hoists too: bare name, no version span')
+  assert.equal(gmem[1].children[0].attrs.title, '@deepseek-ai/pp@9.9.9', '…with the full version kept in the title')
+  // R51 structure under all of the above: alphabetical, one .gmem per section
+  assert.deepEqual(box.children.filter((c) => c.className === 'gmem').length, 2, 'one indent wrapper per section')
+
+  // mixed panel: one scope-less row kills the omission; all-different versions kill the hoist
+  const nodes2 = [
+    mk('M1@1', 'left-pad', '1.0.0', 'mix'), mk('M2@1', '@deepseek-ai/z', '2.0.0', 'mix'), mk('M3@1', 'm3', '3.0.0', 'mix'),
+  ]
+  const graph2 = {
+    categories: graph.categories,
+    groups: [{ id: 'mix', kind: 'official', category: 'tools' }],
+    nodes: nodes2, edges: [],
+  }
+  dom.state.graph = graph2
+  dom.state.byId = new Map(nodes2.map((n) => [n.id, n]))
+  dom.state.groupIds = new Set(['mix'])
+  dom.state.groupZone = new Map([['mix', 'tools']])
+  const box2 = new dom.El('div')
+  dom.detailsZone(box2, 'tools')
+  assert.equal(box2.children[0].children.filter((c) => String(c.className).split(' ').includes('scope')).length, 0, 'no-scope-mixed → NO scope badge')
+  const heads2 = box2.children.filter((c) => (c.className || '').split(' ').includes('ghead'))
+  assert.equal(allText(heads2[0]), 'mix ×3', 'all-different → the header shows NO version')
+  const rows2 = box2.children.filter((c) => c.className === 'gmem')[0].children
+  assert.deepEqual(rows2.map((r) => r.children[0].text), ['@deepseek-ai/z', 'left-pad', 'm3'], 'mixed panel → rows keep their FULL names (sorted by name: the scoped one first)')
+  assert.deepEqual(rows2.map((r) => r.children.filter((c) => String(c.className).split(' ').includes('ver')).map((c) => c.text)), [['@2.0.0'], ['@1.0.0'], ['@3.0.0']],
+    'all-diff → EVERY row shows its own version inline')
+  assert.equal(rows2.some((r) => r.children.some((c) => c.className.includes('ver-exc'))), false, '…and NONE of them is amber — all-different is not exceptional')
+
+  // sink trap: attacker-controlled scope, names, versions and group id — TEXT only
+  const evil = '<img src=x onerror=alert(1)>'
+  const nodesE = [mk('E1', '@evil/' + evil + '/x', '<i>9</i>', 'evil/<svg>'), mk('E2', '@evil/' + evil + '/y', '<i>9</i>', 'evil/<svg>')]
+  const graphE = {
+    categories: graph.categories,
+    groups: [{ id: 'evil/<svg>', kind: 'official', category: 'tools' }],
+    nodes: nodesE, edges: [],
+  }
+  dom.state.graph = graphE
+  dom.state.byId = new Map(nodesE.map((n) => [n.id, n]))
+  dom.state.groupIds = new Set(['evil/<svg>'])
+  dom.state.groupZone = new Map([['evil/<svg>', 'evil/<svg>']])
+  const boxE = new dom.El('div')
+  dom.detailsZone(boxE, 'evil/<svg>')
+  const textsE = domTexts(boxE)
+  assert.equal(textsE.filter((s) => s.includes(evil)).length, 1,
+    'the attacker string reaches visible TEXT exactly once — in the scope badge (the rows themselves are prefix-omitted; their copy of it lives only in the title ATTRIBUTES)')
+  const badgeE = boxE.children[0].children.filter((c) => String(c.className).split(' ').includes('scope'))
+  assert.equal(badgeE.length, 1, 'the evil shared scope still badges (its text is escText, not markup)')
+  assert.equal(badgeE[0].text, '@evil/' + evil + '/', 'badge text = the raw scope string, VERBATIM as text')
+  // parentNode is a back-reference (circular) — the sink scan strings the tree
+  // with it dropped; scalars only, never a node dump.
+  const dumpE = () => JSON.stringify(boxE, (k, v) => (k === 'parentNode' ? undefined : v))
+  assert.equal(dumpE().includes('innerHTML'), false, 'no HTML sink anywhere in the composed panel')
+  assert.equal(dumpE().includes('outerHTML'), false, '…nor any other HTML surface')
+  const headE = boxE.children.filter((c) => (c.className || '').split(' ').includes('ghead'))[0]
+  assert.equal(headE.children[0].text, 'evil/<svg>', 'the attacker GROUP ID renders as text in the name span')
+  assert.equal(headE.children.filter((c) => String(c.className).split(' ').includes('ver'))[0].text, ' · <i>9</i>', 'the attacker VERSION hoists as text, never as markup')
+  const rowsE = boxE.children.filter((c) => c.className === 'gmem')[0].children
+  assert.deepEqual(rowsE.map((r) => r.children[0].text), ['x', 'y'], 'the evil prefix is omitted from the rows too (it is still a unanimous scope)')
+  assert.equal(rowsE[0].attrs.title, '@evil/' + evil + '/x@<i>9</i>', '…and the full attacker identity survives ONLY as a title attribute string')
+})
+
+test('V2.8 R54 group-detail page: the group header h2 takes the hoisted version + the once-scope badge, rows stay R51-shaped', () => {
+  const dom = loadZoneDetailsDom()
+  const mk = (id, name, version, group) => ({ id, kind: 'package', name, version, group, category: 'tools', scope: 'official' })
+  const nodes = [
+    mk('A@1', '@deepseek-ai/aa', '0.1.5', 'ds'), mk('B@1', '@deepseek-ai/bb', '0.1.5', 'ds'), mk('C@1', '@deepseek-ai/cc', '0.2.0', 'ds'),
+  ]
+  const graph = {
+    categories: [{ id: 'tools', zh: '工具', en: 'Tools' }],
+    groups: [{ id: 'ds', kind: 'official', category: 'tools' }],
+    nodes, edges: [],
+  }
+  dom.state.graph = graph
+  dom.state.byId = new Map(nodes.map((n) => [n.id, n]))
+  dom.state.groupIds = new Set(['ds'])
+  dom.state.groupZone = new Map([['ds', 'tools']])
+  const box = new dom.El('div')
+  dom.detailsGroup(box, 'ds')
+  const h2 = box.children.find((c) => c.tag === 'h2')
+  assert.ok(h2, 'the group panel opens with its header')
+  assert.equal(h2.children.filter((c) => String(c.className).split(' ').includes('scope')).map((c) => c.text).join('|'), '@deepseek-ai/', 'the group page badges the shared scope once, in the header')
+  assert.deepEqual(h2.children.filter((c) => String(c.className).split(' ').includes('gver')).map((c) => c.text), [' · 0.1.5'], 'the majority version rides the GROUP HEADER (gver = the version channel in the header)')
+  const rows = box.children.filter((c) => c.className === 'jump')
+  assert.equal(rows.length, 3, 'memberSection still paints one row per member (R51 shape untouched)')
+  assert.deepEqual(rows.map((r) => r.children[0].text), ['aa', 'bb', 'cc'], 'rows drop the shared prefix (panel-wide decision)')
+  assert.deepEqual(rows.map((r) => r.children.filter((c) => c.className.includes('ver-exc')).map((c) => c.text)), [[], [], ['@0.2.0']], 'the odd row is the amber exception, inline')
+  assert.deepEqual(rows.map((r) => r.attrs.title), ['@deepseek-ai/aa@0.1.5', '@deepseek-ai/bb@0.1.5', '@deepseek-ai/cc@0.2.0'], 'titles keep the full identity')
+})
+
+test('V2.8 R56 palette guard: the details color system invents NO hue — every hex is an existing canvas/legend constant', () => {
+  const src = readFileSync(join(WEB, 'app.js'), 'utf8')
+  const css = readFileSync(join(WEB, 'style.css'), 'utf8')
+  // the palette the canvas already ships: ZONE_COLORS + FOCUS_COLORS verbatim…
+  const zone = src.slice(src.indexOf('var ZONE_COLORS = {'), src.indexOf('var ZONE_IDS_FALLBACK'))
+  const focus = src.slice(src.indexOf('var FOCUS_COLORS = {'), src.indexOf('var PATH_ROW_CAP'))
+  assert.ok(zone.length > 50 && focus.length > 30, 'both palette constants are still there to read')
+  // …plus the non-canvas chrome hexes the stylesheet already knew BEFORE #details
+  const pre = css.slice(0, css.indexOf('#details {'))
+  const palette = new Set()
+  for (const block of [zone, focus, pre]) {
+    for (const m of block.matchAll(/#[0-9a-fA-F]{6}\b/g)) palette.add(m[0].toLowerCase())
+  }
+  palette.add('#10141a') // the panel's OWN light-dark pair (grounds, not hues)
+  palette.add('#fbfcfd')
+  // sweep EVERY 6-digit hex in the details block: each must already exist
+  const details = css.slice(css.indexOf('#details {'), css.indexOf('#search-results {'))
+  for (const m of details.matchAll(/#[0-9a-fA-F]{6}\b/g)) {
+    assert.ok(palette.has(m[0].toLowerCase()), `details-block hex ${m[0]} is outside the existing palette (no new hues — brief doctrine)`)
+  }
+  // the R56 channel rules ship verbatim (exact rule strings = exact colors):
+  assert.match(css, /#details \.ghead \{ font-weight: 700; color: light-dark\(#4f6b8a, #8fa9c9\); margin-top: 2px; \}/,
+    'R56.4: group heads take the platform steel pair (bold kept)')
+  assert.match(css, /#details \.cnt \{ font-family: ui-monospace, Consolas, monospace; font-size: 10px; color: light-dark\(#b45309, #f59e0b\); \}/,
+    'R56.3: structural counts are amber mono 10px WITHOUT bold')
+  assert.match(css, /#details \.jump \.ver, #details h2 \.gver \{ font-family: ui-monospace, Consolas, monospace; font-size: 11px; opacity: \.62; \}/,
+    'R56.2: versions are secondary (opacity treatment), one size down, monospace')
+  assert.match(css, /#details \.jump \.ver\.ver-exc \{ opacity: 1; color: light-dark\(#b45309, #f59e0b\); \}/,
+    'R54/R56: the version exception is amber (FOCUS down pair — the AA-clean member of the amber family)')
+  assert.match(css, /#details \.badge\.b-3p, #details \.badge\.b-kind \{ border-color: transparent; background: light-dark\(#9a6ac2, #c194e8\); color: #10141a; \}/,
+    'R56.6: third-party and kind pills are the plugin-purple pair with dark pill text')
+  assert.match(css, /#details \.badge\.b-profile \{ border-color: transparent; background: light-dark\(#d9a441, #eec06a\); color: #10141a; \}/,
+    'R56.6: the profile pill is the profiles-gold pair')
+  assert.match(css, /#details \.sec \{ margin: 6px 0 2px; font-size: 11px; opacity: \.55; letter-spacing: \.08em; \}/,
+    'R56.5 + R55: section labels drop bold, sink to .55, gain letter-spacing')
+  assert.match(css, /#details \.badge\.scope \{ opacity: \.75; font-family: ui-monospace, Consolas, monospace; \}/,
+    'R53: the scope badge is a quiet mono capsule on the neutral shell')
+  // light-dark() dual values wherever a NEW semantic color was introduced:
+  const dual = [
+    '#details .ghead {', '#details .cnt {', '.ver-exc {', '.badge.b-3p,', '.badge.b-profile {',
+  ]
+  for (const d of dual) assert.ok(css.includes(d), `rule ${d} ships`)
+})
+
+test('V2.8 R56 WCAG-AA contrast guard: every details text channel clears 4.5:1 on BOTH panel grounds', () => {
+  const lum = (hex) => {
+    const c = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
+      .map((v) => (v <= 0.04047 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)))
+    return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+  }
+  const hex2 = (v) => Math.round(v).toString(16).padStart(2, '0')
+  const mix = (fg, bg, a) => '#' + [1, 3, 5]
+    .map((i) => hex2(parseInt(fg.slice(i, i + 2), 16) * a + parseInt(bg.slice(i, i + 2), 16) * (1 - a)))
+    .join('')
+  const ratio = (fg, bg) => {
+    const l1 = lum(fg), l2 = lum(bg)
+    return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05)
+  }
+  const DK = '#10141a', LT = '#fbfcfd'
+  const pairs = [
+    ['entity name / default text (light)', '#000000', LT],
+    ['entity name / default text (dark)', '#ffffff', DK],
+    ['.ver secondary at .62 (light)', mix('#000000', LT, 0.62), LT],
+    ['.ver secondary at .62 (dark)', mix('#ffffff', DK, 0.62), DK],
+    ['.sec label at .55 (light)', mix('#000000', LT, 0.55), LT],
+    ['.sec label at .55 (dark)', mix('#ffffff', DK, 0.55), DK],
+    ['.ghead steel (light)', '#4f6b8a', LT],
+    ['.ghead steel (dark)', '#8fa9c9', DK],
+    ['.cnt / .ver-exc amber (light)', '#b45309', LT],
+    ['.cnt / .ver-exc amber (dark)', '#f59e0b', DK],
+    ['pill text on gold (light)', '#10141a', '#d9a441'],
+    ['pill text on gold (dark)', '#10141a', '#eec06a'],
+    ['pill text on purple (light)', '#10141a', '#9a6ac2'],
+    ['pill text on purple (dark)', '#10141a', '#c194e8'],
+  ]
+  for (const [label, fg, bg] of pairs) {
+    const r = ratio(fg, bg)
+    assert.ok(r >= 4.5, `${label}: ${fg} on ${bg} = ${r.toFixed(2)}:1 — below AA 4.5:1`)
+  }
+})
+
+test('V2.8 R55 density tune: member rows, the section rhythm and the .gmem indent each drop a notch', () => {
+  const css = readFileSync(join(WEB, 'style.css'), 'utf8')
+  assert.ok(css.includes('#details .jump { display: block; width: 100%; text-align: left; border: 0; background: none; cursor: pointer; padding: 0 4px; font: inherit; font-size: 12px; color: inherit; overflow-wrap: anywhere; }'),
+    'member rows: vertical padding 1px → 0 (−2px on EVERY row — the panel is mostly rows)')
+  assert.ok(css.includes('#details .gmem { padding-left: 12px; }'), 'R55: the indent tightens 14px → 12px')
+  assert.ok(css.includes('#details .kv { margin: 2px 0; font-size: 12px; }'), 'kv rows (the count/cap tails) lose 2px of margin')
+  assert.ok(css.includes('#details .ghead { font-weight: 700; color: light-dark(#4f6b8a, #8fa9c9); margin-top: 2px; }'),
+    'group heads sit 2px off the previous block — a hair, not a gutter')
 })

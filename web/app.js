@@ -11,13 +11,15 @@
  * `state.view` (or state.focus/selected/theme/lang) and then calls paint() —
  * no control touches cytoscape elements directly.
  *
- * V2.5 R45 (camera doctrine): every repaint KEEPS the viewport — the old
- * structural auto-refit is retired (paint fits exactly once, the boot frame,
- * behind state.fitted). The camera moves only at the sanctioned spots, always
- * cy.animate OUTSIDE the render path: entry/walk glide (afterFocusChange),
- * exit restore (the armed snapshot), reveal center+zoom (flashReveal),
- * re-root glide (focusNode when the root actually moved) and the explicit
- * resetView (⌂ / background-menu 复位视图).
+ * V2.7 R50 (camera doctrine, supersedes V2.5 R45): every repaint KEEPS the
+ * viewport, and focus transitions are now FULLY camera-free — entering, walking,
+ * re-rooting or exiting a focus moves the camera ZERO times. The V2.2b viewport
+ * snapshot (entry capture + exit restore glide) is retired as dead code, and so
+ * is the entry/walk/re-root fit glide (animateFitPath). The ONLY surviving
+ * camera paths are the boot first-frame fit (state.fitted gate), the explicit
+ * resetView (⌂ / background-menu 复位视图), and the named-navigation reveal
+ * center+flash (flashReveal, reached from revealNode — search hits, member rows,
+ * the deep-link fallback). Everything else never touches the viewport.
  *
  * Parent sizing (V5-M-6, VERIFIED against the vendored 3.34.1 dist by a headless
  * probe): compound nodes auto-fit their children (a 700x500 data-w/h parent with
@@ -44,12 +46,12 @@
       scopeLabel: '类型', scopeAll: '全部', scopeOfficial: '官方', scopeThird: '第三方',
       profileLabel: 'Profile', profileAll: '全部', realCrossLabel: '真实跨包线',
       edgeKindsLabel: '边型',
-      focusLabel: '聚焦深度', focusUnlimited: '不限', focusOn: '聚焦上下游', focusOff: '退出路径',
+      focusLabel: '聚焦深度', focusUnlimited: '不限', focusOn: '聚焦上下游', focusOff: '退出依赖图',
       backLabel: '返回',
       lodGroups: '组级', lodPkgs: '包级', lodLabel: '显示粒度（组级＝组卡片，双击组卡展开该区成员；包级＝全部展开）',
       peekDeps: '直接依赖', peekDependents: '直接被依赖', peekUnsat: '含未满足边', peekBroken: '断链包',
       chipShowAll: '全部显示', chipHideAll: '全部隐藏',
-      legendTitle: '图例', legendShapes: '节点形状', legendEdges: '边类型', legendFocus: '聚焦路径',
+      legendTitle: '图例', legendShapes: '节点形状', legendEdges: '边类型', legendFocus: '依赖图配色',
       shOfficial: '官方包', shThirdParty: '第三方包', shProfile: 'Profile', shBroken: '断链包',
       egDep: '依赖 dep', egMount: '挂载 mount', egPeer: '对等 peer',
       egPeerOpt: '可选对等 peer-opt', egAgg: '聚合边（组聚焦内出现，粗细∝计数）',
@@ -65,6 +67,8 @@
       unsatLabel: '未满足', bundleSurfaceLabel: 'bundle 面', declaredDepsLabel: '声明依赖',
       readmeLabel: 'README', noReadmeLabel: '（无 README）', moreLabel: '+{n} 更多',
       kindLabel: '类型', groupLabel: '组', zoneLabel: '区',
+      // V2.7 R51: 详情分级徽章 + 区级详情分组小节的每组截断行
+      lvlZone: '区', lvlGroup: '组', lvlPkg: '包', groupMoreLabel: '还有 {n}',
       // V2.4b group focus: the disabled depth hint + the related-neighborhood headers
       groupFocusDepth: '组聚焦固定 1 跳（深度不适用）',
       relatedGroupsLabel: '相关组（{n}）', relatedPkgsLabel: '相关包（{n}）',
@@ -73,7 +77,7 @@
       menuFocusGroup: '聚焦邻域（1 跳）', menuFocusGroupPkgs: '聚焦邻域（包形态）',
       menuSoloZone: '只看该区', menuHideZone: '隐藏该区',
       menuCollapseZone: '折叠该区', menuExpandZone: '展开该区',
-      menuPkgPath: '路径模式', menuResetView: '复位视图', menuExitFocus: '退出聚焦' },
+      menuPkgPath: '依赖图', menuResetView: '复位视图', menuExitFocus: '退出聚焦' },
     en: { title: 'DSH Package Atlas', search: 'search packages…', refresh: 'rescan', retry: 'retry',
       loadFail: 'failed to load graph', warnings: 'data warnings', noDescription: '(no description)',
       langSwitch: '中文',
@@ -82,12 +86,12 @@
       scopeLabel: 'scope', scopeAll: 'all', scopeOfficial: 'official', scopeThird: 'third-party',
       profileLabel: 'Profile', profileAll: 'all', realCrossLabel: 'real cross edges',
       edgeKindsLabel: 'edge kinds',
-      focusLabel: 'focus depth', focusUnlimited: 'unlimited', focusOn: 'focus paths', focusOff: 'exit path',
+      focusLabel: 'focus depth', focusUnlimited: 'unlimited', focusOn: 'focus paths', focusOff: 'exit dependency graph',
       backLabel: 'back',
       lodGroups: 'groups', lodPkgs: 'packages', lodLabel: 'display granularity (groups = cards, dbl-click a card to open its members; packages = all expanded)',
       peekDeps: 'depends', peekDependents: 'depended by', peekUnsat: 'unsatisfied edges', peekBroken: 'broken package',
       chipShowAll: 'show all', chipHideAll: 'hide all',
-      legendTitle: 'Legend', legendShapes: 'node shapes', legendEdges: 'edge kinds', legendFocus: 'focus paths',
+      legendTitle: 'Legend', legendShapes: 'node shapes', legendEdges: 'edge kinds', legendFocus: 'dependency graph colors',
       shOfficial: 'official pkg', shThirdParty: 'third-party', shProfile: 'profile', shBroken: 'broken',
       egDep: 'depends dep', egMount: 'mount', egPeer: 'peer',
       egPeerOpt: 'optional peer (peer-opt)', egAgg: 'aggregate (in group focus, width ∝ count)',
@@ -100,6 +104,8 @@
       unsatLabel: 'unsatisfied', bundleSurfaceLabel: 'bundle surface', declaredDepsLabel: 'declared deps',
       readmeLabel: 'README', noReadmeLabel: '(no README)', moreLabel: '+{n} more',
       kindLabel: 'kind', groupLabel: 'group', zoneLabel: 'zone',
+      // V2.7 R51: details level badge + the zone panel's per-group cap row
+      lvlZone: 'zone', lvlGroup: 'group', lvlPkg: 'package', groupMoreLabel: '{n} more',
       // V2.4b group focus: the disabled depth hint + the related-neighborhood headers
       groupFocusDepth: 'group focus is fixed at 1 hop (depth does not apply)',
       relatedGroupsLabel: 'related groups ({n})', relatedPkgsLabel: 'related packages ({n})',
@@ -108,7 +114,7 @@
       menuFocusGroup: 'focus neighborhood (1 hop)', menuFocusGroupPkgs: 'focus neighborhood (packages)',
       menuSoloZone: 'show only this zone', menuHideZone: 'hide this zone',
       menuCollapseZone: 'collapse zone', menuExpandZone: 'expand zone',
-      menuPkgPath: 'path mode', menuResetView: 'reset view', menuExitFocus: 'exit focus' },
+      menuPkgPath: 'dependency graph', menuResetView: 'reset view', menuExitFocus: 'exit focus' },
   }
   var lang = (navigator.language || 'zh').toLowerCase().indexOf('zh') === 0 ? 'zh' : 'en'
   function t(k) { return (I18N[state.lang] && I18N[state.lang][k]) || k }
@@ -161,6 +167,9 @@
   // capped like the retired dep blocks were (same +N 更多 tail). V22b caps it
   // PER LAYER tier (see groupRowsByDist/tierBlock).
   var PATH_ROW_CAP = 60
+  // V2.7 R51: the zone details list each zone group as its own section; every
+  // section shows at most this many member rows and says 还有 N under them.
+  var ZONE_GROUP_CAP = 10
 
   // V2.3 container member lists: the details panel caps the rows it PAINTS, but
   // buildGroupMembers always reports the TRUE total next to them (an honest meta
@@ -173,7 +182,7 @@
   // V2.5 R44: armed while a menu-dismissing mousedown waits for the tap that
   // completes the press (that tap is eaten — menu semantics, not selection).
   var menuSwallow = false
-  // Path-mode back stack + breadcrumb.
+  // Dependency-graph (V2.7 R48 rename) back stack + breadcrumb.
   var PATH_STACK_CAP = 20
   var CRUMB_MAX = 4
 
@@ -200,11 +209,10 @@
     },
     focus: null,   // null | {rootId, depth}  (R35: depth null = unlimited — the
                    // default; 1-3 via #focus-depth. Only kind=package nodes are roots.)
-    // V22b path-mode back stack (walk history, newest last, cap PATH_STACK_CAP)
-    // and the viewport snapshot taken at ENTRY (deep copy — cytoscape's pan()
-    // object is live). A non-null viewport IS the armed marker for the exit
-    // animation: restoreViewport() is the only reader and it spends it.
-    pathStack: [], viewport: null,
+    // V22b path-mode back stack (walk history, newest last, cap PATH_STACK_CAP).
+    // V2.7 R50: the viewport snapshot field is GONE — focus transitions carry no
+    // camera plan at all (entry-capture/exit-restore retired with animateFitPath).
+    pathStack: [],
     selected: null,
   }
 
@@ -853,8 +861,7 @@
     // V22b ctx: in a path-mode view the member ancestors (zones + group frames)
     // render as CONTEXT — a dashed, strongly faded outline that stays locatable
     // without competing with the lit members inside it. Model rule: only zones
-    // and group containers carry `ctx` in a focus view, members never; the
-    // fit-to-path logic (pathFitEles) keys off that same shape.
+    // and group containers carry `ctx` in a focus view, members never.
     st.push({ selector: 'node.ctx', style: { 'border-style': 'dashed', 'background-opacity': 0.05 } })
 
     // ---- packages: shape mapping R29 (ellipse/hexagon/rectangle/diamond) ----
@@ -942,10 +949,10 @@
   }
 
   // ---------- paint(): the single render path (R26) ----------
-  // V2.5 R45: `refit` is GONE — keeping the current viewport IS the doctrine,
-  // not a per-call-site decision. paint() only ever fits the FIRST (boot) frame
-  // through the state.fitted gate; the four sanctioned camera moves (entry/walk
-  // glide, the exit restore, the reveal flash, the 复位视图 glide) all live
+  // V2.7 R50: keeping the current viewport IS the doctrine, not a per-call-site
+  // decision. paint() only ever fits the FIRST (boot) frame through the
+  // state.fitted gate; the ONLY other camera moves in the app are the explicit
+  // resetView glide and the named-navigation flashReveal center+flash — both
   // OUTSIDE this render path, and nothing else moves the viewport.
   function paint() {
     if (!state.graph) return // static chrome binds at boot; ignore interaction until first load
@@ -1198,13 +1205,26 @@
       if (state.focus && !(isGroupRootId(state.focus.rootId) && state.focus.rootId === String(evt.target.data('id')))) return
       toggleGroup(String(evt.target.data('id')).replace(/^g:/, ''))
     })
+    // V2.7 R49: DOUBLE-TAP a package = enter the dependency graph through the
+    // SAME explicit-nav funnel as the menu command — selectNode(id, true), no
+    // second implementation. The two single taps that precede the dbltap are
+    // plain R46 taps (cold: lightweight select; inside a focus: the walk the
+    // gesture documents — 「双击任意亮包 = 换根（走）」). Inside a live focus the
+    // dbltap re-affirms the walked root (focusForId returns the SAME root ⇒
+    // inert). Non-package dbltaps can never reach here: the zone/group handlers
+    // above gate on their own front-element class, this one on 'pkg'.
+    cy.on('dbltap', 'node.pkg', function (evt) {
+      if (!evt.target.hasClass('pkg')) return
+      selectNode(evt.target.id(), true)
+    })
     // single click → selection + details panel (V6 Step 4); V22b adds the path-
     // mode walk/entry/exit flow and closes any peek (a click means the reader
     // moved on — and the click's repaint would destroy the peeked element).
     // V2.5 R44: while the context menu is open (or its swallow is armed), the
     // tap only DISMISSES — no peek-off, no selection, no focus change.
     // V2.6 R46: the tap passes NO nav flag — a cold tap (package or group) is
-    // pure select+details; path mode is entered by menu/rows/nav call sites.
+    // pure select+details; path mode is entered by menu/dbl-tap/rows/nav call
+    // sites (the package dbl-tap door right above is one of them, V2.7 R49).
     cy.on('tap', 'node, edge', function (evt) {
       if (swallowMenuTap()) return
       hidePeek(); selectNode(evt.target.id())
@@ -1241,11 +1261,11 @@
   // blank tap) clears the focus; tapping an EDGE leaves it alone (an edge is not
   // a root, and selecting one must not drop the path being read).
   // V2.6 (R46): the second arg is the EXPLICIT-NAVIGATION flag. selectNode(id, true)
-  // is what the menu 路径模式 command, the details jump buttons, the path-list /
-  // mount rows, the table row and revealNode pass; the canvas tap handler passes
-  // nothing, so a COLD selection (package OR group) is fully lightweight —
-  // select + details, zero focus, zero camera. Inside a live focus the flag is
-  // irrelevant: the tap still walks (entry/walk/exit unchanged, V2.5 recorder).
+  // is what the menu 依赖图 command, the package double-tap (V2.7 R49), the details
+  // jump buttons, the path-list / mount rows, the table row and revealNode pass; the
+  // canvas tap handler passes nothing, so a COLD selection (package OR group) is
+  // fully lightweight — select + details, zero focus, zero camera. Inside a live
+  // focus the flag is irrelevant: the tap still walks (entry/walk/exit unchanged).
   function focusForId(id, nav) {
     var s = String(id == null ? '' : id)
     if (!s) return null
@@ -1287,12 +1307,14 @@
   // V2.5 (R44): the transition recorder — every focus STRUCTURE change made
   // through a selection or a menu command flows through here, so entry/walk/exit
   // bookkeeping lives in exactly one place:
-  //   entry (null → next): snapshot the live viewport ONCE, stack resets.
+  //   entry (null → next): the walk stack resets.
   //   walk  (prev → different root): the PREVIOUS root goes onto the back stack
   //         (pushPathStack dedupes consecutive repeats, caps at PATH_STACK_CAP).
-  //   exit  (prev → null): exitFocus() clears focus + stack; the surviving
-  //         snapshot stays armed for exactly one restoreViewport() glide.
-  // Returns {entered, walked, exited} so the caller picks the camera move.
+  //   exit  (prev → null): exitFocus() clears focus + stack.
+  // V2.7 R50: that is ALL it does. The entry viewport snapshot retired with the
+  // exit-restore glide — no transition plans a camera move any more; the record
+  // below just says which edge of the machine fired.
+  // Returns {entered, walked, exited}.
   function focusTransition(next) {
     var prev = state.focus
     state.focus = next
@@ -1302,7 +1324,6 @@
     }
     if (next) {
       state.pathStack = []
-      snapshotViewport()
       return { entered: true, walked: false, exited: false }
     }
     if (prev) {
@@ -1318,52 +1339,40 @@
     state.selected = id
     return focusTransition(focusForId(id, nav))
   }
-  // Exit half, shared by blank-tap, the Esc key and the 退出路径 button: focus
-  // gone, stack gone, and IF an entry snapshot exists it is left in place, armed
-  // for exactly one animate-back — the surviving snapshot IS the armed marker,
-  // there is no separate flag.
-  // The SNAPSHOT ITSELF STAYS PUT — restoreViewport() is the only thing allowed
-  // to spend it (nulling it here made that guard bail every time, i.e. the
-  // documented 镜头滑回 never ran).
-  // Every exit call site runs the sequence exitFocus() → paint() →
-  // restoreViewport() in exactly that order, and the order is load-bearing: the
-  // repaint sees focus === null (the whole graph is back on screen, viewport
-  // kept because keeping IS the R45 doctrine), and only THEN does the camera
-  // glide — gliding first would have the structural repaint land mid-flight.
+  // Exit half, shared by blank-tap, the Esc key and the 退出依赖图 button: focus
+  // gone, stack gone — and (V2.7 R50) that is the WHOLE story. The V2.2b armed
+  // snapshot it used to leave behind for one restoreViewport() glide is retired:
+  // the exit repaints the plain view exactly where the reader is looking.
   function exitFocus() {
     state.focus = null
     state.pathStack = []
   }
   // V2.5 (R44): the ONE exit funnel — the background-menu 退出聚焦 command, Esc
-  // and (since M1, by delegation) the 退出路径 button all end the focus here.
-  // Order is load-bearing: the repaint sees focus === null (the whole graph
-  // is back on screen; viewport kept because keeping IS the doctrine), and only
-  // THEN does the camera glide — gliding first would have the structural repaint
-  // land mid-flight. The chrome binder pins the delegation AND this shape.
+  // and (since M1, by delegation) the 退出依赖图 button all end the focus here.
+  // V2.7 R50: the glide that used to trail the repaint is gone — exitFocus →
+  // chrome → ONE viewport-kept repaint, nothing after it. The chrome binder
+  // pins the delegation AND this shape.
   function exitFocusCommand() {
     if (!state.focus) return
     exitFocus()
     renderDetails(state.selected)
     syncFocusCtl()
     paint()
-    restoreViewport()
   }
-  // V2.6 (R46): `nav` marks the EXPLICIT doors (menu 路径模式, jump buttons, path/
-  // mount rows, table row) — they may enter path mode from the cold state. The
-  // canvas tap handler calls this WITHOUT the flag; taps are lightweight.
+  // V2.6 (R46): `nav` marks the EXPLICIT doors (menu 依赖图, the package double-
+  // tap (R49), jump buttons, path/mount rows, table row) — they may enter path
+  // mode from the cold state. The canvas tap handler calls this WITHOUT the flag;
+  // taps are lightweight.
   function selectNode(id, nav) {
     afterFocusChange(focusFlowAction(id, nav), id)
   }
-  // V2.5 (R45): the shared tail of every focus transition (tap chain + menu
-  // focus command): chrome, ONE viewport-kept repaint, and only then the
-  // sanctioned camera move — entry/walk glides onto the render set, exit glides
-  // the armed snapshot back.
+  // V2.7 (R50): the shared tail of every focus transition (tap chain, dbl-tap
+  // door, menu focus command) — chrome, then ONE viewport-kept repaint. The
+  // camera lives here not at all: entry/walk/exit all keep the viewport.
   function afterFocusChange(act, id) {
     renderDetails(id)
     syncFocusCtl()
     paint()
-    if (act.entered || act.walked) animateFitPath()
-    else if (act.exited) restoreViewport()
   }
   // Expand the view so `n` renders: its zone un-collapsed AND un-filtered, its
   // group un-collapsed. (view mutations only — paint() renders the result.)
@@ -1385,22 +1394,18 @@
     // while the COLD TAP door stays closed.
     state.focus = focusForId(n.id, true) // search reveal selects → R35 focus follows
     // V22b: a REVEAL re-roots authoritatively (search/deep-link), it is not a
-    // walk — the back stack restarts; the viewport snapshot is only taken when
-    // this reveal is itself the entry into path mode.
+    // walk — the back stack restarts. V2.7 R50 retired the entry snapshot and
+    // the exit disarm that used to hang off this decision: the transition is
+    // camera-free, and the ONE sanctioned move is the named center+flash below.
     if (state.focus) {
       state.pathStack = []
-      if (!was) snapshotViewport()
     } else if (was) {
       exitFocus()
-      // The reveal IS the exit for a prior focus: the camera is re-planted on a
-      // DIFFERENT node by flashReveal's center+zoom, so the (now stale) entry
-      // snapshot goes with it — dropping it IS the disarm (no restore glide).
-      state.viewport = null
     }
     paint()
     renderDetails(n.id)
     syncFocusCtl()
-    flashReveal(n.id)
+    flashReveal(n.id) // the named-navigation exception: center + 1.2s flash
   }
   // V6 Step 2: center+zoom animation and a 1.2s transient `.flash` class.
   function flashReveal(id) {
@@ -1416,21 +1421,17 @@
     }, 1200)
   }
   // V6 Step 3 / V21 R35: structural focus reveal — expand the ROOT and every
-  // path member's ancestors, repaint (applyClasses writes the f-* classes), then
-  // pan+zoom + 1.2s flash on the root. Reached from the details 聚焦 button, the
-  // depth slider, the breadcrumb 返回 button and the #node= deep link; a plain
-  // tap focuses through selectNode()/focusFlowAction() without expanding anything
-  // (the tapped node is visible already). focusNode is an AUTHORITATIVE re-root:
-  // it never touches pathStack (the depth slider re-cuts IN PLACE, keeping the
-  // walk history), and it snapshots the viewport only when it IS the entry.
+  // path member's ancestors and repaint (applyClasses writes the f-* classes).
+  // Reached from the details 聚焦 button, the depth slider, the breadcrumb 返回
+  // button and the #node= deep link; a plain tap focuses through
+  // selectNode()/focusFlowAction() without expanding anything (the tapped node
+  // is visible already). focusNode is an AUTHORITATIVE re-root: it never
+  // touches pathStack (the depth slider re-cuts IN PLACE, keeping the walk
+  // history). V2.7 R50: it moves NO camera — the moved-glide and the entry
+  // snapshot retired together (re-roots, like entries, walks and exits, are
+  // zero-camera; only the named revealNode flash still centers).
   function focusNode(rootId, depth, selectId) {
     var d = normalizeDepth(depth)
-    // V2.5 (R45): the camera decision is made BEFORE the re-root — a genuine
-    // re-root (deep link, breadcrumb 返回, the details 聚焦 button) glides onto
-    // the new path after the repaint; a depth re-cut IN PLACE (the slider) keeps
-    // the viewport exactly where the reader left it.
-    var moved = !state.focus || String(state.focus.rootId) !== String(rootId)
-    if (!state.focus) snapshotViewport()
     // V2.4b: a g: re-root keeps the GROUP focus shape (fixed 1 hop + derived
     // packages flag) — the breadcrumb back button and the #node=g: deep link
     // both land here, and a stale {rootId, depth} shape would contradict the
@@ -1450,11 +1451,9 @@
       sets.up.forEach(function (id) { var n = state.byId.get(id); if (n) expandPath(n) })
     }
     if (selectId) state.selected = selectId
-    paint() // viewport kept (R45); the render set is whatever the new cut selects
-    if (moved) animateFitPath() // the sanctioned re-root glide, after the repaint
+    paint() // the render set is whatever the new cut selects; viewport KEPT (R50)
     syncFocusCtl()
     if (selectId) renderDetails(selectId)
-    if (selectId) flashReveal(selectId)
   }
   // ---------- V2.5 (R44): the right-click COMMAND SURFACE ----------
   // ONE reusable div inside #graph (created on first use, rows rebuilt per open
@@ -1638,7 +1637,8 @@
       return
     }
     // V2.6 (R46): the menu IS the package entry door — explicit nav, so a cold
-    // 路径模式 command still enters (the tap that once did this does not).
+    // 依赖图 command still enters (the tap that once did this does not; the
+    // V2.7 R49 package dbl-tap door shares this exact nav semantics).
     if (cmd === 'pkg-path') { selectNode(String(target.id), true); return }
     if (cmd === 'reset-view') { resetView(); return }
     if (cmd === 'exit-focus') { exitFocusCommand(); return }
@@ -1658,57 +1658,16 @@
     // click that dismissed the menu would also select what sits under it).
     if (menuIsOpen()) { closeMenu(); menuSwallow = true }
   }
-  // V2.5 (R45): 复位视图 — the ONE user-commanded camera move that touches NO
-  // state: same render set, fit over the CURRENT nodes with the path-glide's
-  // padding 40, the 250ms family. Focus, selection, stack, snapshot: untouched.
+  // V2.5 (R45) → V2.7 (R50): 复位视图 — the ONE user-commanded camera move that
+  // touches NO state: same render set, fit over the CURRENT nodes with padding
+  // 40, the 250ms family. Focus, selection, stack: untouched. (The path-glide
+  // family it used to belong to is retired — ⌂ and the boot fit are all that
+  // fit() any more.)
   function resetView() {
     if (!state.cy || state.tableMode) return
     state.cy.animate({ fit: { eles: state.cy.nodes(), padding: 40 }, duration: 250 })
   }
 
-  // ---------- V22b viewport snapshots + path fit (cy.animate ONLY) ----------
-  // cytoscape's pan() hands back a LIVE object — the snapshot deep-copies.
-  function snapshotViewport() {
-    var cy = state.cy
-    if (!cy) { state.viewport = null; return }
-    var pan = cy.pan()
-    state.viewport = { zoom: cy.zoom(), pan: { x: pan.x, y: pan.y } }
-  }
-  function restoreViewport() {
-    var cy = state.cy
-    // A non-null state.viewport IS the armed marker (no separate flag): this is
-    // its only reader, and every path out of here spends the snapshot — so the
-    // restore is one-shot by construction (armed by exitFocus, spent here once).
-    if (!cy || !state.viewport || state.tableMode) { state.viewport = null; return }
-    cy.animate({ zoom: state.viewport.zoom, pan: state.viewport.pan, duration: 250 })
-    state.viewport = null
-  }
-  // The path-fit selection: ONLY package/profile members take part in the fit
-  // bbox. ctx is exactly the zone/group shape (model rule), so kind ∈ {pkg,
-  // profile} excludes every context frame — the members fill the screen with
-  // sane padding instead of shrinking inside their zone outlines.
-  function pathFitEles(cy) {
-    return cy.nodes().filter(function (n) {
-      var k = n.data('kind')
-      return k === 'pkg' || k === 'profile'
-    })
-  }
-  function animateFitPath() {
-    var cy = state.cy
-    if (!cy || state.tableMode || !state.focus) return
-    var eles = pathFitEles(cy)
-    // V2.4b: a groups-mode GROUP focus has no pkg/profile members — the cards
-    // and their ctx frames ARE the neighborhood, so fit them instead of gliding
-    // nowhere.
-    if (!eles.length) eles = cy.nodes()
-    if (!eles.length) return
-    // The frozen 3.34.1 animate reads `fit.padding` (getFitViewport(v.eles,
-    // v.padding)); `padded` is core.fit() vocabulary and is NOT an animate option
-    // here — passing it silently means padding 0. 40 is the whole glide family's
-    // inset (entry/walk, resetView), so every sanctioned camera move frames the
-    // same way.
-    cy.animate({ fit: { eles: eles, padding: 40 }, duration: 250 })
-  }
   function depthOfCtl() {
     var s = document.getElementById('focus-depth')
     var v = s ? parseInt(s.value, 10) : 0
@@ -1735,8 +1694,9 @@
     // runs while a focus is live, so a GROUP focus (pinned at 1 hop) left '1'
     // sitting in the select after the exit. Nothing on screen shows it — the whole
     // #focus-ctl is hidden while cold — but depthOfCtl() reads the DOM, not the
-    // screen, and the next cold nav entry (menu 路径模式, a jump button, a path /
-    // mount / table row) built { rootId, depth: 1 } out of that leftover: a path
+    // screen, and the next cold nav entry (menu 依赖图, the package double-tap,
+    // a jump button, a path / mount / table row) built { rootId, depth: 1 } out
+    // of that leftover: a path
     // silently truncated to one hop by a number nobody chose. Cold ⇒ the control
     // goes back to its shipped default, which IS 不限 (UNLIMITED).
     // V22b breadcrumb: 「← 返回 (a → b → 当前)」 rides the pathStack; hidden
@@ -1764,7 +1724,7 @@
   // ONLY that. 2. open search results → close ONLY those (also from inside the
   // input — the one Esc semantics an input keeps). 3. typing anywhere else →
   // hands-off. 4. live path → exit through the SAME exitFocusCommand funnel as
-  // the menu row and the 退出路径 button. 5. else no-op.
+  // the menu row and the 退出依赖图 button. 5. else no-op.
   function onGlobalKey(e) {
     if (!e || e.key !== 'Escape') return
     var menu = document.getElementById('ctx-menu')
@@ -1987,6 +1947,14 @@
     b.addEventListener('click', onClick)
     return b
   }
+  // V2.7 R51: the level badge chip rides INSIDE the header h2 (first child).
+  // Dictionary text through escText only — no new HTML surface.
+  function lvlChip(h, label) {
+    var c = document.createElement('span'); c.className = 'lvl'
+    escText(c, label)
+    h.insertBefore(c, h.firstChild)
+    h.insertBefore(document.createTextNode(' '), c.nextSibling)
+  }
   function idToLabel(id) {
     var s = String(id)
     if (s.indexOf('cat:') === 0) return zoneTitle(s.slice(4))
@@ -2007,14 +1975,19 @@
     if (!box) return
     var tok = ++detailsToken
     box.textContent = ''
+    // V2.7 R51: the CONTAINER class is the one source of the level accent CSS
+    // reads (badge chip styled off it too); data-zone only ever carries a zone
+    // id from the fixed palette universe. An edge stays NEUTRAL — no lvl class.
+    box.className = ''
+    box.setAttribute('data-zone', '')
     if (!id || !state.graph) { box.hidden = true; return }
     box.hidden = false
     var s = String(id)
-    if (s.indexOf('cat:') === 0) { detailsZone(box, s.slice(4)); return }
-    if (s.indexOf('g:') === 0) { detailsGroup(box, s.slice(2)); return }
+    if (s.indexOf('cat:') === 0) { box.className = 'lvl-zone'; box.setAttribute('data-zone', s.slice(4)); detailsZone(box, s.slice(4)); return }
+    if (s.indexOf('g:') === 0) { box.className = 'lvl-group'; detailsGroup(box, s.slice(2)); return }
     if (s.indexOf('agg:') === 0 || s.indexOf('e:') === 0) { detailsEdge(box, s); return }
     var n = state.byId.get(s)
-    if (n) { detailsNode(box, n, tok); return }
+    if (n) { box.className = 'lvl-pkg'; detailsNode(box, n, tok); return }
     box.hidden = true
   }
 
@@ -2068,15 +2041,43 @@
     if (res.capped) kvRow(box, '', t('moreLabel').replace('{n}', res.total - res.rows.length))
   }
 
+  // V2.7 R51: the ZONE details list BY GROUP. Alphabetical sections, each one:
+  // a clickable group header button (`gid ×total`, the TRUE count from
+  // buildGroupMembers) whose click is the plain group door — selectNode('g:'+gid)
+  // with NO nav flag (cold: select; inside a focus: walk) — then ≤ZONE_GROUP_CAP
+  // indented member rows reusing the shared memberRow/revealNode reveal, and a
+  // 还有 N tail when the section was cut. Groups with zero members stay
+  // invisible: the old flat list showed nothing for them either. All texts are
+  // escText (group ids are scan data).
   function detailsZone(box, cid) {
-    head(box, zoneTitle(cid))
+    lvlChip(head(box, zoneTitle(cid)), t('lvlZone'))
     var groups = []
     state.groupIds.forEach(function (gid) { if (state.groupZone.get(gid) === cid) groups.push(gid) })
     groups.sort()
-    // V2.3: the package COUNT row is gone — the 成员包（N） header below IS that
-    // count, sourced from the same rows the panel is about to paint.
     kvRow(box, t('groupsLabel'), groups.length)
-    memberSection(box, { kind: 'zone', id: cid })
+    zoneGroupSections(box, groups)
+  }
+  function zoneGroupSections(box, groups) {
+    var shown = 0
+    groups.forEach(function (gid) {
+      var res = buildGroupMembers({ kind: 'group', id: gid }, state.graph)
+      if (!res.total) return
+      shown++
+      var hb = document.createElement('button'); hb.className = 'jump ghead'
+      escText(hb, gid + ' \u00d7' + res.total)
+      hb.addEventListener('click', function () { selectNode('g:' + gid) })
+      box.appendChild(hb)
+      var rows = document.createElement('div'); rows.className = 'gmem'
+      res.rows.slice(0, ZONE_GROUP_CAP).forEach(function (r) {
+        memberRow(rows, r, function () {
+          var n = state.byId.get(String(r.id))
+          if (n) revealNode(n)
+        })
+      })
+      box.appendChild(rows)
+      if (res.total > ZONE_GROUP_CAP) kvRow(box, '', t('groupMoreLabel').replace('{n}', res.total - ZONE_GROUP_CAP))
+    })
+    if (!shown) secTitle(box, t('memberPkgsLabel').replace('{n}', 0))
   }
 
   function detailsGroup(box, gid) {
@@ -2084,7 +2085,7 @@
     var crumbs = document.createElement('div'); crumbs.className = 'crumbs'
     if (zone) crumbs.appendChild(crumbButton(box, zoneTitle(zone), function () { selectNode('cat:' + zone) }))
     box.appendChild(crumbs)
-    head(box, gid)
+    lvlChip(head(box, gid), t('lvlGroup'))
     // V2.3: the retired hand-rolled member loop (name-only rows, 100-cap, no
     // scope/kind/unsat/broken signal) is now the shared memberSection — the same
     // rows a zone shows, filtered to this group.
@@ -2147,7 +2148,7 @@
   }
 
   function detailsNode(box, n, tok) {
-    head(box, String(n.name == null ? n.id : n.name))
+    lvlChip(head(box, String(n.name == null ? n.id : n.name)), t('lvlPkg'))
     // three-level breadcrumb: zone (zh/en) → group → kind badge
     var gid = gidOf(n), zid = state.groupZone.get(gid) || String(n.category || 'ungrouped')
     var crumbs = document.createElement('div'); crumbs.className = 'crumbs'
@@ -2629,9 +2630,9 @@
       // a focus root that vanished OR stopped being a package cannot anchor R35
       if (state.focus && !isFocusRoot(state.focus.rootId)) state.focus = null
       if (state.selected && state.selected.indexOf(':') < 0 && !state.byId.has(state.selected)) state.selected = null
-      // V22b: with the focus gone the walk history is dead weight; the viewport
-      // snapshot too (the graph under it just changed shape).
-      if (!state.focus) { state.pathStack = []; state.viewport = null }
+      // V22b: with the focus gone the walk history is dead weight (R50 retired
+      // the viewport snapshot that used to sit next to it).
+      if (!state.focus) state.pathStack = []
     } else {
       state.view = freshView()
       state.focus = null
@@ -2639,7 +2640,6 @@
       // V2.3: a fresh load re-defaults the tier to 组级 — freshView() IS that reset
       // (view.granularity is the tier, so there is no second mode to re-arm).
       state.pathStack = []
-      state.viewport = null
     }
     rebuildFilterControls()
     buildZoneChips()

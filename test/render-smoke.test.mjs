@@ -1647,6 +1647,9 @@ test('V6 css guards: #legend is clickable again; #focus-ctl[hidden] and #progres
   // button INSIDE #legend — clicks must reach it.
   assert.doesNotMatch(legendRule[0], /pointer-events:\s*none/, '#legend must accept clicks (legend collapse lives there now)')
   assert.match(css, /#legend:empty\s*\{\s*display:\s*none/, '#legend:empty still collapses when unpopulated (V5)')
+  // V2.7 R52: the legend anchors on the LEFT of the pane (right:10px is history)
+  assert.match(legendRule[0], /left:\s*10px/, 'R52: #legend pins left')
+  assert.doesNotMatch(legendRule[0], /right:\s*\d/, 'R52: no right anchor survives')
   // #focus-ctl declares display:inline-flex, which beats the UA [hidden] rule —
   // the override must exist or the focus chip shows while state.focus is null.
   assert.match(css, /#focus-ctl\s*\{[^}]*display:\s*inline-flex/, '#focus-ctl base display')
@@ -2426,9 +2429,11 @@ function loadFocusFlow() {
   const body = [
     'var CALLS = [], DEPTH = null\n',
     'function depthOfCtl() { return DEPTH }\n',
+    // V2.7 R50 tripwire: focusTransition must never call this again — every
+    // CALLS assertion below expects [] (zero snapshot/glide side effects).
     'function snapshotViewport() { CALLS.push(\x27snapshot\x27); state.viewport = { zoom: 3.3, pan: { x: 1, y: 2 } } }\n',
     'var state = { byId: new Map(), groupIds: new Set(["bundle", "fs"]), groupZone: new Map(),\n'
-    + '  focus: null, selected: null, pathStack: [], viewport: null,\n'
+    + '  focus: null, selected: null, pathStack: [],\n'
     + '  view: { collapsedCats: new Set() } }\n',
     stackCap[0] + '\n',
     extractBalanced(src, 'function pushPathStack(stack, id, cap) {') + '\n',
@@ -2468,23 +2473,23 @@ test('V2.6 R46 focus flow: the cold package act is inert; NAV enters, walking pu
   act = flow.act('a@1', true)
   assert.deepEqual([act.entered, act.walked, act.exited], [true, false, false], 'nav-driven ENTRY (menu 路径模式 / row / table)')
   assert.deepEqual(flow.state.focus, { rootId: 'a@1', depth: null })
-  assert.deepEqual(flow.CALLS, ['snapshot'], 'entry saves the viewport exactly once')
+  assert.deepEqual(flow.CALLS, [], 'R50: ENTRY runs ZERO snapshot/glide side effects')
   assert.deepEqual(flow.state.pathStack, [], 'a fresh root starts with an empty stack')
   act = flow.act('a@1')
   assert.deepEqual([act.entered, act.walked], [false, false], 'tapping the current root again is inert')
-  assert.deepEqual(flow.CALLS, ['snapshot'], '…and never re-snapshots')
+  assert.deepEqual(flow.CALLS, [], '…and re-snapshots zero times (nothing is left to snapshot)')
   act = flow.act('b@1')
   assert.deepEqual([act.entered, act.walked], [false, true], 'WALK inside the path')
   assert.equal(flow.state.focus.rootId, 'b@1')
   assert.deepEqual(flow.state.pathStack, ['a@1'], 'the previous root entered the stack')
-  assert.deepEqual(flow.CALLS, ['snapshot'], 'walking does NOT overwrite the entry snapshot')
+  assert.deepEqual(flow.CALLS, [], 'walking runs no side effect either')
   act = flow.act('c@1')
   assert.deepEqual(flow.state.pathStack, ['a@1', 'b@1'])
   act = flow.act('b@1')
   assert.deepEqual(flow.state.pathStack, ['a@1', 'b@1', 'c@1'], 'back-and-forth walks stack (the user can walk back)')
 })
 
-test('V22b focus flow: exit clears focus+stack and arms the viewport restore; edge taps keep the path', () => {
+test('V2.7 R50 focus flow: exit clears focus+stack with ZERO side effects; edge taps keep the path', () => {
   const flow = loadFocusFlow()
   flow.reset({ byId: new Map([['a@1', PKG('a')], ['b@1', PKG('b')]]) })
   flow.act('a@1', true) // V2.6 (R46): path mode is entered by explicit nav now
@@ -2493,9 +2498,7 @@ test('V22b focus flow: exit clears focus+stack and arms the viewport restore; ed
   assert.deepEqual([act.entered, act.walked, act.exited], [false, false, true], 'blank tap = EXIT')
   assert.equal(flow.state.focus, null, 'focus cleared')
   assert.deepEqual(flow.state.pathStack, [], 'the stack empties with the focus')
-  assert.notEqual(flow.state.viewport, null, 'a surviving viewport IS the armed marker for the animate-back (R41: no separate flag)')
-  assert.deepEqual(flow.state.viewport, { zoom: 3.3, pan: { x: 1, y: 2 } },
-    'the snapshot itself SURVIVES exitFocus — restoreViewport() is the only thing allowed to spend it (nulling it here made the animate-back guard bail)')
+  assert.deepEqual(flow.CALLS, [], 'R50: the exit spends/arms NO camera side effect at all')
   // an edge tap keeps the current focus (edges are not roots, R35)
   flow.reset({ byId: new Map([['a@1', PKG('a')]]) })
   flow.act('a@1', true) // V2.6 (R46): nav entry, then the walk-side battery is unchanged
@@ -2506,12 +2509,13 @@ test('V22b focus flow: exit clears focus+stack and arms the viewport restore; ed
   // a non-package node (profile / group card / zone) exits
   act = flow.act('profile:web')
   assert.equal(act.exited, true, 'profile tap exits the path (only packages root)')
-  // exit while no snapshot exists (focus installed by reveal/deep-link): exits without a restore
+  // focus installed by hand (the reveal/deep-link shape): the exit is the SAME
+  // zero-side-effect chain (R50 retired the armed/disarmed distinction).
   flow.reset({ byId: new Map([['a@1', PKG('a')]]) })
   flow.state.focus = { rootId: 'a@1', depth: null } // installed WITHOUT the entry snapshot
   act = flow.act(null)
   assert.equal(act.exited, true)
-  assert.equal(flow.state.viewport, null, 'nothing to restore to (disarmed marker) — plain repaint instead')
+  assert.deepEqual(flow.CALLS, [], 'same chain, zero snapshot calls — there is no marker left to arm')
 })
 
 test('V22b focus flow: the depth control flows through focusForId with the ctl value', () => {
@@ -2595,102 +2599,16 @@ test('V22b dist validity: node.ctx dashed outline + edge.ek-off display:none par
   }
 })
 
-// ---------- real headless cytoscape: fit-to-path excludes ctx numerically ----------
-
-function loadViewportLogic() {
-  const src = readFileSync(join(WEB, 'app.js'), 'utf8')
-  const body = [
-    extractBalanced(src, 'function pathFitEles(cy) {') + '\n',
-    extractBalanced(src, 'function snapshotViewport() {') + '\n',
-    extractBalanced(src, 'function restoreViewport() {') + '\n',
-    extractBalanced(src, 'function animateFitPath() {') + '\n',
-    'var state = { cy: null, graph: null, tableMode: false, focus: null, viewport: null }\n',
-    'return { state: state, pathFitEles: pathFitEles, snapshot: snapshotViewport, restoreVp: restoreViewport, animateFit: animateFitPath }',
-  ].join('')
-  return new Function(body)()
-}
-
-test('V22b fit-to-path: the fit selection holds only pkg/profile nodes and zooms in tighter than the ctx-padded fit', () => {
-  const Model = loadModel()
-  const Cytoscape = loadVendoredCytoscape()
-  const graph = fixture()
-  const els = paintElements(Model, graph, { focus: { rootId: A1, depth: null } })
-  const mod = loadAppStyle(graph)
-  const vp = loadViewportLogic()
-  let cy
-  captureWarnings(() => {
-    cy = Cytoscape({ headless: true, styleEnabled: true, elements: els })
-    cy.style(mod.styleFor('light'))
-  })
-  try {
-    vp.state.cy = cy
-    vp.state.focus = { rootId: A1, depth: null }
-    const pathEles = vp.pathFitEles(cy)
-    const pathIds = pathEles.map((e) => e.id())
-    const want = els.filter((e) => e.group === 'nodes' && (e.data.kind === 'pkg' || e.data.kind === 'profile')).map((e) => e.data.id)
-    assert.ok(want.length >= 4, 'the focus view carries a real member set (fixture sanity)')
-    assert.deepEqual(pathIds.sort(), want.sort(), 'fit eles = exactly the pkg/profile members, nothing else')
-    assert.equal(pathEles.some((e) => e.hasClass('ctx')), false, 'no ctx container sneaks into the fit set')
-    // Numerical before/after on the FIT ITSELF. A probe against the frozen dist
-    // (see v22b-fit-probe during development) proved headless renders into a 1×1
-    // window cy.viewport() cannot resize — so cy.fit()'s resulting zoom is
-    // degenerate in node; what is NOT degenerate is the fit INPUT: the rendered
-    // bounding boxes (styleEnabled, style from styleFor). Run those through
-    // cytoscape's own fit formula for a real browser window: fitting the path
-    // MUST pick a strictly tighter zoom than fitting the ctx-padded whole.
-    const boxFull = cy.elements().boundingBox()
-    const boxPath = pathEles.boundingBox()
-    assert.ok(boxPath.w > 0 && boxPath.h > 0 && boxPath.w < boxFull.w && boxPath.h < boxFull.h,
-      `path bbox ${Math.round(boxPath.w)}×${Math.round(boxPath.h)} vs full ${Math.round(boxFull.w)}×${Math.round(boxFull.h)}`)
-    const W = 1200, H = 800, PAD = 40
-    const fitZoom = (bb) => Math.min((W - 2 * PAD) / bb.w, (H - 2 * PAD) / bb.h)
-    const zFull = fitZoom(boxFull), zPath = fitZoom(boxPath)
-    assert.ok(zPath > zFull,
-      `fit-to-path zooms in (${zPath.toFixed(3)} > ${zFull.toFixed(3)}) in a ${W}×${H} window — the path fills the screen`)
-    // animateFitPath goes through cy.animate ONLY (never a direct viewport write)
-    const anims = []
-    cy.animate = (opts) => { anims.push(opts) }
-    vp.animateFit()
-    assert.equal(anims.length, 1, 'entry/walk animate exactly one fit')
-    assert.equal(anims[0].duration, 250, 'the entry animation is 250ms')
-    assert.equal(anims[0].fit.padding, 40,
-      'the animate fit carries fit.padding = 40 — the frozen dist reads fit.padding (getFitViewport(v.eles, v.padding)); `padded` is not an animate option, so it silently meant padding 0. 40 also matches the structural refit cy.fit(pathFitEles(cy), 40) and the PAD used by the probe above')
-    assert.equal(anims[0].fit.padded, undefined, 'no inert `padded` key left on the animate options')
-    assert.equal(anims[0].fit.eles.length, want.length, 'animated to the path elements')
-    vp.state.focus = null
-    vp.animateFit()
-    assert.equal(anims.length, 1, 'no fit animation outside focus mode')
-  } finally {
-    cy.destroy()
-  }
-})
-
-test('V22b viewport snapshot/restore: snapshot deep-copies, restore animates zoom+pan back and self-disarms', () => {
-  const vp = loadViewportLogic()
-  const anims = []
-  const pan = { x: 11, y: 22 }
-  vp.state.cy = {
-    zoom: () => 2.5,
-    pan: () => pan,
-    animate: (o) => { anims.push(o) },
-  }
-  vp.snapshot()
-  pan.x = 999 // the app must not alias cytoscape's live pan object
-  assert.deepEqual(vp.state.viewport, { zoom: 2.5, pan: { x: 11, y: 22 } }, 'a deep snapshot survives the live pan mutation')
-  vp.restoreVp()
-  assert.equal(anims.length, 1)
-  assert.deepEqual([anims[0].zoom, anims[0].pan.x, anims[0].pan.y, anims[0].duration], [2.5, 11, 22, 250],
-    'restore rides cy.animate({zoom, pan, duration}) — the sole viewport-animation path')
-  assert.equal(vp.state.viewport, null, 'restore is one-shot (armed once, spent once — the spent snapshot is the disarm)')
-  vp.restoreVp()
-  assert.equal(anims.length, 1, 'without a snapshot there is nothing to animate back to')
-  // table mode never animates the (absent) canvas
-  vp.state.viewport = { zoom: 1, pan: { x: 0, y: 0 } }
-  vp.state.tableMode = true
-  vp.restoreVp()
-  assert.equal(anims.length, 1, 'table fallback skips the animation')
-  assert.equal(vp.state.viewport, null, 'the table bail discards the snapshot too (no stale arm left behind)')
-})
+// ---------- V2.7 R50 MIGRATION: fit-to-path + viewport snapshot/restore ----------
+// The two V2.2b tests built on loadViewportLogic (「fit-to-path excludes ctx
+// numerically」, 「snapshot deep-copies / restore self-disarms」) and the harness
+// itself are DELETED HERE ON PURPOSE: every symbol they exercised (pathFitEles,
+// snapshotViewport, restoreViewport, animateFitPath, state.viewport) is retired
+// dead code by R50 — entry-capture, the exit restore-glide and the entry/walk
+// fit-glide are all gone. Their intent (「a focus transition never moves the
+// camera」) is re-asserted ZERO-CAMERA by the real-handler battery in
+// test/ctx-menu-wiring.test.mjs, the loadExitWiring tests below and the V2.7 R50
+// camera audit.
 
 // ---------- Esc ordering (extracted against stub DOM) ----------
 
@@ -2702,11 +2620,10 @@ function loadEscLogic() {
     'var MENU = { hidden: true }\n',
     'var document = { getElementById: function (id) {\n'
     + '  return id === \x27search-results\x27 ? BOX : id === \x27ctx-menu\x27 ? MENU : null } }\n',
-    'var state = { focus: null, pathStack: [], viewport: null, selected: \x27z\x27 }\n',
+    'var state = { focus: null, pathStack: [], selected: \x27z\x27 }\n',
     'function syncFocusCtl() { CALLS.push(\x27sync\x27) }\n',
     'function renderDetails(id) { CALLS.push(\x27details:\x27 + id) }\n',
     'function paint() { CALLS.push(\x27paint\x27) }\n',
-    'function restoreViewport() { CALLS.push(\x27restore\x27) }\n',
     extractBalanced(src, 'function exitFocus() {') + '\n',
     extractBalanced(src, 'function exitFocusCommand() {') + '\n',
     extractBalanced(src, 'function onGlobalKey(e) {') + '\n',
@@ -2725,14 +2642,14 @@ test('V22b Esc ordering: open search results close first; then focus exits; text
   assert.equal(esc.BOX.hidden, true, 'the results box closed')
   assert.ok(esc.state.focus, 'the focus survived the results-closing Esc')
   assert.deepEqual(esc.CALLS, [], 'nothing else ran')
-  // 2. results closed + focus active -> the path exits (keep-viewport repaint + restore)
-  esc.state.viewport = { zoom: 2, pan: { x: 0, y: 0 } }
+  // 2. results closed + focus active -> the path exits. V2.7 R50 MIGRATION: the
+  // old tail was paint → animate-back off the armed entry snapshot; the snapshot
+  // is retired, so the chain ENDS at the viewport-kept repaint.
   esc.key({ key: 'Escape', target: { tagName: 'BODY' } })
   assert.equal(esc.state.focus, null, 'focus exited')
   assert.deepEqual(esc.state.pathStack, [], 'stack cleared by the exit')
-  assert.notEqual(esc.state.viewport, null, 'viewport still armed (a non-null snapshot IS the marker)…')
-  assert.deepEqual(esc.CALLS, ['details:z', 'sync', 'paint', 'restore'],
-    'details -> ctl -> viewport-kept paint -> animate-back, in order')
+  assert.deepEqual(esc.CALLS, ['details:z', 'sync', 'paint'],
+    'details → ctl → viewport-kept repaint — and NO camera step after it (R50)')
   // 3. plain view -> no-op
   esc.CALLS.length = 0
   esc.key({ key: 'Escape', target: { tagName: 'BODY' } })
@@ -2769,19 +2686,21 @@ test('V22b Esc ordering: open search results close first; then focus exits; text
   assert.ok(esc.state.focus, '…and still not the focus')
   esc.key({ key: 'Escape', target: { tagName: 'BODY' } })
   assert.equal(esc.state.focus, null, 'the third Esc exits the focus (V2.5 funnel)')
-  assert.deepEqual(esc.CALLS, ['details:z', 'sync', 'paint', 'restore'],
+  assert.deepEqual(esc.CALLS, ['details:z', 'sync', 'paint'],
     'the menu-level Esc ran ZERO exit handlers until its own level was reached')
 })
 
 // ---------- wiring-level: the REAL tap/Esc handlers drive the REAL exit chain ----------
 // Everything that decides the path mode runs from app.js here: bindCy (the actual
 // cy.on('tap', …) registration), selectNode/focusFlowAction/focusTransition/
-// exitFocus/exitFocusCommand/snapshotViewport/restoreViewport/animateFitPath/
-// focusForId/groupFocusShape/isFocusRoot/pushPathStack + the V2.5 menu-close
+// exitFocus/exitFocusCommand/focusForId/groupFocusShape/isFocusRoot/
+// pushPathStack (V2.7 R50: the viewport-snapshot trio retired with the camera
+// chain itself) + the V2.5 menu-close
 // guards. Only the leaf side effects are recording stubs: paint (its own
 // behaviour has a dedicated suite) plus details/ctl chrome and the peek card.
 // paint records WHETHER focus was still installed when it ran, which is what
-// pins the paint-then-glide order on the exit. V2.5: paint lost its refit
+// pins the paint-then-NOTHING order on the exit (V2.7 R50 retired the glide).
+// V2.5: paint lost its refit
 // argument (keep-viewport IS the default now) — the stub just says "paint".
 
 function loadExitWiring() {
@@ -2803,7 +2722,7 @@ function loadExitWiring() {
     'var PEEK_DEBOUNCE_MS = 250\n',
     'var menuSwallow = false\n',
     'var state = { graph: {}, cy: null, byId: new Map(), focus: null, selected: null, pathStack: [],\n'
-    + '  viewport: null, tableMode: false, view: { collapsedCats: new Set(), granularity: "groups" } }\n',
+    + '  tableMode: false, view: { collapsedCats: new Set(), granularity: "groups" } }\n',
     'function coll(items) {\n'
     + '  return { length: items.length, items: items, filter: function (f) { return coll(items.filter(f)) } }\n'
     + '}\n',
@@ -2848,10 +2767,6 @@ function loadExitWiring() {
     extractBalanced(src, 'function onCanvasGesture() {') + '\n',
     extractBalanced(src, 'function onCanvasMouseDown() {') + '\n',
     extractBalanced(src, 'function selectNode(id, nav) {') + '\n',
-    extractBalanced(src, 'function snapshotViewport() {') + '\n',
-    extractBalanced(src, 'function restoreViewport() {') + '\n',
-    extractBalanced(src, 'function pathFitEles(cy) {') + '\n',
-    extractBalanced(src, 'function animateFitPath() {') + '\n',
     extractBalanced(src, 'function bindCy() {') + '\n',
     extractBalanced(src, 'function onGlobalKey(e) {') + '\n',
     'state.cy = cy\n',
@@ -2867,56 +2782,47 @@ function loadExitWiring() {
     + '  esc: function () { onGlobalKey({ key: "Escape", target: { tagName: "BODY" } }) },\n'
     + '  pkg: function () { return GRAPH_NODES[0] },\n'
     + '  liveZoom: function () { return vp.zoom },\n'
-    + '  // what a path refit does to the camera: the entry snapshot must NOT follow it.\n'
+    + '  // the user dragging/zooming the canvas themselves: the app must be indifferent.\n'
     + '  moveCamera: function (z, x, y) { vp.zoom = z; vp.pan.x = x; vp.pan.y = y } }',
   ].join('')
   return new Function(body)()
 }
 
-test('V22b exit wiring: the registered blank-tap handler repaints the plain view and THEN animates the exact entry snapshot back', () => {
+test('V2.7 R50 exit wiring: the registered blank-tap handler runs entry and exit with ZERO camera ops — the snapshot chain is gone', () => {
   const w = loadExitWiring()
   w.bind() // the real cy.on('tap', …) registration, no manual state poking
   const animsOf = () => w.ANIMS.length
-  // V2.6 MIGRATION (R46): the cold tap used to BE the entry. The registered tap
-  // handler is pinned LIGHTWEIGHT right here — then ENTRY rides the nav door.
+  // V2.6 MIGRATION (R46) pinned the lightweight cold tap; V2.7 R50 MIGRATION:
+  // every camera assertion below REVERSED from the V2.2b/V2.5 matrices — the
+  // entry glide, the walk glide, the exit restore and the entry snapshot are all
+  // retired. The battery now runs the REAL chain end to end and the ANIMS record
+  // proves the camera NEVER moved.
   w.tap(w.pkg())
   assert.equal(w.state.focus, null, 'the registered tap handler roots NOTHING from the cold state')
   assert.equal(w.state.selected, 'a@1', '…but the tap still selects')
   assert.equal(animsOf(), 0, '…and moves the camera zero times')
-  // --- ENTRY through the explicit nav door (menu 路径模式 / row / table) ---
+  // --- ENTRY through the explicit nav door (menu 依赖图 / dbl-tap / row / table) ---
   w.navSelect('a@1')
   assert.deepEqual(w.state.focus, { rootId: 'a@1', depth: null }, 'explicit nav roots the path')
-  assert.deepEqual(w.state.viewport, { zoom: 1.35, pan: { x: -40, y: 90 } },
-    'the entry snapshot holds the pre-entry viewport, taken once')
-  assert.equal(animsOf(), 1, 'entry glides once')
-  // the fit moves the camera — the snapshot must survive it
+  assert.equal(animsOf(), 0, 'R50: entry fires ZERO camera ops (the fit glide is retired)')
+  assert.equal(w.state.viewport, undefined, 'R50: state.viewport no longer EXISTS — the snapshot mechanism is deleted')
+  // the reader may move the camera themselves — the app must not care
   w.moveCamera(3.1, 777, -888)
   w.LOG.length = 0
   // --- EXIT through the SAME registered blank-tap handler ---
   w.tap(w.cy)
   assert.equal(w.state.focus, null, 'the blank tap exited the path')
-  assert.equal(animsOf(), 2, '…and the exit glides back: cy.animate ran on the exit path')
-  const back = w.ANIMS[1]
-  assert.equal(back.fit, undefined, 'the exit is a zoom/pan glide, not a fit')
-  assert.equal(back.zoom, 1.35, 'the snapshot zoom, not the post-fit 3.1')
-  assert.deepEqual([back.pan.x, back.pan.y], [-40, 90], 'the snapshot pan, not the post-fit 777/-888')
-  assert.equal(back.duration, 250, 'the animate-back is 250ms, like the entry glide')
-  assert.deepEqual(w.LOG, ['peek-off', 'details', 'sync', 'paint:nofocus', 'animate'],
-    'peek off → details → ctl → viewport-keeping repaint WITH focus already null → then the camera glides')
-  assert.equal(w.state.viewport, null, 'the snapshot is spent — and a spent snapshot IS the disarm (one-shot)')
-  // a second blank tap must not glide twice off a spent snapshot
+  assert.deepEqual(w.LOG, ['peek-off', 'details', 'sync', 'paint:nofocus'],
+    'peek off → details → ctl → ONE viewport-kept repaint — nothing follows it')
+  assert.equal(animsOf(), 0, '…and the exit glides NOTHING back (the armed-snapshot exit is retired)')
+  // a second blank tap: the same plain repaint, still no camera
   w.LOG.length = 0
   w.tap(w.cy)
-  assert.equal(animsOf(), 2, 'no second animate from an exhausted snapshot')
+  assert.equal(animsOf(), 0, 'no animate anywhere, ever')
   assert.deepEqual(w.LOG, ['peek-off', 'details', 'sync', 'paint:nofocus'], 'a plain repaint, no camera move')
-  // the ENTRY glide, read back off the same real chain: fit + real padding
-  assert.equal(w.ANIMS[0].fit.padding, 40,
-    'the entry glide fits the path with fit.padding = 40 (this dist reads fit.padding; `padded` is not an animate option at all)')
-  assert.equal(w.ANIMS[0].fit.eles.length, 2, 'the fit set is the real pathFitEles result (zone shell excluded)')
-  assert.equal(w.ANIMS[0].duration, 250)
 })
 
-test('V22b exit wiring: Esc runs the same chain (order + one-spend), and 退出路径 keeps the paint-then-glide order', () => {
+test('V2.7 R50 exit wiring: Esc runs the same zero-camera chain, and the 退出依赖图 button stays a ONE-call delegation into the funnel', () => {
   const w = loadExitWiring()
   w.bind()
   w.navSelect('a@1') // V2.6 (R46): entry via the explicit nav door (see the test above)
@@ -2924,34 +2830,24 @@ test('V22b exit wiring: Esc runs the same chain (order + one-spend), and 退出�
   w.LOG.length = 0
   w.esc()
   assert.equal(w.state.focus, null, 'Esc exited the path')
-  assert.equal(w.ANIMS.length, 2, 'Esc glides the camera back too')
-  assert.deepEqual([w.ANIMS[1].zoom, w.ANIMS[1].pan.x, w.ANIMS[1].pan.y, w.ANIMS[1].duration], [1.35, -40, 90, 250],
-    'the same snapshot, the same duration as the blank-tap exit')
-  assert.deepEqual(w.LOG, ['details', 'sync', 'paint:nofocus', 'animate'],
-    'details → ctl → repaint with focus null → glide (peek is not part of the Esc chain)')
-  assert.equal(w.state.viewport, null, 'spent by the Esc exit, and so disarmed — viewport null is the marker')
-  // 退出路径 (V2.5-M1 migration): the chrome button no longer RE-SPELLS the
-  // funnel — its five-step copy was a second implementation of the exit. The
-  // pin moved, honestly, from that copy's textual order to (1) the DELEGATION
-  // to exitFocusCommand and (2) the order INSIDE the funnel itself.
+  assert.equal(w.ANIMS.length, 0, 'R50: Esc exits with ZERO camera ops')
+  assert.deepEqual(w.LOG, ['details', 'sync', 'paint:nofocus'],
+    'details → ctl → ONE viewport-kept repaint — the chain ends there (peek is not part of the Esc chain)')
+  // 退出依赖图 (V2.5-M1 delegation + V2.7 R48 rename): the button body stays ONE
+  // call, and the funnel it delegates to now ENDS at the repaint.
   const src = readFileSync(join(WEB, 'app.js'), 'utf8')
-  const clear = src.slice(src.indexOf("getElementById('focus-clear')"), src.indexOf("var pathBack = document"))
-  assert.ok(clear.length > 0, 'the 退出路径 handler is still in app.js')
+  const clear = src.slice(src.indexOf("getElementById(\'focus-clear\')"), src.indexOf("var pathBack = document"))
+  assert.ok(clear.length > 0, 'the 退出依赖图 handler is still in app.js')
   const clearCode = clear.replace(/\/\/[^\n]*/g, '')
   assert.match(clearCode, /addEventListener\('click',\s*function\s*\(\)\s*\{\s*exitFocusCommand\(\)\s*\}\)/,
     'the button body is ONE call — the exit lives only in the funnel (menu row and Esc share it)')
   assert.ok(!/exitFocus\(\)/.test(clearCode), 'no re-spelled inline exit sequence survives in the button')
-  assert.ok(!/state\.viewport\s*=\s*null/.test(clearCode), 'the handler must not clear the snapshot it is about to spend')
   const funnel = extractBalanced(src, 'function exitFocusCommand() {')
-  const at = (needle) => {
-    const i = funnel.indexOf(needle)
-    assert.ok(i >= 0, `the exit funnel still calls ${needle}`)
-    return i
-  }
-  const iExit = at('exitFocus()')
-  const iPaint = at('paint()')
-  const iRestore = at('restoreViewport()')
-  assert.ok(iExit < iPaint && iPaint < iRestore, 'exitFocus → repaint → glide, never glide-before-repaint')
+  const iExit = funnel.indexOf('exitFocus()')
+  const iPaint = funnel.indexOf('paint()')
+  assert.ok(iExit >= 0 && iPaint >= 0 && iExit < iPaint, 'exitFocus → repaint, in that order')
+  assert.ok(!/restoreViewport|snapshotViewport|animate/.test(funnel),
+    'the exit funnel ends at the repaint — the glide that used to trail it is retired (R50)')
 })
 
 // ---------- peek: single reusable card, focus-invariant ----------
@@ -3041,6 +2937,9 @@ test('V22b wiring guards: dbl-click gates, paint mirrors focus into view, chip b
     'inside a focus only the group-focus ROOT card stays toggleable; package roots keep the full V2.2b inertness')
   assert.match(dbl, /toggleGroup\(String\(evt\.target\.data\('id'\)\)\.replace\(\/\^g:\/, ''\)\)/,
     'the groups tier routes the dbl-click to the real collapse toggle')
+  // V2.7 R49: the PACKAGE dbl-tap door shares the menu's nav funnel verbatim
+  assert.match(dbl, /cy\.on\('dbltap', 'node\.pkg', function \(evt\) \{[\s\S]*?if \(!evt\.target\.hasClass\('pkg'\)\) return[\s\S]*?selectNode\(evt\.target\.id\(\), true\)/,
+    'R49: dbl-tapping a package enters the dependency graph through selectNode(id, true)')
   // the zone shell keeps its own gate: inert inside a path only (both tiers)
   const zdbl = src.slice(src.indexOf("cy.on('dbltap', 'node.zone'"), src.indexOf("cy.on('dbltap', 'node.group'"))
   assert.match(zdbl, /if \(state\.focus\) return/, 'zone dbl-click stays inert inside a path')
@@ -3054,7 +2953,7 @@ test('V22b wiring guards: dbl-click gates, paint mirrors focus into view, chip b
   // keep/refit argument anymore (keep is the signature-free default).
   assert.doesNotMatch(src, /built\.meta\.focus/, 'no refit-decision focus test survives inside paint')
   assert.doesNotMatch(src, /state\.cy\.fit\(pathFitEles\(state\.cy\), 40\)/,
-    'paint no longer refits the path — the sanctioned glide is animateFitPath, OUTSIDE paint')
+    'paint no longer refits the path — R50: the ONLY camera moves are the boot fit, the ⌂ reset and the reveal flash, all OUTSIDE paint')
   assert.match(src, /if \(!state\.fitted\) \{[\s\S]{0,200}?state\.fitted = true[\s\S]{0,120}?state\.cy\.fit\(undefined, 24\)/,
     'the boot first frame fits exactly once through the state.fitted gate')
   assert.doesNotMatch(src, /paint\((false|true|refit)\)/, 'no caller passes a refit argument — paint() keeps the viewport, always')
@@ -3080,7 +2979,7 @@ test('V22b index.html: granularity segment, back button, and the exit rename shi
   const ctl = /<span id="focus-ctl"[\s\S]*?<\/span>/.exec(html)
   assert.ok(ctl, '#focus-ctl block')
   assert.ok(html.indexOf('id="path-back"') > html.indexOf('id="focus-ctl"'), 'the breadcrumb rides INSIDE #focus-ctl')
-  assert.match(html, /id="focus-clear" data-i18n="focusOff">退出路径/, '取消聚焦 renamed 退出路径 (exit path)')
+  assert.match(html, /id="focus-clear" data-i18n="focusOff">退出依赖图/, 'V2.7 R48: 退出路径 renamed 退出依赖图 (exit the dependency graph)')
 })
 
 test('V22b style.css: peek card, segment control, tier headers and breadcrumb get minimal rules', () => {
@@ -3209,7 +3108,7 @@ function loadMembersDom() {
     '  createElement: function (tag) { return new El(tag) },\n',
     '  createTextNode: function (s) { return { tag: \x27#text\x27, text: String(s), children: [], className: \x27\x27 } },\n',
     '}\n',
-    // fake cytoscape: revealNode's chain reads the viewport (snapshot) and animates
+    // fake cytoscape: kept for the chain’s reach; R50: revealNode reads no viewport
     'var cy = {\n',
     '  pan: function () { return { x: 11, y: 22 } }, zoom: function () { return 1.25 },\n',
     '  animate: function () { LOG.push(\x27animate\x27) },\n',
@@ -3217,7 +3116,7 @@ function loadMembersDom() {
     '}\n',
     'var state = {\n',
     '  graph: null, byId: new Map(), groupIds: new Set(), groupZone: new Map(), cy: cy, tableMode: false,\n',
-    '  focus: null, selected: null, pathStack: [], viewport: null, lang: \x27zh\x27,\n',
+    '  focus: null, selected: null, pathStack: [], lang: \x27zh\x27,\n',
     '  view: { collapsedCats: new Set(), collapsedGroups: null, filterCats: new Set(), granularity: \x27groups\x27, focus: null },\n',
     '}\n',
     cap[0] + '\n',
@@ -3234,7 +3133,6 @@ function loadMembersDom() {
     extractBalanced(src, 'function focusForId(id, nav) {') + '\n',
     extractBalanced(src, 'function expandPath(n) {') + '\n',
     extractBalanced(src, 'function exitFocus() {') + '\n',
-    extractBalanced(src, 'function snapshotViewport() {') + '\n',
     extractBalanced(src, 'function revealNode(n) {') + '\n',
     'return { state: state, LOG: LOG, El: El, memberSection: memberSection, CAP: GROUP_MEMBER_CAP }',
   ].join('')
@@ -3339,28 +3237,31 @@ test('V2.3 member row click REVEALS the package: ancestors open and state.focus 
   assert.deepEqual([...dom.state.view.collapsedCats], [], 'expandPath: its zone is un-collapsed…')
   assert.deepEqual([...dom.state.view.filterCats], [], '…and un-filtered')
   assert.deepEqual([...dom.state.view.collapsedGroups], [], '…and its group materialized + expanded')
-  assert.deepEqual(dom.state.viewport, { zoom: 1.25, pan: { x: 11, y: 22 } },
-    'entering the path arms the one-shot viewport snapshot (exit glides back)')
+  assert.equal(dom.state.viewport, undefined, 'R50: no snapshot field exists for a reveal to arm')
   assert.deepEqual(dom.state.pathStack, [], 'a reveal is an authoritative re-root, not a walk')
   assert.deepEqual(dom.LOG, ['paint:focus', 'details', 'sync', 'flash:a@1'],
     'paint (viewport kept) → details → focus ctl → the flash centers+zooms the revealed node')
   // clicking a NON-package member (broken pseudo-node) is still a reveal, but R35
-  // declines it as a root: the path exits, the snapshot is spent, no glide.
+  // declines it as a root: the path exits — camera-free (R50).
   dom.LOG.length = 0
   const brkRow = rowOf('pkg-broken')
   brkRow.handlers.click()
   assert.equal(dom.state.selected, 'brk', 'the broken node is selected (its details open)')
   assert.equal(dom.state.focus, null, 'a broken node is not a legal path root — the path exits')
-  assert.equal(dom.state.viewport, null, 'the stale entry snapshot is dropped (the reveal re-planted the camera)')
   assert.deepEqual(dom.LOG, ['paint:nofocus', 'details', 'sync', 'flash:brk'], 'the same chain, without a focus')
 })
 
-test('V2.3 member rows exist for a ZONE too, and both container details share the builder', () => {
+test('V2.3/R51 member rows: the ZONE detail groups them by GROUP, and the shared builder still resolves a zone', () => {
   const src = readFileSync(join(WEB, 'app.js'), 'utf8')
   const zone = src.slice(src.indexOf('function detailsZone(box, cid) {'), src.indexOf('function detailsGroup(box, gid) {'))
   const grp = src.slice(src.indexOf('function detailsGroup(box, gid) {'), src.indexOf('function detailsEdge(box, id) {'))
   assert.ok(zone.length > 0 && grp.length > 0, 'both container detail builders are still there')
-  assert.match(zone, /memberSection\(box, \{ kind: 'zone', id: cid \}\)/, 'zone detail = every package of the zone')
+  // V2.7 R51 MIGRATION: the zone detail lists BY GROUP now — a clickable header
+  // (selectNode('g:'+gid), NO nav: cold select, in-focus walk) + capped rows.
+  assert.match(zone, /buildGroupMembers\(\{ kind: 'group', id: gid \}, state\.graph\)/, 'zone detail = per-group sections (R51)')
+  assert.match(zone, /ZONE_GROUP_CAP/, 'each section caps at ZONE_GROUP_CAP member rows')
+  assert.match(zone, /groupMoreLabel/, 'a cut section tails with 还有 N')
+  assert.doesNotMatch(zone, /memberSection/, 'the flat zone member section is retired (group keeps its own)')
   assert.match(grp, /memberSection\(box, \{ kind: 'group', id: gid \}\)/, 'group detail = its own member packages')
   assert.doesNotMatch(zone, /jumpButton/, 'the old group-name jump list is gone (one member surface, not two)')
   assert.doesNotMatch(grp, /kvRow\(box, t\(\x27membersLabel\x27\)/,
@@ -3370,7 +3271,8 @@ test('V2.3 member rows exist for a ZONE too, and both container details share th
   const ms = src.slice(src.indexOf('function memberSection(box, sel) {'), src.indexOf('function detailsZone(box, cid) {'))
   assert.match(ms, /state\.byId\.get\(String\(r\.id\)\)/, 'the row id is resolved back to its graph node')
   assert.match(ms, /if \(n\) revealNode\(n\)/, '…and only a real node is revealed (a vanished rescan target no-ops)')
-  // zone-level render through the same harness (the pure resolver does the filtering)
+  // the PURE builder still resolves a zone kind — the capability the R51 grouped
+  // sections build on (memberSection stays the shared group renderer verbatim)
   const fx = membersGraph()
   const dom = membersDom(fx)
   dom.state.graph.groups = [{ id: 'bundle', kind: 'official', category: 'kernel' }]
@@ -3638,7 +3540,7 @@ function loadMenuWiring() {
     'var state = { graph: { categories: [{ id: "kernel" }, { id: "tools" }, { id: "plugin" }] },\n'
     + '  byId: new Map([["a@1", { id: "a@1", kind: "package", name: "a" }], ["brk", { id: "brk", kind: "broken", name: "brk" }]]),\n'
     + '  groupIds: new Set(["bundle", "fs"]), groupZone: new Map([["fs", "tools"]]),\n'
-    + '  cy: null, focus: null, selected: null, pathStack: [], viewport: null,\n'
+    + '  cy: null, focus: null, selected: null, pathStack: [],\n'
     + '  tableMode: false, lang: "zh", theme: "light", fitted: false,\n'
     + '  view: { collapsedCats: new Set(), collapsedGroups: null, filterCats: new Set(), granularity: "groups", focus: null } }\n',
     'function coll(items) {\n'
@@ -3690,10 +3592,6 @@ function loadMenuWiring() {
     extractBalanced(src, 'function exitFocusCommand() {') + '\n',
     extractBalanced(src, 'function afterFocusChange(act, id) {') + '\n',
     extractBalanced(src, 'function selectNode(id, nav) {') + '\n',
-    extractBalanced(src, 'function snapshotViewport() {') + '\n',
-    extractBalanced(src, 'function restoreViewport() {') + '\n',
-    extractBalanced(src, 'function pathFitEles(cy) {') + '\n',
-    extractBalanced(src, 'function animateFitPath() {') + '\n',
     extractBalanced(src, 'function toggleGroup(gid) {') + '\n',
     extractBalanced(src, 'function resetView() {') + '\n',
     extractBalanced(src, 'function buildContextMenu(target, state, lang) {') + '\n',
@@ -3734,13 +3632,12 @@ function loadMenuWiring() {
   return new Function(body)()
 }
 
-// V2.5 MIGRATION (R44): this V2.4b test entered the group focus with a plain
-// TAP — the entry door is now the RIGHT-CLICK menu, so the sequence runs
-// menu-open → focus-item click → (same battery unchanged: re-tap inert, dbltap
-// toggles the root card in member shape, walk keeps working). Nothing else in
-// the choreography changed; the glide count is preserved (entry + walk).
+// V2.7 R50 MIGRATION (from V2.5 R44): the choreography is UNCHANGED — menu-open
+// → focus-item click → re-tap inert → dbltap toggles the root card → walks keep
+// working — but the camera assertions REVERSED: entry, walk and toggles now
+// glide nothing (ANIMS stays empty across the whole battery).
 
-test('V2.5 menu entry + dbl-tap sequence through the REAL handlers: menu focuses once, re-tap inert, dbltap ends expanded in member shape', () => {
+test('V2.7 R50 menu entry + dbl-tap sequence through the REAL handlers: menu focuses once with ZERO camera, re-tap inert, dbltap ends expanded in member shape', () => {
   const w = loadMenuWiring()
   w.bind() // the real cy.on('tap'|'dbltap'|'cxttap', …) registrations
   // --- cxttap the card, click 聚焦邻域: ENTRY through the command surface ---
@@ -3756,18 +3653,17 @@ test('V2.5 menu entry + dbl-tap sequence through the REAL handlers: menu focuses
   assert.deepEqual(w.state.focus, { rootId: 'g:bundle', depth: 1, packages: false },
     'the menu command roots the group focus (card shape while collapsed)')
   assert.equal(w.state.selected, 'g:bundle', 'the card is the selection too (details panel rides it)')
-  assert.deepEqual(w.state.viewport, { zoom: 1.35, pan: { x: -40, y: 90 } }, 'the entry snapshot armed the exit glide')
+  assert.equal(w.state.viewport, undefined, 'R50: state.viewport is retired — the entry arms no snapshot')
   assert.deepEqual(w.state.pathStack, [], 'a fresh root starts with an empty stack')
-  assert.deepEqual(w.LOG, ['details', 'sync', 'paint:focus', 'animate'],
-    'details → ctl → repaint (focus installed) → glide to the render set, in order')
+  assert.deepEqual(w.LOG, ['details', 'sync', 'paint:focus'],
+    'details → ctl → ONE viewport-kept repaint — the entry glides NOTHING (R50)')
   assert.ok(w.menu().hidden, 'dispatching closes the menu')
   w.LOG.length = 0
-  // --- a TAP on the same root (focus view active): walk-inert, never re-snapshots ---
+  // --- a TAP on the same root (focus view active): walk-inert, zero side effects ---
   w.tap(w.card('bundle'))
   assert.deepEqual(w.state.focus, { rootId: 'g:bundle', depth: 1, packages: false })
   assert.deepEqual(w.state.pathStack, [], 'SAME-ROOT TAP PUSHES NOTHING (the brief pin)')
-  assert.deepEqual(w.LOG, ['peek-off', 'details', 'sync', 'paint:focus'], 'repaints, but no second snapshot, no glide')
-  assert.deepEqual(w.state.viewport, { zoom: 1.35, pan: { x: -40, y: 90 } }, 'the entry snapshot was not overwritten')
+  assert.deepEqual(w.LOG, ['peek-off', 'details', 'sync', 'paint:focus'], 'repaints — and zero camera ops')
   w.LOG.length = 0
   // --- dbltap (the root card keeps the V2.4b toggle semantics): expand, focus STAYS ---
   w.dbltap(w.card('bundle'))
@@ -3808,7 +3704,7 @@ test('V2.5 menu entry + dbl-tap sequence through the REAL handlers: menu focuses
   assert.equal(w.menu().hidden, false, 'opening a fresh menu kept it open for the inspection')
   w.close()
   assert.equal(w.menu().hidden, true, 'closeMenu disarms the surface')
-  assert.equal(w.ANIMS.length, 2, 'across the whole battery the camera glided exactly twice — the entry and the walk (toggles stay glide-free)')
+  assert.equal(w.ANIMS.length, 0, 'R50: across the whole battery — entry, re-taps, toggles, walks — cy.animate ran ZERO times')
 })
 
 // ---------- fake-cy: applyClasses on the group focus (the disjoint-both contract) ----------
@@ -4020,7 +3916,7 @@ function loadGroupRevealWiring() {
     '  cy: { pan: function () { return { x: 3, y: 4 } }, zoom: function () { return 1.1 },\n'
     + '    nodes: function () { return [{ data: function () { return "pkg" } }] },\n'
     + '    animate: function () { LOG.push("animate") } }, tableMode: false,\n',
-    '  focus: null, selected: null, pathStack: [], viewport: null,\n',
+    '  focus: null, selected: null, pathStack: [],\n',
     '  view: { collapsedCats: new Set(["kernel"]), collapsedGroups: null, filterCats: new Set(["kernel"]) },\n',
     '}\n',
     extractBalanced(src, 'function normalizeDepth(depth) {') + '\n',
@@ -4028,50 +3924,44 @@ function loadGroupRevealWiring() {
     extractBalanced(src, 'function isGroupRootId(id) {') + '\n',
     extractBalanced(src, 'function isFocusRoot(id) {') + '\n',
     extractBalanced(src, 'function groupFocusShape(rootId) {') + '\n',
-    extractBalanced(src, 'function pathFitEles(cy) {') + '\n',
-    extractBalanced(src, 'function animateFitPath() {') + '\n',
     extractBalanced(src, 'function expandPath(n) {') + '\n',
-    extractBalanced(src, 'function snapshotViewport() {') + '\n',
     extractBalanced(src, 'function focusNode(rootId, depth, selectId) {') + '\n',
     'return { state: state, LOG: LOG, focus: focusNode, reset: function (g) {\n'
     + '  state.graph = g; state.byId = new Map(g.nodes.map(function (n) { return [n.id, n] }));\n'
-    + '  state.focus = null; state.selected = null; state.pathStack = []; state.viewport = null;\n'
+    + '  state.focus = null; state.selected = null; state.pathStack = [];\n'
     + '  state.view.collapsedCats = new Set(["kernel"]); state.view.collapsedGroups = null; state.view.filterCats = new Set(["kernel"]);\n'
     + '  LOG.length = 0 } }',
   ].join('')
   return new Function('AtlasModel', body)(loadModel())
 }
 
-// V2.5 MIGRATION (R45): the old "paint:refit" expectation encoded the retired
-// auto-refit. The camera now glides via animateFitPath on ENTRY/WALK only, and
-// the depth-slider re-cut (same root) keeps the viewport.
+// V2.7 R50 MIGRATION (from V2.5 R45): re-roots are ZERO-camera now — the
+// moved-glide and the entry snapshot retired with the whole fit family.
 
-test('V24b focusNode: a g: re-root installs the group focus (packages flag derived), the package path keeps {rootId, depth}', () => {
+test('V2.7 R50 focusNode: a g: re-root installs the group focus (packages flag derived) with ZERO camera ops', () => {
   const h = loadGroupRevealWiring()
   h.focus('g:bundle', null, 'g:bundle')
   assert.deepEqual(h.state.focus, { rootId: 'g:bundle', depth: 1, packages: false },
     'the deep-link/breadcrumb re-root keeps the group semantics (never a stale depth-only shape)')
-  assert.deepEqual(h.state.viewport, { zoom: 1.1, pan: { x: 3, y: 4 } }, 'an entry re-root snapshots once')
   assert.deepEqual(h.state.pathStack, [], 'an authoritative re-root never touches the stack')
-  assert.deepEqual(h.LOG, ['paint:focus', 'animate', 'sync', 'details:g:bundle', 'flash:g:bundle'],
-    'repaint (focus installed, viewport kept by paint) → sanctioned entry glide → chrome → flash (V2.5 order)')
+  assert.deepEqual(h.LOG, ['paint:focus', 'sync', 'details:g:bundle'],
+    'ONE viewport-kept repaint → chrome → details — no glide, no flash (R50: re-roots are camera-free; the flash is revealNode\'s alone)')
   assert.equal(h.state.selected, 'g:bundle')
+  assert.equal(h.state.viewport, undefined, 'R50: no snapshot field survives on state')
   // the package root keeps the old shape and the expandPath side effect verbatim
   const pkgGraph = { nodes: [{ id: 'a@1', kind: 'package', name: 'a', group: 'bundle', category: 'kernel' }], edges: [] }
   h.reset(pkgGraph)
   h.focus('a@1', 2, 'a@1')
   assert.deepEqual(h.state.focus, { rootId: 'a@1', depth: 2 })
   assert.deepEqual([...h.state.view.collapsedCats], [], 'expandPath still opens the zone for a package root')
-  assert.deepEqual(h.LOG, ['paint:focus', 'animate', 'sync', 'details:a@1', 'flash:a@1'],
-    'a package entry glides too — moved = the root actually changed')
-  // depth-slider re-cut: SAME root, no selection — NO glide (the R45 rule)
+  assert.deepEqual(h.LOG, ['paint:focus', 'sync', 'details:a@1'],
+    'a package entry repaints and stops there — the moved-glide died with R50')
+  // depth-slider re-cut: SAME root, no selection — nothing changes but the cut
   h.state.focus = { rootId: 'a@1', depth: 2 }
-  h.state.viewport = { zoom: 9, pan: { x: 0, y: 0 } } // marker: entry-only snapshots must not re-fire
   h.LOG.length = 0
   h.focus('a@1', 1, null)
   assert.deepEqual(h.state.focus, { rootId: 'a@1', depth: 1 }, 'the depth re-cut lands')
   assert.deepEqual(h.LOG, ['paint:focus', 'sync'], 'no animate, no details, no flash — the lens stays where the user left it')
-  assert.deepEqual(h.state.viewport, { zoom: 9, pan: { x: 0, y: 0 } }, '…and the exit marker was not re-armed')
 })
 
 test('V24b deep-link #node=g:... is wired through the isFocusRoot gate and focuses the group', () => {
@@ -4243,42 +4133,42 @@ test('V2.5 menu wiring: solo/hide/折叠区/展开合并 commands mutate the REA
   assert.deepEqual(w.LOG.slice(-1), ['paint:nofocus'], 'toggle = one viewport-kept repaint')
 })
 
-test('V2.5 menu wiring: 路径模式 rides the real selectNode chain; 复位视图 glides padding-40 with ZERO state change; 退出聚焦 exits through the shared funnel', () => {
+test('V2.7 R50 menu wiring: 依赖图 rides the real zero-camera selectNode chain; 复位视图 glides padding-40 with ZERO state change; 退出聚焦 exits through the shared funnel', () => {
   const w = loadMenuWiring()
   w.bind()
-  // package target: the same code path a plain tap takes
+  // package target: the same code path the V2.7 dbl-tap door takes
   w.cxt(w.pkg('a@1'))
   assert.deepEqual(w.rows().map((b) => b.text), ['menuPkgPath'])
   assert.equal(w.rows()[0].disabled, false)
   w.LOG.length = 0
   w.rows()[0].handlers.click()
   assert.deepEqual(w.state.focus, { rootId: 'a@1', depth: null }, 'the command roots the path through focusForId')
-  assert.deepEqual(w.state.viewport, { zoom: 1.35, pan: { x: -40, y: 90 } }, 'entry snapshot armed')
-  assert.deepEqual(w.LOG, ['details', 'sync', 'paint:focus', 'animate'], 'identical to the tap chain (peek-off belongs to the cxttap leg)')
-  // 复位视图 from the blank canvas: camera ONLY
+  assert.equal(w.state.viewport, undefined, 'R50: nothing snapshots the viewport on entry any more')
+  assert.deepEqual(w.LOG, ['details', 'sync', 'paint:focus'], 'chrome → repaint — the entry glides NOTHING (V2.7 R50)')
+  // 复位视图 from the blank canvas: camera ONLY — the ONE surviving user glide
   w.LOG.length = 0
-  const anims0 = w.ANIMS.length // the entry glide above already animated
-  const before = { focus: w.state.focus, viewport: w.state.viewport, stack: w.state.pathStack.slice(), cats: [...w.state.view.filterCats] }
+  const anims0 = w.ANIMS.length // R50: zero so far — the entry animated nothing
+  const before = { focus: w.state.focus, stack: w.state.pathStack.slice(), cats: [...w.state.view.filterCats] }
+  assert.equal(anims0, 0, 'entry ran no camera op before ⌂ was even touched')
   w.cxt(w.blank())
   assert.deepEqual(w.rows().map((b) => b.text), ['menuResetView', 'menuExitFocus'])
   assert.equal(w.rows()[1].disabled, false, 'focus is live → 退出聚焦 offered')
   w.LOG.length = 0
   w.rows()[0].handlers.click()
-  assert.equal(w.ANIMS.length, anims0 + 1, 'exactly one camera move')
-  assert.equal(w.ANIMS[anims0].fit.padding, 40, 'the sanctioned padding (the path-glide family)')
+  assert.equal(w.ANIMS.length, anims0 + 1, 'exactly one camera move — the sanctioned reset')
+  assert.equal(w.ANIMS[anims0].fit.padding, 40, 'the sanctioned padding — the ⌂ resetView constant')
   assert.equal(w.ANIMS[anims0].fit.eles.length, 2, 'fit rides the CURRENT render set (cy.nodes())')
   assert.equal(w.ANIMS[anims0].duration, 250)
   assert.deepEqual(w.LOG, ['animate'], 'no paint, no chrome — zero structure work')
   assert.equal(w.state.focus, before.focus, 'focus untouched')
-  assert.equal(w.state.viewport, before.viewport, 'the entry snapshot untouched (a reset must not spend or re-arm it)')
   assert.deepEqual(w.state.pathStack, before.stack, 'stack untouched')
   // 退出聚焦 through the SAME funnel as Esc/focus-clear
   w.cxt(w.blank())
   w.LOG.length = 0 // the cxttap leg owns its peek-off; the COMMAND chain starts here
   w.rows()[1].handlers.click()
   assert.equal(w.state.focus, null, 'focus exited')
-  assert.deepEqual(w.LOG, ['details', 'sync', 'paint:nofocus', 'animate'], 'exit → repaint (viewport kept) → glide the entry snapshot back')
-  assert.equal(w.state.viewport, null, 'snapshot spent — the disarm marker intact')
+  assert.deepEqual(w.LOG, ['details', 'sync', 'paint:nofocus'], 'exit → ONE viewport-kept repaint — the snapshot glide is retired (R50)')
+  assert.equal(w.ANIMS.length, anims0 + 1, '⌂ stays the ONLY glide in the battery: entry and exit added nothing')
 })
 
 test('V2.5 menu lifecycle: open at the click point, edge flip/clamp, tap-SWALLOW, mousedown-then-tap swallow, pan/zoom dismiss, single reusable div, one XSS-safe header', () => {
@@ -4350,39 +4240,49 @@ test('V2.5 menu lifecycle: open at the click point, edge flip/clamp, tap-SWALLOW
 
 // ---------- static audit: the R45 camera doctrine, per call site ----------
 
-test('V2.5 R45 camera audit: paint fits ONLY the boot frame; the four sanctioned moves live outside it; resetView writes no state', () => {
+// V2.7 R50 MIGRATION: this replaces the V2.5 R45 camera audit — the "four
+// sanctioned moves" shrank to THREE (boot fit / ⌂ reset / the named reveal flash)
+// once the entry/walk/re-root glides and the exit restore retired. The audit now
+// proves the RETIREMENT globally (executable lines; comments exempt) and pins the
+// surviving camera surface to exactly ONE fit + TWO cy.animate call sites.
+test('V2.7 R50 camera audit: the snapshot chain is deleted; ONE fit + TWO cy.animate sites (flash, ⌂); every transition zero-camera', () => {
   const src = readFileSync(join(WEB, 'app.js'), 'utf8')
+  const code = stripJsComments(src)
+  assert.doesNotMatch(code, /snapshotViewport|restoreViewport|animateFitPath|pathFitEles/,
+    'the V2.2b viewport-snapshot + path-fit chain is deleted from every executable line')
+  assert.doesNotMatch(code, /state\.viewport|viewport:\s*null/,
+    'state.viewport is retired — no field, no writer, no reader')
   const paintBody = extractBalanced(src, 'function paint() {')
-  assert.ok(paintBody.includes('if (!state.fitted)'), 'paint carries the one-shot boot gate')
-  assert.ok(paintBody.includes('state.cy.fit(undefined, 24)'), 'the boot frame fits the whole view (V5 padding)')
-  assert.ok(paintBody.includes('closeMenu()'), 'a structural repaint strands any open menu → close')
-  for (const banned of ['animateFitPath', 'restoreViewport', 'flashReveal', 'pathFitEles']) {
-    assert.ok(!paintBody.includes(banned), `paint never touches ${banned} — the camera moves live OUTSIDE the render path`)
-  }
-  assert.equal((src.match(/state\.cy\.fit\(/g) || []).length, 1, 'exactly ONE fit call in the whole app (the boot gate)')
-  // exception 2: path entry/walk — selectNode's tail + focusNode's moved-glide
+  assert.ok(paintBody.includes('if (!state.fitted)'), 'paint keeps the one-shot boot-fit gate')
+  assert.ok(paintBody.includes('state.cy.fit(undefined, 24)'), 'the boot fit is the ONE fit call')
+  assert.ok(paintBody.includes('closeMenu()'), 'paint closes an open menu before destroying elements (V2.5 pin survives)')
+  assert.ok(!paintBody.includes('animate'), 'paint never animates — the camera lives outside the render path')
+  assert.equal((src.match(/state\.cy\.fit\(/g) || []).length, 1, 'exactly ONE fit() call in the whole app (the boot gate)')
+  assert.equal((src.match(/state\.cy\.animate\(/g) || []).length, 2,
+    'exactly TWO cy.animate call sites: the named reveal flash + the explicit ⌂ reset')
   const after = extractBalanced(src, 'function afterFocusChange(act, id) {')
-  assert.ok(after.indexOf('paint()') < after.indexOf('animateFitPath()'), 'paint THEN glide (the V22b order)')
-  assert.ok(after.includes('restoreViewport()'), 'the exit branch glides the snapshot back')
+  assert.ok(!/animate|fit\(|restore|snapshot/i.test(stripJsComments(after)), 'afterFocusChange (entry/walk/exit tail) moves NO camera (R50)')
+  assert.ok(after.includes('paint()'), 'its tail is the viewport-kept repaint')
   const fn = extractBalanced(src, 'function focusNode(rootId, depth, selectId) {')
-  assert.ok(/var moved = !state\.focus \|\| String\(state\.focus\.rootId\)/.test(fn), 'entry-vs-recut decided BEFORE the re-root')
-  assert.ok(fn.includes('if (moved) animateFitPath()'), 'depth-slider re-cuts KEEP the viewport')
-  // exception 4: reveal = center+zoom only (flashReveal), and resetView is state-free
+  assert.ok(!/animate|fit\(|flashReveal|snapshot/i.test(stripJsComments(fn)), 're-roots (deep link / breadcrumb / 聚焦 button) fire ZERO camera ops — no glide, no flash')
+  assert.ok(fn.includes('paint()'), 'focusNode repaints — that is the whole move')
+  const ef = extractBalanced(src, 'function exitFocusCommand() {')
+  assert.ok(!/animate|restore|snapshot/i.test(stripJsComments(ef)), 'the exit funnel animates nothing')
+  assert.ok(ef.indexOf('exitFocus()') < ef.indexOf('paint()'), 'exitFocus → repaint, and nothing trails the repaint')
+  // the surviving exceptions, exactly where the brief pins them:
   const reveal = extractBalanced(src, 'function revealNode(n) {')
-  assert.ok(reveal.includes('flashReveal(n.id)'), 'reveal centers+zooms through the flash')
-  assert.ok(!reveal.includes('animateFitPath') && !reveal.includes('restoreViewport'), 'reveal glides nothing else')
+  assert.ok(reveal.includes('flashReveal(n.id)'), 'reveal centers+zooms through the flash (named navigation)')
+  assert.ok(!/animate|fit\(|snapshot|restore/i.test(stripJsComments(reveal)), 'reveal itself touches no other camera')
+  const flash = extractBalanced(src, 'function flashReveal(id) {')
+  assert.ok(flash.includes('state.cy.animate({ center'), 'the flash is the ONE named center+zoom animate site')
   const rv = extractBalanced(src, 'function resetView() {')
-  assert.match(rv, /fit:\s*\{[^}]*padding:\s*40/, '复位视图 = fit padding 40')
-  assert.match(rv, /duration:\s*250/, '250ms, the glide family')
-  assert.doesNotMatch(rv, /state\.(view|focus|selected|pathStack|viewport|fitted)\s*=[^=]/, 'ZERO state writes')
-  assert.doesNotMatch(rv, /paint\(/, 'no repaint — the render set stays exactly as it is')
-  // the close bindings named on the surface: tap-swallow + mousedown + pan + zoom + Esc
+  assert.match(rv, /fit:\s*\{[^}]*padding:\s*40/, '⌂ keeps fit padding 40')
+  assert.match(rv, /duration:\s*250/, '250ms, the surviving glide family')
+  assert.doesNotMatch(rv, /state\.(view|focus|selected|pathStack|fitted)\s*=[^=]/, 'resetView writes no state (the R45 pin survives the audit rewrite)')
+  assert.doesNotMatch(rv, /paint\(/, 'resetView never repaints (zero structure work)')
   assert.match(src, /cy\.on\('mousedown', onCanvasMouseDown\)/, 'mousedown closes the menu (and arms the swallow)')
   assert.match(src, /cy\.on\('panstart', onCanvasGesture\)/, 'panstart closes without eating the NEXT click')
   assert.match(src, /cy\.on\('zoom', closeMenu\)/, 'zoom closes (named — the anonymous-zoom guard stays honest)')
-  assert.match(src, /cy\.on\('cxttap', 'node', onCtxTap\)/, 'node cxttap opens the target menu')
-  assert.match(src, /cy\.on\('cxttap', onCtxTapBackground\)/, 'blank-canvas cxttap opens the view menu')
-  assert.match(src, /getElementById\('ctx-menu'\)[\s\S]{0,120}menu\.hidden = true/, 'Esc closes the menu FIRST')
 })
 
 test('V2.5 chrome ships: the ⌂ reset-view button (i18n-title), the clickable #ctx-menu CSS, and every menu labelKey resolves in BOTH locales', () => {
@@ -4427,7 +4327,10 @@ test('V2.6 R46 nav audit: the tap is the ONE nav-free selection door; menu/rows/
   assert.match(src, /hidePeek\(\); selectNode\(null\)/, 'the blank tap deselects plainly (no nav)')
   // the five explicit doors (brief-verified call sites)
   assert.match(src, /if \(cmd === 'pkg-path'\) \{ selectNode\(String\(target\.id\), true\); return \}/,
-    'menu 路径模式 = explicit nav (:1621 chain)')
+    'menu 依赖图 = explicit nav (the R46 door, V2.7 renamed)')
+  // V2.7 R49: the package dbl-tap entered as a SECOND pkg door, same funnel
+  assert.match(src, /cy\.on\('dbltap', 'node\.pkg', function \(evt\) \{[\s\S]{0,400}?if \(!evt\.target\.hasClass\('pkg'\)\) return[\s\S]*?selectNode\(evt\.target\.id\(\), true\)/,
+    'R49: dbl-tapping a package enters the dependency graph through selectNode(id, true) — the SAME nav funnel')
   assert.match(src, /jumpButton\(box, t\('depsLabel'\) \+ ' ' \+ idToLabel\(src\), function \(\) \{ selectNode\(String\(src\), true\) \}\)/,
     '依赖 jump button = explicit nav')
   assert.match(src, /jumpButton\(box, idToLabel\(tgt\) \+ ' ' \+ t\('dependentsLabel'\), function \(\) \{ selectNode\(String\(tgt\), true\) \}\)/,
@@ -4449,7 +4352,7 @@ test('V2.6 R46 nav audit: the tap is the ONE nav-free selection door; menu/rows/
   // README interaction prose moved with the door (left-click semantics + entry list)
   const readme = readFileSync(join(WEB, '..', 'README.md'), 'utf8')
   assert.match(readme, /冷态下单击（左键）任何节点 = 纯选中/, 'README: cold left-click is plain selection for BOTH kinds')
-  assert.match(readme, /路径模式/, 'README keeps the path-mode vocabulary')
+  assert.match(readme, /依赖图/, 'README keeps the V2.7 renamed vocabulary (依赖图)')
 })
 
 // ---------- V2.6 R47: the segmented toolbar (display layer only) ----------
@@ -4600,7 +4503,7 @@ test('V2.6-fix I2 depth residue: a package focus at 1-3 resets too, and a LIVE f
 
 // ---------- V2.6-fix M1: the nav audit, pinned by call SHAPE ----------
 //
-// The R46 audit pinned each door by its verbatim call text. That proves the six
+// The R46 audit pinned each door by its verbatim call text. That proves the seven
 // known sites and nothing else: re-spell one (`selectNode(id,\n  true)`, a
 // different argument expression, a new site) and the leak sails through while
 // every guard stays green. What actually matters is a COUNT and a FORBIDDEN
@@ -4686,23 +4589,29 @@ function navAudit(srcText) {
   const navSelect = nav.filter((s) => s.fn === 'selectNode')
   const navFocus = nav.filter((s) => s.fn === 'focusForId')
   const v = []
-  if (navSelect.length !== 6) v.push(`nav-carrying selectNode sites: expected 6, found ${navSelect.length} [${navSelect.map((s) => s.text).join(' | ')}]`)
+  if (navSelect.length !== 7) v.push(`nav-carrying selectNode sites: expected 7, found ${navSelect.length} [${navSelect.map((s) => s.text).join(' | ')}]`)
   if (navFocus.length !== 1) v.push(`nav-carrying focusForId sites: expected 1, found ${navFocus.length} [${navFocus.map((s) => s.text).join(' | ')}]`)
   // every GROUP/ZONE-shaped selection is a navigation-free door by R44/R46 rule:
-  // 'cat:' zone breadcrumbs, 'g:' group breadcrumbs, the related-group row.
+  // 'cat:' zone breadcrumbs, 'g:' group breadcrumbs, the related-group row, and
+  // (V2.7 R51) the zone-details group-header button.
   const groupDoors = sites.filter((s) => /['"](?:cat|g):/.test(s.args[0] || ''))
   const leaky = groupDoors.filter(isNav)
   if (leaky.length) v.push(`group/zone doors carry nav: [${leaky.map((s) => s.text).join(' | ')}]`)
-  if (groupDoors.length !== 4) v.push(`group/zone-shaped selectNode doors: expected 4, found ${groupDoors.length} [${groupDoors.map((s) => s.text).join(' | ')}]`)
-  // the tap door: exactly one nav-free bare selectNode(evt.target.id()) and the
-  // blank deselect — a nav flag sneaking into either is the R46 regression.
-  const taps = sites.filter((s) => /evt\.target\.id\(\)|^null$/.test(s.args[0] || ''))
-  if (taps.length !== 2) v.push(`tap doors: expected 2 (node tap + blank deselect), found ${taps.length}`)
-  if (taps.some(isNav)) v.push('a tap door carries nav: ' + taps.filter(isNav).map((s) => s.text).join(' | '))
+  if (groupDoors.length !== 5) v.push(`group/zone-shaped selectNode doors: expected 5, found ${groupDoors.length} [${groupDoors.map((s) => s.text).join(' | ')}]`)
+  // the bare shape now feeds THREE doors: the nav-free node tap, the nav-free
+  // blank deselect, and (V2.7 R49) the package dbl-tap selectNode(evt.target.id(),
+  // true) — exactly ONE of them may carry nav, and it must be that dbl-tap shape;
+  // a nav flag sneaking into the plain tap is still the R46 regression.
+  const bare = sites.filter((s) => /evt\.target\.id\(\)|^null$/.test(s.args[0] || ''))
+  const dblDoors = bare.filter(isNav)
+  const bareTaps = bare.filter((s) => !isNav(s))
+  if (bareTaps.length !== 2) v.push(`nav-free tap doors: expected 2 (node tap + blank deselect), found ${bareTaps.length}`)
+  if (dblDoors.length !== 1) v.push(`nav-carrying bare-shape doors: expected 1 (the R49 dbl-tap funnel), found ${dblDoors.length} [${dblDoors.map((s) => s.text).join(' | ')}]`)
+  if (!dblDoors.some((s) => /evt\.target\.id\(\)/.test(s.args[0] || ''))) v.push('the single nav-carrying bare door is not the dbl-tap evt.target.id() shape')
   return v
 }
 
-test('V2.6-fix M1 nav audit by shape: 6+1 nav sites exactly, every group/zone door nav-free, mutation-proven teeth', () => {
+test('V2.6-fix M1 (+V2.7 R49/R51) nav audit by shape: 7+1 nav sites exactly, every group/zone door nav-free, mutation-proven teeth', () => {
   const src = readFileSync(NAV_APP || join(WEB, 'app.js'), 'utf8')
   const v = navAudit(src)
   assert.deepEqual(v, [], 'the shape audit found: ' + v.join('; '))
@@ -4716,7 +4625,7 @@ test('V2.6-fix M1 nav audit by shape: 6+1 nav sites exactly, every group/zone do
   const vm1 = navAudit(mutated)
   assert.ok(vm1.length > 0, 'MUTATION NOT CAUGHT: a `, true` on the zone breadcrumb slipped past the shape audit')
   assert.ok(vm1.some((x) => /group\/zone doors carry nav/.test(x)), 'and it is caught by the group-door ban: ' + vm1.join('; '))
-  assert.ok(vm1.some((x) => /expected 6, found 7/.test(x)), '…and by the count: ' + vm1.join('; '))
+  assert.ok(vm1.some((x) => /expected 7, found 8/.test(x)), '…and by the count: ' + vm1.join('; '))
   // TEETH 2: a re-spelling the old regexes are blind to (whitespace + different
   // argument expression, SAME door) must redden the count, not stay green.
   const respelled = src.replace("selectNode(String(target.id), true)", "selectNode(\n        String(target.id),\n        true\n      )")
@@ -4736,7 +4645,7 @@ test('V2.6-fix M1 the strip+parse layer itself is sound (no prose counted, no si
   assert.ok(raw < (src.match(/selectNode/g) || []).length, 'comment stripping removed the prose occurrences')
   const sites = callSites(src, ['selectNode', 'focusForId'])
   const kinds = sites.filter((s) => s.fn === 'selectNode').length
-  assert.equal(kinds, 12, 'every selectNode CALL (declarations excluded) is in the audit set: ' + kinds)
+  assert.equal(kinds, 14, 'every selectNode CALL (declarations excluded) is in the audit set — V2.7 adds the dbl-tap door + the zone group-header door: ' + kinds)
   assert.ok(sites.every((s) => s.args.length >= 1), 'each site parsed to at least one argument')
   assert.deepEqual(sites.filter((s) => s.fn === 'focusForId').map((s) => s.args.join(',')).sort(),
     ['id,nav', 'n.id,true'], 'focusForId: the funnel pass-through + the one reveal nav site')
@@ -4865,3 +4774,193 @@ test('V2.6-fix M2 anchors by rect + style only: no HTML sink, no magic offsets, 
 })
 
 
+
+// =========================================================================
+// Task V2.7 — the dependency-graph rename (R48), dbl-tap entry (R49),
+// zero-camera transitions (R50), the leveled details panel (R51) and the
+// legend move (R52). R49/R50 ride the camera migrations above (every
+// entry/walk/re-root/exit matrix REVERSED to zero-camera) plus the real-
+// handler dbl matrices in test/ctx-menu-wiring.test.mjs. Below: the rename
+// guards, the leveled-panel source/CSS guards, and a fake-DOM test that
+// drives the REAL grouped zone-details builder end to end.
+// =========================================================================
+
+test('V2.7 R48 rename guards: 依赖图 ships in every locale; no dictionary value says 路径模式 again; path-list labels untouched', () => {
+  const src = readFileSync(join(WEB, 'app.js'), 'utf8')
+  const html = readFileSync(join(WEB, 'index.html'), 'utf8')
+  const I18N = new Function(extractBalanced(src, 'var I18N = {') + '\nreturn I18N')()
+  assert.equal(I18N.zh.menuPkgPath, '依赖图', 'zh package menu command renamed')
+  assert.equal(I18N.en.menuPkgPath, 'dependency graph', 'en package menu command renamed')
+  assert.ok(I18N.zh.focusOff.includes('依赖图'), 'zh exit button names the graph it exits')
+  assert.ok(I18N.en.focusOff.includes('dependency graph'), 'en exit button too')
+  assert.equal(I18N.zh.legendFocus, '依赖图配色', 'zh legend section renamed')
+  assert.equal(I18N.en.legendFocus, 'dependency graph colors', 'en legend section renamed')
+  // the guard the brief asks for: the old mode name is gone from EVERY value,
+  // in EVERY locale (ids, keys and internal names are deliberately untouched)
+  for (const loc of ['zh', 'en']) {
+    for (const [k, v] of Object.entries(I18N[loc])) {
+      assert.ok(!String(v).includes('路径模式'), `${loc}.${k} still says 路径模式`)
+    }
+  }
+  // the untouched neighbors (R48 renamed the MODE, not the path LIST labels)
+  assert.equal(I18N.zh.pathDownLabel, '依赖路径 ↓', 'path-list label untouched')
+  assert.equal(I18N.zh.pathUpLabel, '被依赖路径 ↑', 'path-list label untouched')
+  assert.equal(I18N.zh.menuFocusGroup, '聚焦邻域（1 跳）', 'group-focus command untouched')
+  assert.match(html, /id="focus-clear" data-i18n="focusOff">退出依赖图</, 'the static chrome ships the renamed exit button')
+})
+
+test('V2.7 R51 source guards: level classes on the details container, chip in the h2, the group-header door stays nav-free', () => {
+  const src = readFileSync(join(WEB, 'app.js'), 'utf8')
+  const rd = extractBalanced(src, 'function renderDetails(id) {')
+  assert.match(rd, /box\.className = 'lvl-zone'/, 'zone details carry lvl-zone')
+  assert.match(rd, /box\.setAttribute\('data-zone', s\.slice\(4\)\)/, 'the zone band keys off data-zone (a palette zone id, never free text)')
+  assert.match(rd, /box\.className = ''/, 'every render RESETS the level first')
+  assert.match(rd, /box\.setAttribute\('data-zone', ''\)/, '…and the zone key with it')
+  assert.match(rd, /box\.className = 'lvl-group'/, 'group details carry lvl-group')
+  assert.match(rd, /box\.className = 'lvl-pkg'/, 'package details carry lvl-pkg')
+  const edge = src.slice(src.indexOf('function detailsEdge(box, id) {'), src.indexOf('function pathListSection'))
+  assert.ok(!/lvl-/.test(edge), 'the EDGE detail builder never touches a level class — neutral container')
+  const edgeDispatch = rd.slice(rd.indexOf('agg:'))
+  assert.match(edgeDispatch, /detailsEdge\(box, s\); return/, 'edges dispatch BEFORE any lvl assignment')
+  const chip = extractBalanced(src, 'function lvlChip(h, label) {')
+  assert.match(chip, /escText\(c, label\)/, 'chip text is escText-only (dictionary strings, no HTML surface)')
+  assert.match(chip, /h\.insertBefore\(c, h\.firstChild\)/, 'the chip rides INSIDE the header h2')
+  assert.match(src, /lvlChip\(head\(box, zoneTitle\(cid\)\), t\('lvlZone'\)\)/, 'zone header gets the 区 chip')
+  assert.match(src, /lvlChip\(head\(box, gid\), t\('lvlGroup'\)\)/, 'group header gets the 组 chip')
+  assert.match(src, /lvlChip\(head\(box, String\(n\.name == null \? n\.id : n\.name\)\), t\('lvlPkg'\)\)/, 'package header gets the 包 chip')
+  const zd = src.slice(src.indexOf('function detailsZone(box, cid) {'), src.indexOf('function detailsGroup(box, gid) {'))
+  assert.match(zd, /hb\.className = 'jump ghead'/, 'group headers are buttons riding the shared .jump row class')
+  assert.match(zd, /escText\(hb, gid \+ ' \\u00d7' \+ res\.total\)/, 'header text is escText(gid ×TRUE total)')
+  assert.match(zd, /hb\.addEventListener\('click', function \(\) \{ selectNode\('g:' \+ gid\) \}\)/, 'the header click IS the plain group door')
+  assert.doesNotMatch(zd, /selectNode\([^\n]*true\)/, 'the group-header door carries NO nav flag (cold select, in-focus walk)')
+  assert.match(zd, /var rows = document\.createElement\('div'\); rows\.className = 'gmem'/, 'member rows sit in an indented .gmem wrapper')
+  assert.match(zd, /res\.rows\.slice\(0, ZONE_GROUP_CAP\)/, 'members capped per section')
+  assert.match(zd, /kvRow\(box, '', t\('groupMoreLabel'\)\.replace\('\{n\}', res\.total - ZONE_GROUP_CAP\)\)/, '还有 N tail counts exactly what the cap hid')
+  assert.match(zd, /if \(!res\.total\) return/, 'zero-member groups stay invisible')
+})
+
+test('V2.7 R51 CSS guards: accent bands per level, the fixed 13-zone palette bands, chip and indent rules', () => {
+  const css = readFileSync(join(WEB, 'style.css'), 'utf8')
+  assert.match(css, /#details\.lvl-zone \{ border-left: 4px solid #8a94a0; \}/, 'zone level: 4px band, ungrouped-grey fallback')
+  assert.match(css, /#details\.lvl-group \{ border-left: 4px solid #4f6b8a; \}/, 'group level: slate blue')
+  assert.match(css, /#details\.lvl-pkg \{ border-left: 4px solid #3f9d6d; \}/, 'package level: green')
+  assert.match(css, /#details\.lvl-zone h2 \{ font-size: 16px; \}/, 'zone title 16px')
+  assert.match(css, /#details\.lvl-group h2 \{ font-size: 14px; \}/, 'group title 14px')
+  assert.match(css, /#details\.lvl-pkg h2 \{ font-size: 13px; font-family: ui-monospace, Consolas, monospace; \}/, 'package title 13px + monospace name')
+  // the zone bands are FIXED light-palette hexes (brief-sanctioned), one per zone
+  const bands = {
+    kernel: '#4a5fd0', session: '#2f81c2', llm: '#12a5a5', tools: '#55a630',
+    orchestration: '#7f9e1c', integration: '#c9971b', ui: '#d1417c', platform: '#4f6b8a',
+    infra: '#0f7d64', plugin: '#9a6ac2', profiles: '#d9a441', broken: '#d0433f', ungrouped: '#8a94a0',
+  }
+  const src = readFileSync(join(WEB, 'app.js'), 'utf8')
+  for (const [zid, hex] of Object.entries(bands)) {
+    // the band color must EQUAL ZONE_COLORS.light[id].line — one palette, two readers
+    assert.ok(src.includes(zid + ": { line: '" + hex + "' }"), `app.js ZONE_COLORS light ${zid} = ${hex}`)
+    assert.ok(css.includes(`#details.lvl-zone[data-zone="${zid}"] { border-left-color: ${hex}; }`), `zone band ${zid} → ${hex} ships`)
+  }
+  assert.match(css, /#details h2 \.lvl/, 'the badge chip is styled')
+  assert.match(css, /#details \.ghead \{ font-weight: 700; \}/, 'group-header buttons read as section heads')
+  assert.match(css, /#details \.gmem \{ padding-left: 14px; \}/, 'member rows indent under their header')
+})
+
+// ---------- R51: the grouped zone details render through the REAL builders ----------
+// Same doctrine as every V2.x harness: extractBalanced pulls the REAL details
+// chain (detailsZone → zoneGroupSections → buildGroupMembers → memberRow) into
+// a fake DOM; only the doors (selectNode/revealNode) and the dictionary are
+// stubs. Nothing mid-chain is faked.
+
+function loadZoneDetailsDom() {
+  const src = readFileSync(join(WEB, 'app.js'), 'utf8')
+  const cap = /var ZONE_GROUP_CAP = [^\n;]+/.exec(src)
+  assert.ok(cap, 'app.js must still declare `var ZONE_GROUP_CAP = …`')
+  const body = [
+    'var LOG = []\n',
+    'var KEYS = { lvlZone: \x27区\x27, lvlGroup: \x27组\x27, lvlPkg: \x27包\x27, groupsLabel: \x27GROUPS\x27, memberPkgsLabel: \x27MEMBERS({n})\x27, groupMoreLabel: \x27MORE:{n}\x27, unsatLabel: \x27UNSAT\x27, brokenLabel: \x27BROKEN\x27 }\n',
+    'function t(k) { return Object.prototype.hasOwnProperty.call(KEYS, k) ? KEYS[k] : k }\n',
+    'function selectNode(id, nav) { LOG.push(\x27select:\x27 + id + (nav ? \x27:nav\x27 : \x27:bare\x27)) }\n',
+    'function revealNode(n) { LOG.push(\x27reveal:\x27 + n.id) }\n',
+    'function El(tag) {\n',
+    '  this.tag = tag; this.children = []; this.className = \x27\x27; this.text = \x27\x27; this.handlers = {}; this.hidden = false\n',
+    '  var self = this\n',
+    '  this.appendChild = function (c) { c.parentNode = self; this.children.push(c); return c }\n',
+    '  this.insertBefore = function (n, ref) { var i = this.children.indexOf(ref); if (i < 0) return this.appendChild(n); n.parentNode = self; this.children.splice(i, 0, n); return n }\n',
+    '  this.addEventListener = function (k, fn) { self.handlers[k] = fn }\n',
+    '}\n',
+    'Object.defineProperty(El.prototype, \x27textContent\x27, {\n',
+    '  get: function () { return this.text },\n',
+    '  set: function (v) { this.text = String(v); this.children.length = 0 },\n',
+    '})\n',
+    'var document = { createElement: function (tag) { return new El(tag) },\n',
+    '  createTextNode: function (s) { return { tag: \x27#text\x27, text: String(s), children: [], className: \x27\x27 } } }\n',
+    'var state = { graph: null, byId: new Map(), groupIds: new Set(), groupZone: new Map(), lang: \x27zh\x27, selected: null, focus: null }\n',
+    cap[0] + '\n',
+    extractBalanced(src, 'function escText(el, s) {') + '\n',
+    extractBalanced(src, 'function catById(graph) {') + '\n',
+    extractBalanced(src, 'function zoneTitle(catId) {') + '\n',
+    extractBalanced(src, 'function head(box, text) {') + '\n',
+    extractBalanced(src, 'function kvRow(box, key, value) {') + '\n',
+    extractBalanced(src, 'function secTitle(box, text) {') + '\n',
+    extractBalanced(src, 'function lvlChip(h, label) {') + '\n',
+    extractBalanced(src, 'function groupZoneOf(graph, gid) {') + '\n',
+    extractBalanced(src, 'function buildGroupMembers(sel, graph) {') + '\n',
+    extractBalanced(src, 'function memberRow(box, row, onClick) {') + '\n',
+    extractBalanced(src, 'function detailsZone(box, cid) {') + '\n',
+    extractBalanced(src, 'function zoneGroupSections(box, groups) {') + '\n',
+    'return { state: state, LOG: LOG, El: El, CAP: ZONE_GROUP_CAP, detailsZone: detailsZone }',
+  ].join('')
+  return new Function(body)()
+}
+
+/** one tools zone: alpha(2) + beta(13, over the cap) + zeta(1) + an EMPTY group */
+function zoneDetailsGraph() {
+  const mk = (id, group) => ({ id, kind: 'package', name: id.replace(/@.*$/, ''), version: '1.0.0', group, category: 'tools', scope: 'official' })
+  const nodes = []
+  for (let i = 1; i <= 13; i++) nodes.push(mk('b' + i + '@1', 'beta'))
+  nodes.push(mk('a1@1', 'alpha'), mk('a2@1', 'alpha'), mk('z1@1', 'zeta'))
+  return {
+    categories: [{ id: 'tools', zh: '工具', en: 'Tools' }],
+    groups: [{ id: 'zeta', kind: 'official', category: 'tools' }, { id: 'alpha', kind: 'official', category: 'tools' },
+      { id: 'beta', kind: 'official', category: 'tools' }, { id: 'empty', kind: 'official', category: 'tools' }],
+    nodes,
+    edges: [],
+  }
+}
+
+test('V2.7 R51 zone details list BY GROUP through the real builders: chip, alphabetical sections, capped members, nav-free header door', () => {
+  const dom = loadZoneDetailsDom()
+  const graph = zoneDetailsGraph()
+  dom.state.graph = graph
+  dom.state.byId = new Map(graph.nodes.map((n) => [n.id, n]))
+  dom.state.groupIds = new Set(['alpha', 'beta', 'empty', 'zeta'])
+  dom.state.groupZone = new Map([['alpha', 'tools'], ['beta', 'tools'], ['empty', 'tools'], ['zeta', 'tools']])
+  assert.equal(dom.CAP, 10, 'ten member rows per group section')
+  const box = new dom.El('div')
+  dom.detailsZone(box, 'tools')
+  assert.equal(box.children[0].tag, 'h2', 'the panel opens with the header')
+  assert.equal(box.children[0].children[0].className, 'lvl', 'the 区 chip rides INSIDE the h2 (R51)')
+  assert.equal(box.children[0].children[0].text, '区', 'chip text is the zh dictionary label')
+  assert.equal(box.children[0].text, '工具', 'the h2 title is the zone title')
+  const kv = (key) => box.children.find((c) => c.className === 'kv' && c.children[0].text === key)
+  assert.equal(kv('GROUPS').children[1].text, '4', 'the GROUPS row counts every group in the zone…')
+  const heads = box.children.filter((c) => (c.className || '').split(' ').includes('ghead'))
+  assert.deepEqual(heads.map((h) => h.text), ['alpha ×2', 'beta ×13', 'zeta ×1'], 'sections are alphabetical with TRUE totals…')
+  assert.equal(heads.some((h) => h.text.startsWith('empty')), false, '…and the zero-member group is invisible (the flat list showed nothing for it either)')
+  const gmems = box.children.filter((c) => c.className === 'gmem')
+  assert.deepEqual(gmems.map((g) => g.children.length), [2, dom.CAP, 1], 'each section lists AT MOST CAP indented rows')
+  const more = box.children.filter((c) => c.className === 'kv' && c.children[1].text === 'MORE:3')
+  assert.equal(more.length, 1, 'the cut beta section tails with 还有 3 (13-10, exactly what the cap hid)')
+  // the header door: the REAL click → selectNode('g:'+gid) with NO nav flag
+  heads[1].handlers.click()
+  assert.deepEqual(dom.LOG, ['select:g:beta:bare'], 'the group header opens the group WITHOUT nav (cold = select, in-focus = walk)')
+  // member rows reveal through the shared reveal contract
+  gmems[2].children[0].handlers.click()
+  assert.deepEqual(dom.LOG, ['select:g:beta:bare', 'reveal:z1@1'], 'an indented member row is the shared reveal (the fake stub stands in for the REAL revealNode chain, itself pinned by its own suite)')
+  // an empty zone keeps its honest zero header
+  const emptyBox = new dom.El('div')
+  dom.state.groupIds = new Set()
+  dom.state.groupZone = new Map()
+  dom.detailsZone(emptyBox, 'tools')
+  assert.equal(emptyBox.children.filter((c) => c.className === 'ghead' || c.className === 'gmem').length, 0, 'no sections at all')
+  assert.equal(emptyBox.children[emptyBox.children.length - 1].text, 'MEMBERS(0)', '…just the honest zero header')
+})

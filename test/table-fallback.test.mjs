@@ -69,6 +69,15 @@ class FEl {
     if (c.id && this._doc) this._doc._ids.set(c.id, c)
     return c
   }
+  // V2.7 R51: lvlChip inserts the badge before the h2's first child
+  insertBefore(n, ref) {
+    const i = this.children.indexOf(ref)
+    if (i < 0) return this.appendChild(n)
+    n.parentNode = this
+    this.children.splice(i, 0, n)
+    if (n.id && this._doc) this._doc._ids.set(n.id, n)
+    return n
+  }
   removeChild(c) {
     const i = this.children.indexOf(c)
     if (i >= 0) { this.children.splice(i, 1); c.parentNode = null }

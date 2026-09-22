@@ -55,7 +55,10 @@ main { display: flex; flex: 1; min-height: 0; position: relative; }
 /* V6 fills #legend and #zone-chips; empty containers must stay invisible (V5).
    V6 adds a clickable collapse button inside #legend → pointer-events must be
    auto (V5 shipped none because it was decorative-only and empty). */
-#legend { position: absolute; right: 10px; bottom: 10px; max-width: 300px; max-height: 40vh; overflow: auto; z-index: 2; background: light-dark(#ffffffe6, #12161be6); border: 1px solid #8884; border-radius: 6px; padding: 8px 10px; font-size: 11px; }
+/* V2.7 R52: the legend anchors LEFT (right:10px shipped since V6; the details
+   side of the pane is now the reading side). max-width/collapse/pointer-events
+   untouched. */
+#legend { position: absolute; left: 10px; bottom: 10px; max-width: 300px; max-height: 40vh; overflow: auto; z-index: 2; background: light-dark(#ffffffe6, #12161be6); border: 1px solid #8884; border-radius: 6px; padding: 8px 10px; font-size: 11px; }
 #legend:empty { display: none; }
 .leg-head { border: 0; background: none; cursor: pointer; font: inherit; font-size: 11px; font-weight: 600; padding: 0; margin: 0 0 4px; }
 .leg-sec { font-size: 10px; opacity: .6; margin: 6px 0 2px; }
@@ -115,6 +118,34 @@ header .chips { display: inline-flex; gap: 6px; flex-wrap: wrap; align-items: ce
 #table-fallback td, #table-fallback th { border: 1px solid #8884; padding: 3px 8px; text-align: left; }
 #details { width: 340px; overflow: auto; padding: 12px; border-left: 1px solid #8884; background: light-dark(#fbfcfd, #10141a); }
 #details h2 { font-size: 14px; margin: 0 0 4px; overflow-wrap: anywhere; }
+/* V2.7 R51: 详情面板分级 — the container class (set by renderDetails) carries the
+   level accent: a 4px left band + title size. The ZONE band takes that zone's
+   PRIMARY color as FIXED hexes from the light ZONE_COLORS palette (app.js) via
+   data-zone — deliberate fixed values, per the brief. group = slate blue,
+   package = green + monospace name. Edge details stay NEUTRAL (no lvl class).
+   sec/kv/jump rows keep riding the existing classes unchanged. */
+#details.lvl-zone { border-left: 4px solid #8a94a0; }
+#details.lvl-zone[data-zone="kernel"] { border-left-color: #4a5fd0; }
+#details.lvl-zone[data-zone="session"] { border-left-color: #2f81c2; }
+#details.lvl-zone[data-zone="llm"] { border-left-color: #12a5a5; }
+#details.lvl-zone[data-zone="tools"] { border-left-color: #55a630; }
+#details.lvl-zone[data-zone="orchestration"] { border-left-color: #7f9e1c; }
+#details.lvl-zone[data-zone="integration"] { border-left-color: #c9971b; }
+#details.lvl-zone[data-zone="ui"] { border-left-color: #d1417c; }
+#details.lvl-zone[data-zone="platform"] { border-left-color: #4f6b8a; }
+#details.lvl-zone[data-zone="infra"] { border-left-color: #0f7d64; }
+#details.lvl-zone[data-zone="plugin"] { border-left-color: #9a6ac2; }
+#details.lvl-zone[data-zone="profiles"] { border-left-color: #d9a441; }
+#details.lvl-zone[data-zone="broken"] { border-left-color: #d0433f; }
+#details.lvl-zone[data-zone="ungrouped"] { border-left-color: #8a94a0; }
+#details.lvl-group { border-left: 4px solid #4f6b8a; }
+#details.lvl-pkg { border-left: 4px solid #3f9d6d; }
+#details.lvl-zone h2 { font-size: 16px; }
+#details.lvl-group h2 { font-size: 14px; }
+#details.lvl-pkg h2 { font-size: 13px; font-family: ui-monospace, Consolas, monospace; }
+#details h2 .lvl { font-size: 10px; font-weight: 600; border: 1px solid #8886; border-radius: 8px; padding: 0 6px; opacity: .85; white-space: nowrap; font-family: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; }
+#details .ghead { font-weight: 700; }
+#details .gmem { padding-left: 14px; }
 #details .sub, #details .path { font-size: 11px; opacity: .7; overflow-wrap: anywhere; }
 #details .crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; font-size: 11px; opacity: .85; }
 #details .crumbs .crumb { border: 0; background: none; padding: 0; font: inherit; color: inherit; cursor: pointer; text-decoration: underline dotted; }

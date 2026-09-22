@@ -5265,14 +5265,24 @@ test('V2.8 R56 palette guard: the details color system invents NO hue — every 
   assert.ok(dStart >= 0 && dStart < css.indexOf('#details {') && dEnd > dStart,
     'M3 sanity: the first #details-prefixed rule sits ABOVE the #details container rule (the slice was widened past it)')
   const pre = css.slice(0, dStart)
-  // M3: 3-digit and 8-digit hexes normalize to their 6-digit body BEFORE the
-  // palette check (8-digit keeps the rgb, drops the alpha byte), so a shorthand
-  // hue cannot dodge the "no new hues" sweep. 4-digit tokens are the sheet's
-  // long-standing alpha chrome (#888x) and stay out of scope.
-  const HEX = /#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b/g
+  // M3: hexes normalize to their 6-digit body BEFORE the palette check, so no
+  // shorthand form can dodge the "no new hues" sweep. V28+ closes the last open
+  // dodge: 4-digit `#rgba` was deliberately out of scope (the comment used to read
+  // "the sheet's long-standing alpha chrome"), which meant a NEW hue written
+  // `#beef` in a #details rule slipped through while the same hue as `#888` did
+  // not. Verified over the whole shipped sheet before widening: every 4-digit
+  // token in web/style.css belongs to that alpha-chrome family (#8884/#8886/#8883/
+  // #8885/#8882/#8886/#0002/#0004) and each one's 6-digit body (#888888 / #000000)
+  // is already a pre-#details chrome hex, so the sweep stays green on HEAD. The
+  // price of that is honest: #888/#000 written bare now whitelist through their
+  // alpha siblings — same hues the chrome already shipped, not new ones.
+  // Teeth of the widened pattern are asserted below, not assumed.
+  const HEX = /#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{4}|[0-9a-fA-F]{3})\b/g
   const norm6 = (tok) => {
     const h = tok.slice(1).toLowerCase()
-    return h.length === 3 ? '#' + h.split('').map((c) => c + c).join('') : '#' + h.slice(0, 6)
+    if (h.length === 3) return '#' + h.split('').map((c) => c + c).join('')
+    if (h.length === 4) return '#' + h.slice(0, 3).split('').map((c) => c + c).join('') // #rgba → #rrggbb (alpha byte dropped, same rule as 8-digit)
+    return '#' + h.slice(0, 6)
   }
   const palette = new Set()
   for (const block of [zone, focus, pre]) {
@@ -5291,6 +5301,12 @@ test('V2.8 R56 palette guard: the details color system invents NO hue — every 
   for (const m of details.matchAll(HEX)) {
     assert.ok(palette.has(norm6(m[0])), `details-block hex ${m[0]} is outside the existing palette (no new hues — brief doctrine)`)
   }
+  // Teeth of the 4-digit arm, asserted rather than assumed (a regex that quietly
+  // stopped matching 4-digit forms would keep this whole guard looking green):
+  // a 4-digit hue in a #details line is caught and normalized to its rgb body.
+  const teeth = [...'#details .jump { color: #beef; }'.matchAll(HEX)].map((m) => norm6(m[0]))
+  assert.deepEqual(teeth, ['#bbeeee'], 'V28+: a 4-digit #rgba token is swept and normalized (it used to dodge the guard)')
+  assert.equal(palette.has('#bbeeee'), false, '…and that hue is not a palette member, so the sweep above would have rejected it')
   // the R56 channel rules ship verbatim (exact rule strings = exact colors):
   assert.match(css, /#details \.jump\.ghead \{ font-weight: 700; color: light-dark\(#4f6b8a, #8fa9c9\); margin-top: 2px; \}/,
     'R56.4 + I-1: group heads take the platform steel pair (bold kept) — COMPOUND selector, the only form that beats #details .jump')

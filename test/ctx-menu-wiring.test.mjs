@@ -384,18 +384,53 @@ const zonePt = (id) => {
   return { x: Math.round((bb.x1 + bb.x2) / 2), y: Math.round(bb.y1 + 4) }
 }
 /**
+ * 时间钉（deflake，V28+）：把 Date.now() 冻成一个常量跑完 fn，finally 立刻还原。
+ *
+ * 为什么钉 Date.now 是对症的机制：双击门有两把时钟，它们读的是同一个 Date.now()。
+ *   · 冻结的 dist 用 `evt.timeStamp` 合成 dbltap（cytoscape.min.js IDX ~294099：
+ *     `t.timeStamp - w <= multiClickDebounceTime()`，250ms），而本 harness 的
+ *     timeStamp 就是 fire() 里的 `timeStamp: Date.now()`（见上方 fire()）；
+ *   · app 的刻意对门 noteTap() 读的也是 Date.now()（web/app.js，DBL_TAP_WINDOW_MS=300）。
+ * dblAt 在两次按压之间还要重算一次 renderedBoundingBox（首按会重绘），满载机器上
+ * 这一段的墙钟差能超过 300ms：一对真双击既不被 dist 合成、也不被门判为刻意对。
+ * 实测（8 逻辑核 + 24 个 CPU 忙等进程 ≈3x 超订阅）`v27-fix 2 case C` 5 次红 2 次，
+ * actual focus=null——门根本没被敲到。BASE 与 HEAD 同红 ⇒ 环境噪声，非发货代码缺陷。
+ *
+ * 钉住的是 harness 的墙钟读数，不是门的逻辑：dist 的 250ms 与门的 300ms 两个阈值
+ * 一字未改，只是把"同一 tick 内的两次按压"变成确定量（真实浏览器里一次双击的两下
+ * 本来就必须落在同一个 250ms 窗口内）。能不能成对仍由门的语义决定：同 id + 两次都是
+ * 真按压。跨目标对（id 不等）与含吞按对（sw 标记）照旧被拒——而且钉住后 dist 必定
+ * 合成 dbltap、门必定被敲到，负例不再可能因"机器太慢没合成出 dbltap"而假绿。
+ *
+ * 约束：fn 必须同步——钉内不许有 await，否则整个进程的墙钟源都被冻住。vendor 在本
+ * harness 下的动画时钟只在 rAF/setTimeout 回调里取时间，回调必然跑在还原之后；
+ * cytoscape.min.js 里 4 处 Date.now 分别是 lodash now / 合成事件 timeStamp /
+ * 图片背景时间戳，没有一处同步忙等依赖它推进。
+ */
+const pinned = (fn) => {
+  const realNow = Date.now
+  const t0 = realNow.call(Date)
+  Date.now = () => t0
+  try { return fn() } finally { Date.now = realNow }
+}
+
+/**
  * V2.7 R49: TWO DOM presses with NO sleep between them. The frozen dist fires
  * dbltap on the target hit-tested at the SECOND mouseup when it lands inside
  * multiClickDebounceTime (verified at cytoscape.min.js IDX ~294099). Positions
  * are re-derived between the presses: the first tap repaints, and a repaint
  * can shift a node when its render set changed underneath.
+ * V28+ deflake: the whole press pair runs inside the time pin above, so the
+ * same-tick fact the gesture physically encodes is deterministic on a loaded box.
  */
 const dblAt = (id) => {
   const a = rp(id)
   if (!a) throw new Error('dblAt: ' + id + ' is not rendered')
-  leftAt(a.x, a.y)
-  const b = rp(id) || a
-  leftAt(b.x, b.y)
+  pinned(() => {
+    leftAt(a.x, a.y)
+    const b = rp(id) || a
+    leftAt(b.x, b.y)
+  })
 }
 
 /**
@@ -797,9 +832,14 @@ test('v27-fix 2 case A: two quick taps on DIFFERENT packages stay lightweight �
   assert.equal(S().focus, null, 'cold start')
   const a = rp('d1@1'), b0 = rp('x@1')
   assert.ok(a && b0, 'd1@1 and x@1 both render (db and fs are expanded)')
-  leftAt(a.x, a.y)
-  const b = rp('x@1') || b0
-  leftAt(b.x, b.y) // same ms: the frozen dist now synthesizes a dbltap ON x@1 (probe S[cross-target])
+  // The pair runs on the pinned clock: the dist MUST synthesize the trailing
+  // dbltap (see `pinned`), so the gate is provably consulted and the refusal
+  // below is a refusal, not a "the box was too slow to fire a dbltap" false green.
+  pinned(() => {
+    leftAt(a.x, a.y)
+    const b = rp('x@1') || b0
+    leftAt(b.x, b.y) // same ms: the frozen dist now synthesizes a dbltap ON x@1 (probe S[cross-target])
+  })
   await sleep(350)
   assert.equal(S().focus, null, 'A: the cross-target pair must NOT open the dependency graph (BASE lands at focus=' + JSON.stringify(S().focus) + ')')
   assert.equal(S().selected, 'x@1', 'the second tap just selected — plain lightweight R46 semantics')
@@ -811,13 +851,18 @@ test('v27-fix 2 case B: a menu-dismissing press pair on the SAME package never e
   if (S().focus) { leftAt(6, 6); await sleep(350) } // self-normalize: the cold precondition is MINE, not the predecessor's
   assert.equal(S().focus, null, 'cold start')
   const x1 = rp('x@1')
-  leftAt(x1.x, x1.y) // tap 1: a real lightweight tap — it arms the dist dbl clock
-  assert.equal(S().selected, 'x@1', 'tap 1 selected normally (nothing swallowed yet)')
-  const x2 = rp('x@1') || x1
-  rightAt(x2.x, x2.y) // the menu opens ON x@1 (cxttap is a right press — the dbl clock is untouched)
-  assert.equal(menuEl().hidden, false, 'the menu is open before the dismissing press')
-  const x3 = rp('x@1') || x2
-  leftAt(x3.x, x3.y) // tap 2: the mousedown closes + arms the swallow; the tap is EATEN —
+  // Pinned for the whole dismiss shape: the dist's dbl clock MUST see the two
+  // left mouseups inside its 250ms bound (up3-up1), i.e. the trailing dbltap on
+  // x@1 is guaranteed and the gate's refusal of a swallow-bearing pair is real.
+  pinned(() => {
+    leftAt(x1.x, x1.y) // tap 1: a real lightweight tap — it arms the dist dbl clock
+    assert.equal(S().selected, 'x@1', 'tap 1 selected normally (nothing swallowed yet)')
+    const x2 = rp('x@1') || x1
+    rightAt(x2.x, x2.y) // the menu opens ON x@1 (cxttap is a right press — the dbl clock is untouched)
+    assert.equal(menuEl().hidden, false, 'the menu is open before the dismissing press')
+    const x3 = rp('x@1') || x2
+    leftAt(x3.x, x3.y) // tap 2: the mousedown closes + arms the swallow; the tap is EATEN —
+  })
   await sleep(350)   // …yet the dist still emits a dbltap here (probe + IDX 294099: up3-up1 < 250ms)
   assert.equal(menuEl().hidden, true, 'the press dismissed the menu')
   assert.equal(S().focus, null, 'B: a pair containing a swallowed tap NEVER enters (BASE lands at focus=' + JSON.stringify(S().focus) + ')')
@@ -830,7 +875,7 @@ test('v27-fix 2 case C: a true same-target double-click still ENTERS with zero c
   doc.getElementById('focus-depth').value = '0' // unlimited — the user-control default
   assert.equal(S().focus, null, 'cold start')
   const anims0 = ANIMS.length
-  dblAt('x@1')
+  dblAt('x@1') // the press pair is clock-pinned inside dblAt: the deliberate pair is deterministic
   await sleep(350)
   assert.deepEqual(S().focus, { rootId: 'x@1', depth: null }, 'C: the deliberate same-target pair ENTERS — the gate is not a wall (the R49 door survives)')
   assert.deepEqual(S().pathStack, [], 'an entry, not a walk')
@@ -860,13 +905,15 @@ test('V2.8 R57 case 1: the group-card dismiss-pair (tap → cxttap → swallowin
   assert.equal(S().view.collapsedGroups, null, 'freshView: the all-collapsed default (null) is back')
   const g1 = rp('g:bundle')
   assert.ok(g1, 'the bundle card renders')
-  leftAt(g1.x, g1.y) // tap 1: a REAL lightweight tap — arms the dist dbl clock
-  assert.equal(S().selected, 'g:bundle', 'tap 1 selected normally (nothing swallowed yet)')
-  const g2 = rp('g:bundle') || g1
-  rightAt(g2.x, g2.y) // the card menu opens (right presses never feed the dbl clock)
-  assert.equal(menuEl().hidden, false, 'the menu is open before the dismissing press')
-  const g3 = rp('g:bundle') || g2
-  leftAt(g3.x, g3.y) // mousedown closes + arms the swallow; the tap is EATEN —
+  pinned(() => { // same pin as the package-door negatives: the trailing dbltap is guaranteed
+    leftAt(g1.x, g1.y) // tap 1: a REAL lightweight tap — arms the dist dbl clock
+    assert.equal(S().selected, 'g:bundle', 'tap 1 selected normally (nothing swallowed yet)')
+    const g2 = rp('g:bundle') || g1
+    rightAt(g2.x, g2.y) // the card menu opens (right presses never feed the dbl clock)
+    assert.equal(menuEl().hidden, false, 'the menu is open before the dismissing press')
+    const g3 = rp('g:bundle') || g2
+    leftAt(g3.x, g3.y) // mousedown closes + arms the swallow; the tap is EATEN —
+  })
   await sleep(350)   // …yet the dist still fires a dbltap on the card here
   assert.equal(menuEl().hidden, true, 'the press dismissed the menu')
   assert.equal(S().view.collapsedGroups, null,
@@ -889,28 +936,28 @@ test('V2.8 R57 case 3: the zone shell ignores the dismiss-pair but answers a tru
   await sleep(250)
   assert.equal(S().focus, null, 'cold start')
   assert.equal(S().view.collapsedCats.has('kernel'), false, 'kernel starts expanded')
-  const z1 = zonePt('cat:kernel')
-  leftAt(z1.x, z1.y)
-  assert.equal(S().selected, 'cat:kernel', 'press 1 front-hit the ZONE shell itself (the padding strip above the card)')
-  const z2 = zonePt('cat:kernel')
-  rightAt(z2.x, z2.y)
-  assert.equal(menuEl().hidden, false, 'the zone menu is open')
-  const z3 = zonePt('cat:kernel')
-  leftAt(z3.x, z3.y) // the swallowing tap; the dist still emits the trailing dbltap
+  pinned(() => { // the dismiss shape on the pinned clock → the trailing dbltap is guaranteed
+    const z1 = zonePt('cat:kernel')
+    leftAt(z1.x, z1.y)
+    assert.equal(S().selected, 'cat:kernel', 'press 1 front-hit the ZONE shell itself (the padding strip above the card)')
+    const z2 = zonePt('cat:kernel')
+    rightAt(z2.x, z2.y)
+    assert.equal(menuEl().hidden, false, 'the zone menu is open')
+    const z3 = zonePt('cat:kernel')
+    leftAt(z3.x, z3.y) // the swallowing tap; the dist still emits the trailing dbltap
+  })
   await sleep(350)
   assert.equal(menuEl().hidden, true, 'the press dismissed the zone menu')
   assert.equal(S().view.collapsedCats.has('kernel'), false,
     'R57: the dismiss-pair never collapsed the zone (BASE lands with kernel collapsed — the RED case)')
   // a TRUE double-click still collapses…
   const za = zonePt('cat:kernel')
-  leftAt(za.x, za.y)
-  leftAt(za.x, za.y)
+  pinned(() => { leftAt(za.x, za.y); leftAt(za.x, za.y) })
   await sleep(350)
   assert.equal(S().view.collapsedCats.has('kernel'), true, '…two deliberate presses did collapse it')
   // …and one more deliberate double-click expands it back (leave the view clean)
   const zb = zonePt('cat:kernel')
-  leftAt(zb.x, zb.y)
-  leftAt(zb.x, zb.y)
+  pinned(() => { leftAt(zb.x, zb.y); leftAt(zb.x, zb.y) })
   await sleep(350)
   assert.equal(S().view.collapsedCats.has('kernel'), false, 'the toggle is a TOGGLE — the door still opens both ways')
   leftAt(6, 6)

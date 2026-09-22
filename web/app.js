@@ -2162,7 +2162,9 @@
     b.addEventListener('click', onClick)
     box.appendChild(b)
   }
-  // The section both container details share: the header count is the TRUE total
+  // The group page's member section (since V2.7 R51 only detailsGroup calls
+  // this — the zone page rides its own zoneGroupSections): the header count is
+  // the TRUE total
   // (buildGroupMembers caps the ROWS, never the count), and the tail says what the
   // cap hid. V2.8 R53/R54: the group page decides its own panel-wide scope
   // omission and version hoist — the digest runs over the WHOLE member list

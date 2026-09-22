@@ -146,8 +146,13 @@ header .chips { display: inline-flex; gap: 6px; flex-wrap: wrap; align-items: ce
 #details h2 .lvl { font-size: 10px; font-weight: 600; border: 1px solid #8886; border-radius: 8px; padding: 0 6px; opacity: .85; white-space: nowrap; font-family: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; }
 /* V2.8 R55/R56: group heads keep bold (bold = structure) and take the
    platform-steel TYPE color (color = info type), with a 2px lead off the
-   previous block; the member indent tightens one notch (14 → 12px). */
-#details .ghead { font-weight: 700; color: light-dark(#4f6b8a, #8fa9c9); margin-top: 2px; }
+   previous block; the member indent tightens one notch (14 → 12px).
+   V2.8-fix I-1: the selector MUST stay compound — the head button is
+   `class="jump ghead"`, and a simple id+class rule TIES the later
+   `#details .jump` row rule whose `color: inherit; font: inherit`
+   (shorthand — it wipes font-weight too) would silently win on source
+   order and the steel/bold would never paint. */
+#details .jump.ghead { font-weight: 700; color: light-dark(#4f6b8a, #8fa9c9); margin-top: 2px; }
 #details .gmem { padding-left: 12px; }
 #details .sub, #details .path { font-size: 11px; opacity: .7; overflow-wrap: anywhere; }
 #details .crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; font-size: 11px; opacity: .85; }
@@ -184,19 +189,30 @@ header .chips { display: inline-flex; gap: 6px; flex-wrap: wrap; align-items: ce
    inherited ink (same treatment as .sub/.path), one size down, mono because
    a version string is a machine identifier */
 #details .jump .ver, #details h2 .gver { font-family: ui-monospace, Consolas, monospace; font-size: 11px; opacity: .62; }
+/* V2.8-fix I-1: the .62 secondary treatment is computed against the INHERITED
+   ink, not against a fixed hex — steel (#4f6b8a) composited at .62 lands at
+   ~2.55:1 (light) / ~3.65:1 (dark), failing AA. The version token inside a
+   group header keeps the header's own steel color at FULL opacity: the AA
+   pair (5.38 / 7.64) then paints exactly as the contrast guard scores it. */
+#details .jump.ghead .ver { opacity: 1; }
 /* the R54 version EXCEPTION is amber — the AA-clean member of the palette's
    amber family (FOCUS down; the integration line #c9971b would only reach
    2.6:1 on the light panel) */
 #details .jump .ver.ver-exc { opacity: 1; color: light-dark(#b45309, #f59e0b); }
 /* structural counts (×N / 组 N / 还有 N): amber mono 10px, NO bold — the
-   number is data, not structure */
-#details .cnt { font-family: ui-monospace, Consolas, monospace; font-size: 10px; color: light-dark(#b45309, #f59e0b); }
+   number is data, not structure. V2.8-fix I-1 pins the weight EXPLICITLY at
+   400: a ×N sits inside a 700-weight group header, where "no bold" would
+   otherwise inherit right through. */
+#details .cnt { font-family: ui-monospace, Consolas, monospace; font-size: 10px; font-weight: 400; color: light-dark(#b45309, #f59e0b); }
 /* semantic badge pills: gold = profile, purple = third-party / kind. Dark
    pill text on both grounds: >= 4.59:1 (worst: purple on light) — table in
    task-V28-report.md. The neutral badge shell stays untouched for the rest. */
 #details .badge.b-3p, #details .badge.b-kind { border-color: transparent; background: light-dark(#9a6ac2, #c194e8); color: #10141a; }
 #details .badge.b-profile { border-color: transparent; background: light-dark(#d9a441, #eec06a); color: #10141a; }
 #details .badge.scope { opacity: .75; font-family: ui-monospace, Consolas, monospace; }
+/* V2.8-fix M1: both live in the panel h2, where the UA title bold would bleed
+   into them — every other .ver/.badge voice in the panel is normal weight. */
+#details h2 .gver, #details .badge.scope { font-weight: 400; }
 /* V2.6-fix (M2): no top/left here on purpose — positionSearchBox() anchors the
    popover on the search input's own getBoundingClientRect, and it can only do
    that against viewport space, so the box is position:fixed. The pair this rule

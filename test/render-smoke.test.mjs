@@ -4946,8 +4946,10 @@ test('V2.7 R51 CSS guards: accent bands per level, the fixed 13-zone palette ban
   assert.match(css, /#details h2 \.lvl/, 'the badge chip is styled')
   // V2.8 MIGRATION (R55/R56): .ghead gained its steel type color + a 2px lead,
   // .gmem tightened 14px → 12px; the full color-system rules are pinned in the
-  // R56/R55 guards below.
-  assert.match(css, /#details \.ghead \{ font-weight: 700; color: light-dark\(#4f6b8a, #8fa9c9\); margin-top: 2px; \}/, 'group-header buttons: bold kept, steel type color')
+  // R56/R55 guards below. V2.8-fix I-1: the pin moved onto the COMPOUND
+  // selector — the simple form had the same specificity as the LATER
+  // `#details .jump` and its `color: inherit; font: inherit` silently won.
+  assert.match(css, /#details \.jump\.ghead \{ font-weight: 700; color: light-dark\(#4f6b8a, #8fa9c9\); margin-top: 2px; \}/, 'group-header buttons: bold kept, steel type color (compound selector — must beat #details .jump)')
   assert.match(css, /#details \.gmem \{ padding-left: 12px; \}/, 'member rows indent under their header')
 })
 
@@ -5253,24 +5255,49 @@ test('V2.8 R56 palette guard: the details color system invents NO hue — every 
   const zone = src.slice(src.indexOf('var ZONE_COLORS = {'), src.indexOf('var ZONE_IDS_FALLBACK'))
   const focus = src.slice(src.indexOf('var FOCUS_COLORS = {'), src.indexOf('var PATH_ROW_CAP'))
   assert.ok(zone.length > 50 && focus.length > 30, 'both palette constants are still there to read')
-  // …plus the non-canvas chrome hexes the stylesheet already knew BEFORE #details
-  const pre = css.slice(0, css.indexOf('#details {'))
+  // …plus the non-canvas chrome hexes the stylesheet already knew BEFORE the
+  // FIRST #details-prefixed rule. V2.8-fix M3: the sweep used to start at
+  // `#details {`, auto-whitelisting the three `#details .tier*` rules above it
+  // — now the slice starts at the first #details rule and the whitelisted
+  // prefix ends there, so edits to the rules above the container are swept too.
+  const dStart = css.search(/^#details/m)
+  const dEnd = css.indexOf('#search-results {')
+  assert.ok(dStart >= 0 && dStart < css.indexOf('#details {') && dEnd > dStart,
+    'M3 sanity: the first #details-prefixed rule sits ABOVE the #details container rule (the slice was widened past it)')
+  const pre = css.slice(0, dStart)
+  // M3: 3-digit and 8-digit hexes normalize to their 6-digit body BEFORE the
+  // palette check (8-digit keeps the rgb, drops the alpha byte), so a shorthand
+  // hue cannot dodge the "no new hues" sweep. 4-digit tokens are the sheet's
+  // long-standing alpha chrome (#888x) and stay out of scope.
+  const HEX = /#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b/g
+  const norm6 = (tok) => {
+    const h = tok.slice(1).toLowerCase()
+    return h.length === 3 ? '#' + h.split('').map((c) => c + c).join('') : '#' + h.slice(0, 6)
+  }
   const palette = new Set()
   for (const block of [zone, focus, pre]) {
-    for (const m of block.matchAll(/#[0-9a-fA-F]{6}\b/g)) palette.add(m[0].toLowerCase())
+    for (const m of block.matchAll(HEX)) palette.add(norm6(m[0]))
   }
   palette.add('#10141a') // the panel's OWN light-dark pair (grounds, not hues)
   palette.add('#fbfcfd')
-  // sweep EVERY 6-digit hex in the details block: each must already exist
-  const details = css.slice(css.indexOf('#details {'), css.indexOf('#search-results {'))
-  for (const m of details.matchAll(/#[0-9a-fA-F]{6}\b/g)) {
-    assert.ok(palette.has(m[0].toLowerCase()), `details-block hex ${m[0]} is outside the existing palette (no new hues — brief doctrine)`)
+  // sweep EVERY #details-prefixed rule (and comment) in the window: each hex
+  // must already exist. Non-#details chrome lines inside the window are the
+  // widening's collateral — skipped line-wise; comments stay in (hexes there
+  // were always part of the sweep).
+  const details = css.slice(dStart, dEnd).split('\n')
+    .filter((ln) => /^#details/.test(ln) || /^\s*(?:\/\*|\*)/.test(ln))
+    .join('\n')
+  assert.ok(details.includes('#details .tier'), 'M3: the .tier rules ABOVE the container rule are inside the sweep')
+  for (const m of details.matchAll(HEX)) {
+    assert.ok(palette.has(norm6(m[0])), `details-block hex ${m[0]} is outside the existing palette (no new hues — brief doctrine)`)
   }
   // the R56 channel rules ship verbatim (exact rule strings = exact colors):
-  assert.match(css, /#details \.ghead \{ font-weight: 700; color: light-dark\(#4f6b8a, #8fa9c9\); margin-top: 2px; \}/,
-    'R56.4: group heads take the platform steel pair (bold kept)')
-  assert.match(css, /#details \.cnt \{ font-family: ui-monospace, Consolas, monospace; font-size: 10px; color: light-dark\(#b45309, #f59e0b\); \}/,
-    'R56.3: structural counts are amber mono 10px WITHOUT bold')
+  assert.match(css, /#details \.jump\.ghead \{ font-weight: 700; color: light-dark\(#4f6b8a, #8fa9c9\); margin-top: 2px; \}/,
+    'R56.4 + I-1: group heads take the platform steel pair (bold kept) — COMPOUND selector, the only form that beats #details .jump')
+  assert.match(css, /#details \.jump\.ghead \.ver \{ opacity: 1; \}/,
+    'I-1: the header version token stays opaque (steel @ .62 composites below AA)')
+  assert.match(css, /#details \.cnt \{ font-family: ui-monospace, Consolas, monospace; font-size: 10px; font-weight: 400; color: light-dark\(#b45309, #f59e0b\); \}/,
+    'R56.3 + I-1: structural counts are amber mono 10px with weight PINNED at 400 (no header-bold bleed)')
   assert.match(css, /#details \.jump \.ver, #details h2 \.gver \{ font-family: ui-monospace, Consolas, monospace; font-size: 11px; opacity: \.62; \}/,
     'R56.2: versions are secondary (opacity treatment), one size down, monospace')
   assert.match(css, /#details \.jump \.ver\.ver-exc \{ opacity: 1; color: light-dark\(#b45309, #f59e0b\); \}/,
@@ -5283,9 +5310,11 @@ test('V2.8 R56 palette guard: the details color system invents NO hue — every 
     'R56.5 + R55: section labels drop bold, sink to .55, gain letter-spacing')
   assert.match(css, /#details \.badge\.scope \{ opacity: \.75; font-family: ui-monospace, Consolas, monospace; \}/,
     'R53: the scope badge is a quiet mono capsule on the neutral shell')
+  assert.match(css, /#details h2 \.gver, #details \.badge\.scope \{ font-weight: 400; \}/,
+    'M1: the h2 voice reset — gver and the scope pill do not inherit the title bold')
   // light-dark() dual values wherever a NEW semantic color was introduced:
   const dual = [
-    '#details .ghead {', '#details .cnt {', '.ver-exc {', '.badge.b-3p,', '.badge.b-profile {',
+    '#details .jump.ghead {', '#details .cnt {', '.ver-exc {', '.badge.b-3p,', '.badge.b-profile {',
   ]
   for (const d of dual) assert.ok(css.includes(d), `rule ${d} ships`)
 })
@@ -5333,6 +5362,39 @@ test('V2.8 R55 density tune: member rows, the section rhythm and the .gmem inden
     'member rows: vertical padding 1px → 0 (−2px on EVERY row — the panel is mostly rows)')
   assert.ok(css.includes('#details .gmem { padding-left: 12px; }'), 'R55: the indent tightens 14px → 12px')
   assert.ok(css.includes('#details .kv { margin: 2px 0; font-size: 12px; }'), 'kv rows (the count/cap tails) lose 2px of margin')
-  assert.ok(css.includes('#details .ghead { font-weight: 700; color: light-dark(#4f6b8a, #8fa9c9); margin-top: 2px; }'),
+  assert.ok(css.includes('#details .jump.ghead { font-weight: 700; color: light-dark(#4f6b8a, #8fa9c9); margin-top: 2px; }'),
     'group heads sit 2px off the previous block — a hair, not a gutter')
+})
+
+// ---------- V2.8-fix (I-1 / M1): the cascade actually DELIVERS the head style ----------
+// The head button is `class="jump ghead"` (app.js). A simple `#details .ghead`
+// rule and the LATER `#details .jump` rule have EQUAL specificity (id+class),
+// so the later rule wins: its `color: inherit` kills the steel and its
+// `font: inherit` shorthand kills the weight — the old source-pinned guards
+// stayed green over exactly that dead paint. Only the compound (id+2 classes)
+// selector computes to the intended values; these guards pin the cascade shape
+// itself, which a source-text pin of the losing rule never could.
+
+test('V2.8-fix I-1 cascade guard: the compound .jump.ghead selector beats the .jump inherit reset', () => {
+  const css = readFileSync(join(WEB, 'style.css'), 'utf8')
+  // the trap stays armed: the shared row rule still resets BOTH channels —
+  assert.match(css, /#details \.jump \{[^}]*\bfont: inherit\b/, 'the shared .jump row still carries font: inherit (a shorthand — it erases font-weight too)')
+  assert.match(css, /#details \.jump \{[^}]*\bcolor: inherit\b/, 'and still carries color: inherit')
+  // the only way the steel+bold survives on a `jump ghead` button is specificity:
+  assert.ok(css.includes('#details .jump.ghead { font-weight: 700; color: light-dark(#4f6b8a, #8fa9c9); margin-top: 2px; }'),
+    'I-1: the steel+bold rule rides the COMPOUND selector (1,2,0) > #details .jump (1,1,0) — computes to rgb(79,107,138) light / rgb(143,169,201) dark @ 700')
+  assert.ok(!css.includes('#details .ghead {'),
+    'regression trap: the simple `#details .ghead {` form ties the LATER #details .jump and loses — the color/bold never paint')
+  // I-1: the header .ver must escape the .62 secondary opacity — steel composited at .62 is ~2.55:1 (light) / ~3.65:1 (dark), failing AA:
+  assert.ok(css.includes('#details .jump.ghead .ver { opacity: 1; }'),
+    'I-1: header version token stays opaque so the AA steel pair paints as computed')
+  // I-1: the ×N count rides inside a bold header — the channel pins its weight:
+  assert.ok(/^#details \.cnt \{.*font-weight: 400.*\}$/.test(css.match(/^#details \.cnt \{.*$/m)[0]),
+    'I-1: .cnt pins font-weight: 400 — the number is data, not structure, and must not inherit the header bold')
+})
+
+test('V2.8-fix M1 guard: h2 voice reset — gver and the scope pill shed the UA title bold', () => {
+  const css = readFileSync(join(WEB, 'style.css'), 'utf8')
+  assert.ok(css.includes('#details h2 .gver, #details .badge.scope { font-weight: 400; }'),
+    'every other .ver/.badge in the panel is normal weight; inside the UA-bold h2 the reset must be explicit')
 })

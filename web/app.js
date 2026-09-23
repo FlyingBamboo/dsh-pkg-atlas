@@ -26,16 +26,20 @@
  * revealNode — search hits, member rows, the deep-link fallback). Nothing else
  * touches the viewport.
  *
- * Parent sizing (V5-M-6, VERIFIED against the vendored 3.34.1 dist by a headless
- * probe): compound nodes auto-fit their children (a 700x500 data-w/h parent with
- * children rendered at the children's bbox); explicit width/height only holds for
- * CHILDLESS parents. min-width/min-height act as a floor — `max(childBBox, min-*)`
- * in updateCompoundBounds — and accepted data(w)/data(h) maps directly at any
- * magnitude (no mapData clamping). Zones/groups therefore carry width/height AND
- * min-width/min-height from data(w)/data(h), with compound-sizing-wrt-labels
- * 'exclude' (dist enum is include|exclude) so child labels cannot inflate the box.
- * cytoscape keeps position OUTSIDE data — paint() maps data.x/data.y into the
- * element-json `position` field on add (positions still 100% AtlasModel).
+ * V2.10b R64 FULL DECOUPLING (supersedes the V5-M-6 compound-sizing note):
+ * paint() hands cytoscape a FLAT set — every node plain, `data.parent` stripped
+ * from the add-json (the MODEL output keeps `parent`: it is model semantics
+ * "belongs-to", untouched). Cytoscape therefore never compounds anything: no
+ * parent auto-resizes to a children bbox, no re-centring, no ancestor-follow.
+ * In its place, the RENDER layer carries containment explicitly: each node
+ * data gets an inert `mparent` (the model parent), the stylesheet declares the
+ * z ladder (zone 1 < group 2 < edge 3 < pkg 10), the drags translate the
+ * dragged node's rendered subtree manually (see bindCy), and paint derives a
+ * never-dragged child's position as parentRendered + childSlot − parentSlot,
+ * so a dragged parent carries its un-dragged children at every repaint, at
+ * every tier — WYSIWYG bounds. cytoscape keeps position OUTSIDE data — paint()
+ * maps the resolved position into the element-json `position` field on add
+ * (coordinates still 100% AtlasModel + the acknowledged drag override).
  */
 ;(function () {
   'use strict'
@@ -256,8 +260,10 @@
     // only source of data coordinates; `dragged` is a RENDER-LAYER OVERRIDE and
     // the model never sees it (buildView gets `assembleView(state.view)`, never
     // this map). id → {x, y}, keys are the rendered element ids ('cat:*', 'g:*',
-    // package ids). Lifecycle: written ONLY by the dragfree handler; applied by
-    // paint() as `dragged[id] ?? model slot`; KEPT across every structural
+    // package ids). Lifecycle: written ONLY by the dragfree handler — which
+    // since V2.10b records the dragged node AND every descendant its manual
+    // containment drag moved (absolute positions); applied by paint() as
+    // `dragged[id] ?? derived ride-or-slot`; KEPT across every structural
     // repaint (tier switch, filters, collapse/merge, focus entry/exit — those
     // change WHICH elements render, not where the user put them); pruned by
     // applyGraph() for ids that no longer exist in the new graph; cleared ONLY
@@ -853,15 +859,26 @@
       // paints #graph with these same colors (the pairing is pinned by a test).
       { selector: 'core', style: { 'background-color': bg } },
 
-      // ---- zones: `zone` + `cat-<zoneId>` classes, w/h floors per V5-M-6 above ----
+      // ---- zones: `zone` + `cat-<zoneId>` classes; plain rectangles since R64.
+      // w/h floors per V5-M-6 (data(w)/data(h)); the V2.10b z ladder starts
+      // here — a zone paints UNDER every group, edge and package above it. ----
       { selector: 'node.zone', style: {
         shape: 'rectangle', 'background-opacity': 0.12,
         'border-width': 1.5, 'border-opacity': 0.85,
         width: 'data(w)', height: 'data(h)', 'min-width': 'data(w)', 'min-height': 'data(h)',
-        'compound-sizing-wrt-labels': 'exclude',
+        'z-index': 1,
         label: 'data(label)', 'font-size': 13, 'font-weight': 'bold', color: text,
         'text-valign': 'top-inside', 'text-halign': 'center', 'text-margin-y': 8,
         'text-wrap': 'ellipsis', 'text-max-width': 300,
+      } },
+      // V2.10b R64: a COLLAPSED zone is an explicit small rect, not a compound
+      // shell that auto-shrinks around nothing. Plain nodes honour literal
+      // width/height, but min-* from the base rule is the FLOOR — override all
+      // four. 140×40 keeps the localized title readable at the shipped 13px
+      // bold label (readability call, report §V210b). The class is applied by
+      // paint() from state.view.collapsedCats — the model never marks zones.
+      { selector: 'node.zone.collapsed', style: {
+        width: 140, height: 40, 'min-width': 140, 'min-height': 40,
       } },
       // per-zone fill/border/label colors (ZONE_COLORS[theme][zoneId])
     ]
@@ -876,28 +893,34 @@
       } })
     })
 
-    // ---- group cards: `group` + `gk-<kind>` + optional `collapsed` ----
-    // CARD vs CONTAINER (I-2, dist-verified): `:not()` does NOT exist in the
-    // 3.34.1 selector engine — the old `node.group:not(.collapsed)` rule was
-    // rejected outright ("The selector … is invalid"), so the container override
-    // landed on NOTHING and every group painted at the base opacity. The state is
-    // structural instead: an expanded group ALWAYS has its members in the element
-    // set (survivors > 0 is the render gate) → `:parent`; a collapsed card never
-    // does (AtlasModel omits them) → the base CARD look. (`:orphan` is NOT the
-    // card marker in this dist — it means "no parent", and every group card has a
-    // zone parent; `:childless` is the childless test, `:parent` the container one.)
+    // ---- group cards/frames: `group` + `gk-<kind>` + optional `collapsed` ----
+    // CARD vs CONTAINER after R64 (V2.10b FULL DECOUPLING): groups are PLAIN
+    // rectangles too (paint strips parent), so the structural `:parent` test
+    // that V5 used is gone with the compounds. The marker is the MODEL's own
+    // `collapsed` class, and the swap is safe because AtlasModel emits that
+    // class IF AND ONLY IF the group renders as a card (no members in the
+    // element set): the base path keys it on groupCollapsed, the packages:true
+    // g: focus branch emits frames ONLY with members present and never marks
+    // them collapsed, the cards:false branch marks EVERY card. So the base
+    // rule is the translucent CONTAINER frame and `node.group.collapsed` is
+    // the opaque CARD. (`:not()` still does NOT exist in 3.34.1 — the presence
+    // marker is the only legal spelling.) z=2: over the zone, under edges and
+    // packages — the compound-era look where parent frames sat behind lines.
     st.push({ selector: 'node.group', style: {
-      shape: 'round-rectangle', 'border-width': 1,
+      shape: 'round-rectangle', 'border-width': 1.25,
       width: 'data(w)', height: 'data(h)', 'min-width': 'data(w)', 'min-height': 'data(h)',
-      'compound-sizing-wrt-labels': 'exclude',
+      'z-index': 2,
       label: 'data(label)', 'font-size': 11, color: text, 'text-wrap': 'ellipsis', 'text-max-width': 120,
-      'text-valign': 'top-inside', 'text-halign': 'center', 'text-margin-y': 4, 'background-opacity': 0.9,
+      'text-valign': 'top-inside', 'text-halign': 'center', 'text-margin-y': 4, 'background-opacity': 0.14,
     } })
-    st.push({ selector: 'node.group:parent', style: { 'background-opacity': 0.14, 'border-width': 1.25 } })
-    // The card is a 132×36 chip: its label centers. The container keeps the
-    // top-inside strip. (This is what makes the model's `collapsed` class carry a
-    // selector — the I-6 derived guard requires every emitted class to have one.)
-    st.push({ selector: 'node.group.collapsed', style: { 'text-valign': 'center', 'text-margin-y': 0 } })
+    // The 132×36 collapsed CARD: opaque fill, thin border, centred label. The
+    // container keeps the top-inside strip. (This is what makes the model's
+    // `collapsed` class carry a selector — the I-6 derived guard requires every
+    // emitted class to have one.)
+    st.push({ selector: 'node.group.collapsed', style: {
+      'border-width': 1, 'background-opacity': 0.9,
+      'text-valign': 'center', 'text-margin-y': 0,
+    } })
     // gk-<kind> palette. `vendor` is NOT optional: lib/scan.js emits group kind
     // `vendor` (dir startsWith 'vendor/') → infra zone; without an entry the card
     // falls back to cytoscape's defaults (verified: rgb(238,238,238)/rgb(204,204,204)).
@@ -915,11 +938,15 @@
 
     // ---- packages: shape mapping R29 (ellipse/hexagon/rectangle/diamond) ----
     // classes from AtlasModel: pkg sk-<node.kind> sc-<node.scope>
+    // z=10: packages ride ABOVE edges (z 3, below) — the compound-era look had
+    // child nodes over lines; the ladder zone<group<edge<pkg keeps that and
+    // only changes where the (now plain) frames sit: behind lines, as before.
     // V2.3 LABEL CLAMP (the real fix for the browser-only label overlap): the
     // overlap is TEXT on TEXT — SIBLING pkg labels side by side, never box on
-    // box. Both compound rules above pin width/height/min-* to data(w)/data(h)
-    // with compound-sizing-wrt-labels:'exclude', so group/zone frames NEVER grow
-    // with child labels. What collides: a pkg label centres under its node, and
+    // box. The zone/group rules pin width/height/min-* to data(w)/data(h) —
+    // since V2.10b they are plain fixed-size rectangles (plain nodes size from
+    // the style, period) — so group/zone frames NEVER grow with child labels.
+    // What collides: a pkg label centres under its node, and
     // the shipped 96 clamp let it outgrow the intra-row centre pitch
     // CELL(46)+GAP(12)=58 (graph-model ZONE_LAYOUT) and lie across the next
     // column's text — short names hide it, scoped long names do not. 50 fits a
@@ -927,7 +954,7 @@
     // metrics, so no probe here can reproduce the overlap; the numeric pin in
     // the tests is the guard.
     st.push({ selector: 'node.pkg', style: {
-      shape: 'ellipse', width: 16, height: 16,
+      shape: 'ellipse', width: 16, height: 16, 'z-index': 10,
       label: 'data(label)', 'font-size': 8, color: text,
       'text-valign': 'bottom', 'text-halign': 'center', 'text-margin-y': 3,
       'text-wrap': 'ellipsis', 'text-max-width': 50, 'background-opacity': 1,
@@ -938,8 +965,10 @@
     st.push({ selector: 'node.pkg.sk-broken', style: { shape: 'diamond', 'background-color': '#e05252', 'border-width': 2, 'border-color': dark ? '#ffd7d7' : '#8f2b2b' } })
 
     // ---- edges: e-<kind> (+ e-agg for aggregates, cross for real-cross pairs) ----
+    // z=3 — between the group frames (2) and the packages (10), see the ladder
+    // note above the pkg block.
     st.push({ selector: 'edge', style: {
-      'curve-style': 'bezier', width: 1, 'line-color': edgeLine,
+      'curve-style': 'bezier', width: 1, 'line-color': edgeLine, 'z-index': 3,
       'target-arrow-shape': 'triangle', 'target-arrow-color': edgeLine,
     } })
     st.push({ selector: 'edge.e-peer', style: { 'line-style': 'dashed', 'line-color': peer, 'target-arrow-color': peer } })
@@ -1027,20 +1056,58 @@
         else d.label = shortName(d.name, d.kind)
       })
       // cytoscape keeps position OUTSIDE data (verified against the vendored dist:
-      // data.x/data.y alone leave elements at 0,0) — so paint() maps AtlasModel's
-      // data.x/data.y into the add-json `position` field. Coordinates still come
-      // exclusively from AtlasModel; no layout call.
+      // data.x/data.y alone leave elements at 0,0) — so paint() maps coordinates
+      // into the add-json `position` field. Coordinates still come exclusively
+      // from AtlasModel; no layout call.
       // R59: the ONE place the user's drags re-enter the render — an element with
       // a `dragged` entry is placed there instead of on its model slot. The
       // finite-number guard is load-bearing twice over: junk can never move an
       // element, and an inherited Object.prototype key ('constructor', 'toString')
       // can never masquerade as a drag (a prototype function has no finite x/y).
+      // V2.10b R64 (this block IS the decoupling): the add-json carries NO
+      // `parent` — zones, group frames and packages are all plain z-ordered
+      // rectangles (ladder in styleFor). The model parent survives as inert
+      // `mparent` for the render layer (manual containment drags, focus-ancestor
+      // keeping). Positions resolve parent-first (the model emits zones, then
+      // groups, then packages, so a parent is always resolved before its child):
+      //   dragged[id]                 — WYSIWYG override, wins at every level
+      //   parentRendered + (slot −     — a NEVER-dragged child rides its parent's
+      //                  parentSlot)     rendered position by the model's own
+      //                                   child-relative slot offset (dragged or
+      //                                   slot parent: expansion and tier
+      //                                   switches keep the frame's contents
+      //                                   with the frame — the R63-deferred
+      //                                   dragged-group re-centring is dead)
+      //   slot                        — plain model slot; with nothing dragged
+      //                                 the derivation is the identity, so the
+      //                                 untouched pipeline paints byte-identical.
+      // A collapsed zone also gets its explicit-rect marker here: `collapsed`
+      // for zones is a PAINT-side fact of state.view.collapsedCats (the model
+      // never marks zone shells), keyed by styleFor's node.zone.collapsed rule.
       var drag = state.dragged
+      var mSlots = {} // id -> model slot {x, y} (this build only)
+      var rSlots = {} // id -> resolved render position {x, y} (this build only)
       var cyEls = built.elements.map(function (el) {
         if (el.group !== 'nodes') return el
-        var ov = drag ? drag[el.data.id] : null
-        var pos = (ov && isFinite(ov.x) && isFinite(ov.y)) ? { x: ov.x, y: ov.y } : { x: el.data.x, y: el.data.y }
-        return { group: el.group, classes: el.classes, data: el.data, position: pos }
+        var d = el.data
+        var mp = d.parent == null ? null : String(d.parent)
+        var ov = drag ? drag[d.id] : null
+        var pr = mp != null ? rSlots[mp] : null
+        var ps = mp != null ? mSlots[mp] : null
+        var pos
+        if (ov && isFinite(ov.x) && isFinite(ov.y)) pos = { x: ov.x, y: ov.y }
+        else if (pr && ps && (pr.x !== ps.x || pr.y !== ps.y)) pos = { x: pr.x + (d.x - ps.x), y: pr.y + (d.y - ps.y) }
+        else pos = { x: el.data.x, y: el.data.y } // slot (also the byte-exact ride-along case: parent renders AT its slot)
+        mSlots[d.id] = { x: d.x, y: d.y }
+        rSlots[d.id] = pos
+        var data = {}, k
+        for (k in d) if (k !== 'parent') data[k] = d[k]
+        if (mp != null) data.mparent = mp
+        var cls = el.classes
+        if (d.kind === 'zone' && state.view.collapsedCats && state.view.collapsedCats.has(String(d.name))) {
+          cls = cls.concat(['collapsed'])
+        }
+        return { group: el.group, classes: cls, data: data, position: pos }
       })
       state.cy.elements().remove()
       state.cy.add(cyEls)
@@ -1136,10 +1203,17 @@
         sets.down.forEach(function (id) { mark(id, true, sets.up.has(id)) })
         sets.up.forEach(function (id) { mark(id, sets.down.has(id), true) })
       }
-      // a focused element drags its ancestor chain in with it
-      keep.forEach(function (id) {
+      // a focused element drags its ancestor chain in with it. V2.10b: the
+      // chain is the INERT `mparent` data paint stamps (the elements are plain
+      // nodes — cytoscape has no parent/child relations left to walk), so the
+      // walk is a data lookup, transitively, against the current render set.
+      function ancestorOf(id) {
         var el = cy.getElementById(id)
-        if (el.length) el.parents().forEach(function (p) { keep.add(p.id()) })
+        return el.length ? el.data('mparent') : null
+      }
+      keep.forEach(function (id) {
+        var p = ancestorOf(id)
+        while (p != null && !keep.has(p)) { keep.add(p); p = ancestorOf(p) }
       })
       // the induced edge rule counts the root as a member of both sides
       function sideHas(rid, side) {
@@ -1309,26 +1383,86 @@
         hidePeek(); selectNode(null)
       }
     })
-    // R59 (V2.9a): DRAG SOVEREIGNTY — the only writer of state.dragged. Every
-    // draggable element records itself on release: zones, group cards and
-    // packages alike (cytoscape's `dragfree` fires once per gesture, after the
-    // last move). Edges are deliberately NOT bound: they have no data.x/y for
-    // paint() to restore — an edge's shape is derived from its endpoints, so an
-    // override for one would describe nothing the next repaint could honour.
-    // The position read back is cytoscape's own (model coordinates, the same
-    // space AtlasModel writes), so an override is directly comparable to a slot.
-    // Dragging a COMPOUND parent drags its whole subtree (frozen-dist behavior)
-    // and the dist fires dragfree per moved element — so a shell, its cards and
-    // its members each record themselves and the arrangement stays coherent
-    // across repaints (pinned by test/ctx-menu-wiring.test.mjs, R59 4).
+    // R59 (V2.9a) DRAG SOVEREIGNTY — the only writer of state.dragged; V2.10b
+    // (R64) FULL DECOUPLING made the containment MANUAL: with paint handing
+    // cytoscape plain nodes, the dist moves ONLY the grabbed node, so the three
+    // handlers below re-enact the compound semantics the app layer now owns —
+    //   grab       snapshot the grabbed node AND the transitive rendered
+    //              descendants (the INERT `mparent` data chain, current render
+    //              set — "currently visible direct children" taken recursively:
+    //              zone→cards→packages, group→packages), each at its live
+    //              position (a child dragged earlier stays offset — rigidity,
+    //              not a slot re-snap),
+    //   drag       translate every snapshotted descendant by the parent's live
+    //              delta — the whole subtree follows rigidly, mid-gesture,
+    //   dragfree   record the grabbed node AND every moved descendant into
+    //              state.dragged (absolute model positions; the equivalent of
+    //              the frozen dist's per-element dragfree over a compound
+    //              subtree, pinned by test/ctx-menu-wiring.test.mjs R59 4).
+    // Dragging a CHILD moves the child (and its own subtree) only — the old
+    // compound side effect of ancestors following is RETIRED on purpose
+    // (README behavior line; report §V210b): a manually placed parent is a
+    // decision, not something a stray package drag may undo.
+    // Edges are deliberately NOT bound: they have no data.x/y for paint() to
+    // restore — an edge's shape is derived from its endpoints. The position
+    // read back is cytoscape's own (model coordinates, the same space
+    // AtlasModel writes), so an override is directly comparable to a slot.
     // This is a render-layer note, never a graph mutation: state.view is
     // untouched here, so a drag repaints nothing and the model stays inert.
+    // Event-name note, dist-verified: the frozen 3.34.1 bundle has NO
+    // 'dragstart' event — the node gesture trio is grab → drag → dragfree.
+    var dragSnap = null // { el, x0, y0, kids: [{ el, x0, y0 }] } for the live gesture
+    function childrenOf(node) {
+      var out = [], pid = node.id()
+      cy.nodes().forEach(function (n) {
+        var mp = n.data('mparent')
+        if (mp != null && String(mp) === pid) out.push(n)
+      })
+      return out
+    }
+    function subtreeOf(node) {
+      var out = [], queue = childrenOf(node)
+      while (queue.length) {
+        var k = queue.shift()
+        out.push(k)
+        queue = queue.concat(childrenOf(k))
+      }
+      return out
+    }
+    function snapPos(n) { var p = n.position(); return { el: n, x0: p.x, y0: p.y } }
+    function finitePos(p) { return !!(p && isFinite(p.x) && isFinite(p.y)) }
+    cy.on('grab', 'node', function (evt) {
+      var el = evt.target
+      if (!el || typeof el.position !== 'function') return
+      var p = el.position()
+      if (!finitePos(p)) return
+      dragSnap = { el: el, x0: p.x, y0: p.y, kids: subtreeOf(el).map(snapPos) }
+    })
+    cy.on('drag', 'node', function () {
+      if (!dragSnap) return
+      if (dragSnap.el.removed()) { dragSnap = null; return }
+      var p = dragSnap.el.position()
+      var dx = p.x - dragSnap.x0, dy = p.y - dragSnap.y0
+      dragSnap.kids.forEach(function (k) {
+        if (k.el.removed()) return
+        k.el.position({ x: k.x0 + dx, y: k.y0 + dy })
+      })
+    })
     cy.on('dragfree', 'node', function (evt) {
       var el = evt.target
       if (!el || typeof el.isNode !== 'function' || !el.isNode()) return
       var p = el.position()
-      if (!p || !isFinite(p.x) || !isFinite(p.y)) return
+      if (!finitePos(p)) return
       state.dragged[el.id()] = { x: p.x, y: p.y }
+      if (dragSnap && dragSnap.el === el) {
+        dragSnap.kids.forEach(function (k) {
+          if (k.el.removed()) return
+          var kp = k.el.position()
+          if (!finitePos(kp)) return
+          state.dragged[k.el.id()] = { x: kp.x, y: kp.y }
+        })
+      }
+      dragSnap = null
     })
   }
   function toggleGroup(gid) {

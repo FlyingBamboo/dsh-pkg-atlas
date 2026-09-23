@@ -356,6 +356,12 @@ S().cy.on('mousedown', () => { CORE_DOWN.n++ }) // observation only
 const ANIMS = []
 const CY_ANIMATE = S().cy.animate.bind(S().cy)
 S().cy.animate = function (opts) { ANIMS.push(opts); return CY_ANIMATE(opts) }
+// V2.10b: the TAP OBSERVER — a core-level 'tap' listener sees EVERY tap (node
+// hits included; evt.target carries the front element). Observation only, same
+// pattern as CORE_DOWN/ANIMS; it is what lets the two-path zone-hit test read
+// WHICH cytoscape routing answered a press without touching any app handler.
+const TAPS = []
+S().cy.on('tap', function (evt) { TAPS.push(evt.target === S().cy ? '__core__' : String(evt.target.id())) })
 
 // ---------------- gesture helpers (all DOM-level) ----------------
 const canvas = graphEl._desc().find((c) => c.getContext) || graphEl
@@ -1098,8 +1104,13 @@ test('R59 4: a dragged ZONE moves its subtree and every moved element records it
   await sleep(120)
   dragFrom(zonePt('cat:tools'), 30, -25) // a dragged ZONE SHELL (grabbed on its label strip)
   await sleep(120)
+  // V2.10b MIGRATION: the guarantee is UNCHANGED — dragging a parent drags its
+  // whole rendered subtree and every moved element records itself — but the
+  // MECHANISM is no longer the frozen dist's compound subtree drag: paint hands
+  // cytoscape plain nodes and the app's manual containment drag translates the
+  // descendants live + records them absolutely on dragfree.
   assert.deepEqual(dragKeys(), EXPECT,
-    'dragging a COMPOUND parent drags its whole subtree (frozen-dist behavior) and dragfree fires per element — so the shell, its cards and its members each recorded themselves')
+    'dragging a PARENT drags its whole rendered subtree (manual containment, V2.10b) — the shell, its cards and its members each recorded themselves')
   const dz = S().dragged['cat:tools'], dc = S().dragged['g:fs']
   assert.ok(dz && dc, 'both the shell and one of its cards hold overrides')
   assert.ok(Math.abs((dz.x - beforeZone.x) - (dc.x - beforeCard.x)) < 1e-6
@@ -1133,14 +1144,15 @@ test('R63: an id-keyed drag override survives the tier-switch REFLOW and re-appl
   //
   // Honest scope note (report §drag): while the dragged element renders as a
   // LEAF (a collapsed card in the groups tier), cytoscape honours the override
-  // position exactly. The moment it EXPANDS into a compound parent, cytoscape's
-  // own re-centering re-anchors the parent on its children — a pre-existing
-  // V2.9a render-layer behavior (verified: it also re-centers in BASE), NOT an
-  // R63 change and not the model's doing (paint still passes dragged ?? slot;
-  // the dist moves it after add). That is V2.10b parent-frame territory. So we
-  // pin the id-keyed survival (map persists across both switches) and the
-  // paint-level re-apply in the tier where the element is a leaf (groups tier),
-  // plus the never-dragged card's reflow round-trip (per-view determinism).
+  // position exactly. At BASE the moment it EXPANDED into a compound parent,
+  // cytoscape's own re-centering re-anchored the parent on its children — a
+  // pre-existing V2.9a render-layer behavior (verified: it also re-centers in
+  // BASE). V2.10b killed it: paint hands cytoscape parent-less plain nodes, so
+  // the override now survives the expansion VERBATIM — the deferred case is
+  // pinned by the "V210b 5" test below. This test keeps its own scope: the
+  // id-keyed survival (map persists across both switches), the paint-level
+  // re-apply in the tier where the element is a leaf (groups tier), and the
+  // never-dragged card's reflow round-trip (per-view determinism).
   await sleep(300)
   fire(doc.getElementById('arrange-view'), 'click') // clear any override left by the prior test before booting refs
   await sleep(350)
@@ -1178,6 +1190,254 @@ test('R63: an id-keyed drag override survives the tier-switch REFLOW and re-appl
   await sleep(350)
   assert.deepEqual(dragKeys(), [], '⌗ cleared the override map')
   assert.deepEqual(posOf('g:fs'), REF.fs, '…and the card returned to its (per-view) model slot')
+})
+
+// =========================================================================
+// V2.10b R64 — FULL DECOUPLING, wired. paint() now hands cytoscape PLAIN
+// parent-less nodes (data.parent stripped, inert `mparent` kept for the
+// render layer) with the z ladder zone<group<pkg declared in the stylesheet
+// (edges ride between group and pkg), so: (1) NOTHING is ever a compound
+// parent — the frozen dist's re-centering cannot move what it cannot parent;
+// (2) the compound drag semantics became the app's manual containment drag
+// (drag translates the dragged node's rendered subtree live; dragfree
+// records the dragged element AND every moved descendant, absolutely);
+// (3) dragging a child never moves its ancestors (the retired compound
+// side effect); (4) a never-dragged child RIDES its parent: the paint-time
+// child position = parent's rendered (dragged or slot) position + the
+// model's child-relative slot offset — WYSIWYG at every level, including
+// the R63-deferred dragged-group-expansion case pinned below; (5) a
+// collapsed zone is an explicit 140×40 rect instead of a compound shell.
+// =========================================================================
+
+/** A point on the element's own TOP STRIP (inside the node, off its centre
+ *  children — frame/package nodes keep their members centred, so a strip
+ *  press front-hits the frame itself, exactly like zonePt does for zones). */
+const stripPt = (id) => {
+  const el = S().cy.getElementById(id)
+  if (!el.length) throw new Error('stripPt: ' + id + ' is not rendered')
+  const bb = el.renderedBoundingBox({ includeLabels: false, includeOverlays: false })
+  return { x: Math.round((bb.x1 + bb.x2) / 2), y: Math.round(bb.y1 + 3) }
+}
+/** Model slots from the untouched pipeline for a view (never hardcoded). */
+const modelSlots = (view) => {
+  const m = new Map()
+  W.AtlasModel.buildView(GRAPH, view).elements.forEach((el) => {
+    if (el.group === 'nodes') m.set(el.data.id, { x: el.data.x, y: el.data.y })
+  })
+  return m
+}
+const near = (a, b, tol = 1e-6) => Math.abs(a.x - b.x) < tol && Math.abs(a.y - b.y) < tol
+/** Split press: mousedown, one mousemove, THEN asserts, THEN mouseup. */
+const dragStep = (pt, dx, dy, midAssert) => {
+  const z = S().cy.zoom()
+  fire(canvas, 'mousedown', { clientX: pt.x, clientY: pt.y, which: 1, button: 0 })
+  fire(canvas, 'mousemove', { clientX: pt.x + dx, clientY: pt.y + dy, which: 1, button: 0 })
+  if (midAssert) midAssert({ x: dx / z, y: dy / z })
+  fire(canvas, 'mouseup', { clientX: pt.x + dx, clientY: pt.y + dy, which: 1, button: 0 })
+}
+const parentlessCount = () => S().cy.nodes().filter((n) => n.data('parent') !== undefined).length
+
+test('V210b 1: paint hands cytoscape NO parent anywhere — nothing is compound, inert mparent carries containment', async () => {
+  await sleep(300)
+  fire(doc.getElementById('retry'), 'click') // the real freshView boot: cold groups tier
+  await sleep(250)
+  assert.equal(S().view.granularity, 'groups', 'cold boot rides the default tier')
+  const countNodes = S().cy.nodes().length
+  assert.equal(countNodes, 5, 'the two-zone fixture renders exactly: 2 zones + 3 cards at 组级')
+  assert.equal(S().cy.nodes(':parent').length, 0, 'groups tier: zero compound parents')
+  assert.equal(parentlessCount(), 0, '…and NO node data even carries a parent key')
+  assert.equal(S().cy.nodes(':orphan').length, countNodes, 'every node is orphan — the containment is inert data only')
+  assert.equal(S().cy.getElementById('g:fs').data('mparent'), 'cat:tools', 'the card knows its zone through mparent')
+  assert.equal(S().cy.getElementById('cat:tools').data('mparent'), undefined, 'a zone has no mparent (model truth: zones are top-level)')
+  fire(segP, 'click')
+  await sleep(250)
+  assert.equal(S().cy.nodes(':parent').length, 0, 'packages tier: still zero compound parents')
+  assert.equal(parentlessCount(), 0, '…and still no parent key on ANY element data')
+  assert.equal(S().cy.getElementById('x@1').data('mparent'), 'g:fs', 'a package knows its group through mparent')
+  assert.equal(S().cy.getElementById('x@1').parent().length, 0, 'cytoscape itself sees no parent for a member package')
+})
+
+test('V210b 2: a real DOM drag of the ZONE translates its live subtree (cards AND packages) and dragfree records every mover', async () => {
+  await sleep(100)
+  assert.equal(S().view.granularity, 'packages', 'packages tier (V210b 1 left it here) — the two-level universe renders')
+  assert.deepEqual(dragKeys(), [], 'nothing dragged yet')
+  const TOOLS = ['cat:tools', 'g:fs', 'g:db', 'x@1', 'd1@1']
+  const before = {}
+  TOOLS.concat(['g:bundle']).forEach((id) => { before[id] = posOf(id) })
+  assert.ok(TOOLS.every((id) => before[id]) && before['g:bundle'], 'every tools element renders (plus the kernel decoy card)')
+  const z = S().cy.zoom()
+  dragStep(zonePt('cat:tools'), 30, -25, (d) => {
+    // MID-GESTURE (before the release): the manual containment drag has already
+    // translated every descendant rigidly — zone→cards AND group→packages.
+    for (const id of TOOLS) {
+      assert.ok(near(posOf(id), { x: before[id].x + d.x, y: before[id].y + d.y }, 0.5),
+        'live during the drag, ' + id + ' rides the zone (Δ ' + d.x.toFixed(2) + ',' + d.y.toFixed(2) + ' model)')
+    }
+    assert.deepEqual(posOf('g:bundle'), before['g:bundle'], 'a kernel card is NOT dragged by the TOOLS zone — containment is exact, not a global shift')
+  })
+  await sleep(120)
+  assert.deepEqual(dragKeys(), TOOLS.slice().sort(),
+    'dragfree recorded the dragged parent AND every moved descendant (manual-equivalent of the compound per-element dragfree)')
+  for (const id of TOOLS.slice(1)) {
+    assert.ok(near({ x: S().dragged[id].x - before[id].x, y: S().dragged[id].y - before[id].y },
+      { x: S().dragged['cat:tools'].x - before['cat:tools'].x, y: S().dragged['cat:tools'].y - before['cat:tools'].y }, 1e-6),
+      id + ' moved RIGIDLY with the zone (identical Δ vector)')
+  }
+  assert.ok(Math.abs(z - S().cy.zoom()) < 1e-9, 'the drag moved zero camera')
+  fire(doc.getElementById('arrange-view'), 'click')
+  await sleep(350)
+  assert.deepEqual(dragKeys(), [], '⌗ cleared the gesture (the sanctioned exit)')
+})
+
+test('V210b 3: dragging a group FRAME carries exactly its member packages, not the zone or sibling frames', async () => {
+  await sleep(300)
+  assert.equal(S().view.granularity, 'packages', 'packages tier')
+  assert.deepEqual(dragKeys(), [], '⌗-clean board')
+  const before = { fs: posOf('g:fs'), x: posOf('x@1'), db: posOf('g:db'), d1: posOf('d1@1'), zone: posOf('cat:tools') }
+  dragStep(stripPt('g:fs'), 50, 40, (d) => {
+    assert.ok(near(posOf('g:fs'), { x: before.fs.x + d.x, y: before.fs.y + d.y }, 0.5), 'the frame follows the pointer')
+    assert.ok(near(posOf('x@1'), { x: before.x.x + d.x, y: before.x.y + d.y }, 0.5), 'its member package rides the frame live')
+    assert.deepEqual(posOf('g:db'), before.db, 'a sibling frame does not move')
+    assert.deepEqual(posOf('cat:tools'), before.zone, 'the zone does not move (dragging a child never moves the parent)')
+  })
+  await sleep(120)
+  assert.deepEqual(dragKeys(), ['g:fs', 'x@1'], 'the frame AND its member recorded themselves — nobody else')
+  assert.ok(near({ x: S().dragged['x@1'].x - before.x.x, y: S().dragged['x@1'].y - before.x.y },
+    { x: S().dragged['g:fs'].x - before.fs.x, y: S().dragged['g:fs'].y - before.fs.y }, 1e-6),
+    'frame and member moved rigidly (identical Δ vector)')
+  fire(doc.getElementById('arrange-view'), 'click')
+  await sleep(350)
+})
+
+test('V210b 4: dragging a CHILD never moves its ancestors — the compound side effect is retired', async () => {
+  await sleep(300)
+  assert.equal(S().view.granularity, 'packages', 'packages tier')
+  assert.deepEqual(dragKeys(), [], '⌗-clean board')
+  const before = { frame: posOf('g:db'), zone: posOf('cat:tools'), d1: posOf('d1@1') }
+  dragBy('d1@1', 70, -60)
+  await sleep(120)
+  assert.deepEqual(dragKeys(), ['d1@1'], 'only the dragged package itself is recorded')
+  assert.deepEqual(posOf('g:db'), before.frame, 'its parent frame stayed put (BASE: the compound re-centred the parent to keep the child inside)')
+  assert.deepEqual(posOf('cat:tools'), before.zone, '…and so did the zone shell')
+  assert.ok(posOf('d1@1').x > before.d1.x && posOf('d1@1').y < before.d1.y, 'the package itself moved where the gesture pointed')
+  fire(doc.getElementById('arrange-view'), 'click')
+  await sleep(350)
+})
+
+test('V210b 5: a dragged GROUP keeps its identity across the tier switch — no re-centring, members ride the frame (R63 deferred case)', async () => {
+  await sleep(300)
+  fire(doc.getElementById('arrange-view'), 'click') // clear anything before the reference boot
+  await sleep(350)
+  fire(doc.getElementById('retry'), 'click') // fresh cold groups tier
+  await sleep(250)
+  assert.equal(S().view.granularity, 'groups', 'cold boot: the group tier, every card a leaf')
+  assert.deepEqual(dragKeys(), [], 'clean override map')
+  const REFg = posOf('g:fs'), REFg2 = posOf('g:db')
+  dragBy('g:fs', 45, 60)
+  await sleep(120)
+  const rec = S().dragged['g:fs']
+  assert.ok(rec && isFinite(rec.x) && isFinite(rec.y), 'the leaf card drag recorded its release point')
+  assert.deepEqual(dragKeys(), ['g:fs'], 'a collapsed card has no rendered children — the card alone is recorded')
+  // Packages tier builds: the group slot and its member slot for the SAME view.
+  const SLOTS = modelSlots({ granularity: 'packages' })
+  const grpSlot = SLOTS.get('g:fs'), pkgSlot = SLOTS.get('x@1'), dbSlot = SLOTS.get('g:db')
+  fire(segP, 'click')
+  await sleep(250)
+  assert.deepEqual(S().dragged['g:fs'], rec, 'the id-keyed override survived the tier-switch reflow verbatim')
+  assert.deepEqual(posOf('g:fs'), { x: rec.x, y: rec.y },
+    'THE DEFECT IS DEAD: expanded to 包级 the dragged frame still sits on its override — cytoscape cannot re-centre what has no children (V2.9a pre-existing bug, R63 report)')
+  assert.ok(near(posOf('x@1'), { x: rec.x + (pkgSlot.x - grpSlot.x), y: rec.y + (pkgSlot.y - grpSlot.y) }),
+    'the never-dragged member rides: child absolute = parent rendered position + the model child-relative slot offset')
+  assert.ok(near(posOf('g:db'), dbSlot), 'the never-dragged frame sits on its own packages-tier slot')
+  fire(segG, 'click')
+  await sleep(250)
+  assert.deepEqual(posOf('g:fs'), { x: rec.x, y: rec.y }, 'back at 组级 the leaf override re-applies verbatim (within-view consistency)')
+  assert.deepEqual(posOf('g:db'), REFg2, 'the clean card returns to its exact groups-tier slot')
+  fire(doc.getElementById('arrange-view'), 'click')
+  await sleep(350)
+  assert.deepEqual(dragKeys(), [], '⌗ cleared the map')
+  assert.deepEqual(posOf('g:fs'), REFg, '…and the card came back to its groups-tier slot')
+})
+
+test('V210b 6: a collapsed zone becomes the explicit 140×40 rect (class-keyed), the title survives', async () => {
+  await sleep(300)
+  fire(doc.getElementById('retry'), 'click') // cold groups tier, nothing collapsed
+  await sleep(250)
+  assert.equal(S().view.collapsedCats.has('kernel'), false, 'kernel starts expanded')
+  const z1 = zonePt('cat:kernel')
+  pinned(() => { leftAt(z1.x, z1.y); leftAt(z1.x, z1.y) }) // the deliberate pair (same door R57 pins)
+  await sleep(350)
+  assert.equal(S().view.collapsedCats.has('kernel'), true, 'the deliberate double-click collapsed the zone')
+  const el = S().cy.getElementById('cat:kernel')
+  assert.equal(el.length, 1, 'the collapsed zone still renders')
+  assert.equal(el.hasClass('collapsed'), true, 'paint marked it with the collapsed class (the app-side marker)')
+  assert.equal(el.width(), 140, 'collapsed zone width is the EXPLICIT 140 (was: the full data(w) — plain nodes do not auto-shrink, V5-M-6 held a childless parent at data size)')
+  assert.equal(el.height(), 40, 'collapsed zone height is the EXPLICIT 40')
+  assert.equal(el.data('label'), '内核', 'the localized title rides the strip unchanged')
+  const z2 = zonePt('cat:kernel')
+  pinned(() => { leftAt(z2.x, z2.y); leftAt(z2.x, z2.y) })
+  await sleep(350)
+  assert.equal(S().view.collapsedCats.has('kernel'), false, 'the toggle still expands it back')
+  assert.equal(S().cy.getElementById('cat:kernel').hasClass('collapsed'), false, '…and paint drops the marker again')
+})
+
+test('V210b 7: zone hits answer BOTH paths — DOM events routed through the container (eventInContainer) resolve onto the plain zone rect, and blank canvas (inside the old zone footprint, outside the collapsed rect) still routes as background', async () => {
+  await sleep(300)
+  assert.equal(S().focus, null, 'cold groups tier (V210b 6 left the view clean)')
+  // Path 1 — the shipped DOM routing: a press on the inner CANVAS chains to
+  // the container (the frozen dist walks target.parentNode up to it —
+  // eventInContainer), and cytoscape's hit test resolves it ONTO the plain
+  // zone rect (the front element is the node, not the core).
+  TAPS.length = 0
+  const zp = zonePt('cat:tools')
+  leftAt(zp.x, zp.y)
+  await sleep(120)
+  assert.deepEqual(TAPS, ['cat:tools'], 'container-chained tap resolved to the ZONE NODE (front element, not the core)')
+  assert.equal(S().selected, 'cat:tools', '…and the app selected the zone')
+  await sleep(320) // clear the deliberate-pair window between same-target presses
+  // Routing fact, pinned: the dist chain starts at target.PARENT — an event
+  // aimed AT the container itself is not a canvas gesture (its padding is
+  // never the canvas). No tap may fire, and selection survives.
+  TAPS.length = 0
+  fire(graphEl, 'mousedown', { clientX: zp.x, clientY: zp.y, which: 1, button: 0 })
+  fire(graphEl, 'mouseup', { clientX: zp.x, clientY: zp.y, which: 1, button: 0 })
+  await sleep(120)
+  assert.deepEqual(TAPS, [], 'container-target events are NOT canvas gestures (dist chain starts at target.parentNode) — the one live routing is the child-chain path above')
+  assert.equal(S().selected, 'cat:tools', '…selection untouched')
+  // Path 2 — background stays background EVEN inside the old zone footprint:
+  // the collapsed zone is now the explicit 140×40 rect, so a press that used
+  // to land on a full-footprint shell lands on plain background. (Compound
+  // world: the shell's auto-bbox covered it; WYSIWYG world: it does not.)
+  const z1 = zonePt('cat:kernel')
+  pinned(() => { leftAt(z1.x, z1.y); leftAt(z1.x, z1.y) })
+  await sleep(350)
+  assert.equal(S().view.collapsedCats.has('kernel'), true, 'kernel collapsed (the R57 door — re-entered from this other test point of view)')
+  TAPS.length = 0
+  leftAt(z1.x, z1.y) // the OLD strip point — outside the 140×40 rect now
+  await sleep(120)
+  assert.deepEqual(TAPS, ['__core__'], 'blank inside the old zone footprint, outside the explicit rect, routes as CORE background')
+  assert.equal(S().selected, null, '…and deselects, exactly as a blank tap must')
+  const z2 = zonePt('cat:kernel') // the collapsed strip itself still hits the node
+  TAPS.length = 0
+  leftAt(z2.x, z2.y)
+  await sleep(120)
+  assert.deepEqual(TAPS, ['cat:kernel'], '…while the collapsed rect still front-hits its zone node')
+  assert.equal(S().selected, 'cat:kernel', '…and selects it')
+  await sleep(350) // outside BOTH debounce windows (R57's shape) before the pair
+  pinned(() => { leftAt(z2.x, z2.y); leftAt(z2.x, z2.y) })
+  await sleep(350)
+  assert.equal(S().view.collapsedCats.has('kernel'), false, 'the strip double-press still expands from the small rect')
+  // A collapsed group card is ONE node: a press on it — the centre, blank
+  // because a 组级 card has no children (and a round-rect's corner arc need
+  // not yield at +2px) — selects the group, no child routing possible.
+  const gp = rp('g:bundle')
+  TAPS.length = 0
+  leftAt(gp.x, gp.y)
+  await sleep(120)
+  assert.deepEqual(TAPS, ['g:bundle'], 'the centre press hit the card node itself')
+  assert.equal(S().selected, 'g:bundle', '…and selected the group')
+  leftAt(6, 6)
+  await sleep(350)
 })
 
 test('C1 hygiene: no unhandled rejections, boot warnings clean', () => {

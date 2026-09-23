@@ -17,8 +17,9 @@
  *     cytoscape 3.34.1 with console.warn captured, and the computed style is read
  *     back off real elements. Property/selector typos are SILENT in a browser
  *     (cytoscape only warns + drops the rule) — this is the guard that pins
- *     `text-max-width` (not max-text-width), the CARD/CONTAINER `:parent` split
- *     (`:not()` does not exist in this dist), the `background-color` core option
+ *     `text-max-width` (not max-text-width), the CARD/CONTAINER class split
+ *     (`:not()` does not exist in this dist; since V2.10b the split is keyed
+ *     on the model `collapsed` class — nothing compounds), the `background-color` core option
  *     and the gk-<kind> palette entries actually landing on the cards.
  *  4. Static contract guards on web/app.js / web/index.html (sizing from data(w)/
  *     data(h) with min-* floors, dist enums only, no cytoscape layout call, XSS
@@ -185,17 +186,28 @@ function loadVendoredCytoscape() {
   return mod.exports
 }
 
-/** paint()'s element mapping, replayed for the probe (data.x/y → position + label).
- *  Elements are rebuilt in THIS realm: model output lives in a vm realm and node's
- *  cross-realm prototype checks (and cytoscape's array tests) are brittle there. */
+/** paint()'s element mapping, replayed for the probe (data.x/y → position +
+ *  label). V2.10b R64 MIRROR: paint strips `parent` from the cytoscape json
+ *  (zones/groups/packages are plain rectangles), stamps the inert `mparent`,
+ *  and marks collapsed zones (state.view.collapsedCats is a paint-side fact).
+ *  Positions here are the no-drag pipeline, where the derivation is the
+ *  identity, so position = model slot (the dragged path is pinned against the
+ *  REAL app in test/ctx-menu-wiring.test.mjs). Elements are rebuilt in THIS
+ *  realm: model output lives in a vm realm and node's cross-realm prototype
+ *  checks (and cytoscape's array tests) are brittle there. */
 function paintElements(Model, graph, view) {
   const out = []
+  const collapsedCats = view && view.collapsedCats ? view.collapsedCats : new Set()
   for (const el of Model.buildView(graph, view).elements) {
-    const data = Object.assign({}, JSON.parse(JSON.stringify(el.data)))
+    const src = JSON.parse(JSON.stringify(el.data))
     const classes = [...el.classes]
-    if (el.group !== 'nodes') { out.push({ group: 'edges', classes, data }); continue }
-    data.label = data.name == null ? data.id : String(data.name)
-    out.push({ group: 'nodes', classes, data, position: { x: data.x, y: data.y } })
+    if (el.group !== 'nodes') { out.push({ group: 'edges', classes, data: src }); continue }
+    const mp = src.parent == null ? null : String(src.parent)
+    delete src.parent
+    if (mp != null) src.mparent = mp
+    src.label = src.name == null ? src.id : String(src.name)
+    if (src.kind === 'zone' && collapsedCats.has(String(src.name))) classes.push('collapsed')
+    out.push({ group: 'nodes', classes, data: src, position: { x: src.x, y: src.y } })
   }
   return out
 }
@@ -386,10 +398,19 @@ test('STYLE↔MODEL: every class AtlasModel emits has an app.js selector (derive
         `unsupported selector form in app.js STYLE: ${rule.selector}`)
       for (const t of selectorClassTokens(rule.selector)) styled.add(t)
     }
-    assert.ok(selectorsByTheme[theme].includes('node.group:parent'),
-      'the expanded CONTAINER look must be keyed on :parent (node has children)')
+    // V2.10b R64 MIGRATION (was: `node.group:parent` container key): the
+    // paint layer is fully decoupled, nothing is compound, so `:parent` can
+    // match nothing and is GONE from the stylesheet. The CARD/CONTAINER split
+    // is keyed on the model's own presence marker: the base rule paints the
+    // (expanded) container frame, `node.group.collapsed` paints the card.
+    assert.ok(!selectorsByTheme[theme].some((s) => s.includes(':parent')),
+      'V2.10b: no :parent selector survives — the world is plain nodes')
+    assert.ok(selectorsByTheme[theme].includes('node.group.collapsed'),
+      'the collapsed CARD look must be keyed on the model `collapsed` class')
     assert.ok(selectorsByTheme[theme].includes('node.group'),
-      'the collapsed CARD look must be the node.group base rule')
+      'the expanded CONTAINER look is the node.group base rule')
+    assert.ok(selectorsByTheme[theme].includes('node.zone.collapsed'),
+      'the collapsed-zone explicit rect is keyed on the paint-side `collapsed` marker')
   }
   // Classes the model emits that carry NO visual role of their own: the element
   // is already painted by a rule that is more general (base `edge` paints the
@@ -489,14 +510,16 @@ test('computed style: collapsed CARD vs expanded CONTAINER, vendor palette, them
         cy.style(style)
       })
       try {
-        // CARD/CONTAINER split keyed on the SAME structural fact the style uses:
-        // a card is childless, an expanded container has its members as children.
+        // V2.10b R64 MIGRATION (was: parent-ness matching the collapsed class):
+        // paint hands NO parent anywhere, so NOTHING is a compound parent — the
+        // CARD/CONTAINER split now reads purely off the `collapsed` class.
         for (const g of groups) {
           const ele = cy.getElementById(g.data.id)
           const collapsed = g.classes.includes('collapsed')
-          assert.equal(ele.isParent(), !collapsed, `${g.data.id}: parent-ness must match the collapsed class`)
+          assert.equal(ele.isParent(), false, `${g.data.id}: plain node — nothing compounds anymore`)
+          assert.equal('parent' in g.data, false, `${g.data.id}: paint stripped parent from the json`)
           assert.equal(pnum(ele, 'background-opacity'), collapsed ? 0.9 : 0.14,
-            `${theme}/${g.data.id}: ${collapsed ? 'CARD' : 'CONTAINER'} background-opacity`)
+            `${theme}/${g.data.id}: ${collapsed ? 'CARD' : 'CONTAINER'} background-opacity (class-keyed)`)
           assert.equal(pnum(ele, 'text-max-width'), 120, `${theme}/${g.data.id}: group label cap applied`)
           assert.equal(pstr(ele, 'text-wrap'), 'ellipsis', `${theme}/${g.data.id}: ellipsis wrap`)
           assert.equal(pstr(ele, 'text-valign'), collapsed ? 'center' : 'top-inside',
@@ -520,10 +543,12 @@ test('computed style: collapsed CARD vs expanded CONTAINER, vendor palette, them
         const zone = els.find((e) => e.classes.includes('zone'))
         assert.equal(pnum(cy.getElementById(zone.data.id), 'text-max-width'), 300, 'zone label cap applied')
         // V2.3 label clamp (THE fix for the browser-only label collision): the
-        // collision is SIBLING PKG LABELS side by side, never box on box — both
-        // compound rules pin width/height/min-* to data(w)/data(h) and set
-        // compound-sizing-wrt-labels:'exclude' (app.js, the zone and group
-        // rules), so frames never grow with child labels. At the shipped 96px a
+        // collision is SIBLING PKG LABELS side by side, never box on box — the
+        // zone and group rules pin width/height/min-* to data(w)/data(h) and,
+        // since V2.10b's full decoupling, are PLAIN fixed-size rectangles (a
+        // plain node sizes from its style, nothing auto-grows with child
+        // labels — the compound-sizing property retired with the compounds).
+        // At the shipped 96px a
         // centred label outgrew the intra-row CENTRE pitch CELL(46)+GAP(12)=58
         // and lay across the neighbouring column's text (short names hide it,
         // scoped long names do not). Headless cytoscape has no font metrics, so
@@ -538,13 +563,67 @@ test('computed style: collapsed CARD vs expanded CONTAINER, vendor palette, them
         const core = cy.style().core('background-color')
         assert.ok(core, `${theme}: core background-color rule parsed`)
         assert.equal(core.strValue, THEME_BG[theme], `${theme}: core background-color themes the canvas pane`)
-        // I-2 sanity: the CARD marker is the childless test, never `:orphan`
-        assert.deepEqual([...cy.nodes(':orphan').map((e) => e.id())],
-          els.filter((e) => e.group === 'nodes' && e.data.parent == null).map((e) => e.data.id),
-          ':orphan is "no parent" in this dist — only zones qualify')
+        // V2.10b MIGRATION (was: `:orphan` = zones only, the compound marker):
+        // full decoupling means EVERY node is orphan — and that equality IS
+        // the decoupling pin: the count on both sides must be the whole set.
+        assert.equal(cy.nodes(':orphan').length, cy.nodes().length,
+          'V2.10b: every node is orphan — paint handed cytoscape zero parents')
+        assert.equal(cy.nodes(':parent').length, 0, 'V2.10b: zero compound parents in the paint output')
       } finally {
         if (cy) cy.destroy()
       }
+    }
+  }
+})
+
+// =========================================================================
+// V2.10b R64 — the DECOUPLING probe on the frozen dist: paint output has no
+// parent anywhere, the z ladder zone<group<edge<pkg actually computes, and the
+// collapsed zone is the explicit 140×40 rect (plain nodes honour literal
+// width/height; the old world could only auto-shrink a compound shell).
+// =========================================================================
+test('V2.10b decoupling: paint output is parent-free; z ladder computes; collapsed zone is the explicit rect', () => {
+  const Model = loadModel()
+  const graph = fixture()
+  const Cytoscape = loadVendoredCytoscape()
+  const mod = loadAppStyle(graph)
+  for (const theme of ['light', 'dark']) {
+    const style = mod.styleFor(theme)
+    const view = { collapsedGroups: new Set(), collapsedCats: new Set(['plugin']), showRealCross: true }
+    const els = paintElements(Model, graph, view)
+    const nodes = els.filter((e) => e.group === 'nodes')
+    assert.ok(nodes.length >= 10, 'the fixture renders zones + cards + packages')
+    assert.equal(nodes.filter((e) => 'parent' in e.data).length, 0, `${theme}: NO node json carries a parent`)
+    assert.equal(nodes.filter((e) => e.data.mparent != null).length > 0, true, `${theme}: mparent stamps are present (inert containment)`)
+    const collapsedZones = nodes.filter((e) => e.classes.includes('zone') && e.classes.includes('collapsed'))
+    assert.equal(collapsedZones.length, 1, `${theme}: the collapsedCats zone carries the paint-side collapsed marker`)
+    assert.equal(collapsedZones[0].data.id, 'cat:plugin', `${theme}: it is exactly the collapsed zone`)
+    let cy
+    const warns = captureWarnings(() => {
+      cy = Cytoscape({ headless: true, styleEnabled: true, elements: els })
+      cy.style(style)
+    })
+    try {
+      assert.deepEqual(warns.filter((w) => /is invalid|Halting/i.test(w)), [], `${theme}: decoupled style rejected:\n  ${warns.join('\n  ')}`)
+      assert.equal(cy.nodes(':parent').length, 0, `${theme}: dist sees zero compound parents`)
+      // the z ladder — read back off REAL computed styles, strict ordering
+      const zz = pnum(cy.nodes('.zone').first(), 'z-index')
+      const zg = pnum(cy.nodes('.group').first(), 'z-index')
+      const zp = pnum(cy.nodes('.pkg').first(), 'z-index')
+      const ze = pnum(cy.edges().first(), 'z-index')
+      assert.ok(zz < zg && zg < ze && ze < zp,
+        `${theme}: ladder zone(${zz}) < group(${zg}) < edge(${ze}) < pkg(${zp})`)
+      // explicit collapsed rect — literal style sizes win on plain nodes
+      const zc = cy.getElementById('cat:plugin')
+      assert.equal(pnum(zc, 'width'), 140, `${theme}: collapsed zone width is the explicit 140`)
+      assert.equal(pnum(zc, 'height'), 40, `${theme}: collapsed zone height is the explicit 40`)
+      // and an EXPANDED zone still sizes from data(w)/data(h)
+      const ze2 = cy.getElementById('cat:kernel')
+      const kz = nodes.find((e) => e.data.id === 'cat:kernel')
+      assert.equal(pnum(ze2, 'width'), kz.data.w, `${theme}: expanded zone still data(w)-sized`)
+      assert.ok(kz.data.w > 140, 'the fixture kernel zone is wider than the collapsed rect (the pin bites)')
+    } finally {
+      if (cy) cy.destroy()
     }
   }
 })
@@ -559,10 +638,16 @@ test('app.js: binds the AtlasModel contract exactly (sizing/enums/shapes/no-layo
   assert.match(src, /height:\s*'data\(h\)'/, 'height bound to data(h)')
   assert.match(src, /'min-width':\s*'data\(w\)'/, 'min-width floor from data(w)')
   assert.match(src, /'min-height':\s*'data\(h\)'/, 'min-height floor from data(h)')
-  // dist-verified enums ONLY: compound-sizing-wrt-labels ∈ {include,exclude},
-  // text-valign ∈ {top,top-inside,center,bottom,bottom-inside} (3.34.1 dist)
-  assert.match(src, /'compound-sizing-wrt-labels':\s*'exclude'/, 'child labels cannot inflate compound boxes')
-  assert.doesNotMatch(src, /'compound-sizing-wrt-labels':\s*'ignore'/, 'ignore is NOT a valid enum in 3.34.1')
+  // V2.10b R64 MIGRATION (was: the compound-sizing-wrt-labels 'exclude' pin —
+  // compound boxes cannot exist to be inflated when paint decouples): the
+  // property is GONE from the stylesheet with the compounds. Both directions
+  // pinned: neither the valid enum nor the invalid one may reappear.
+  assert.doesNotMatch(src, /compound-sizing-wrt-labels/, 'V2.10b: nothing compounds, nothing sizes wrt labels')
+  assert.doesNotMatch(src, /'z-index':\s*[^,}\n]*data\(/, 'z-index is a declared ladder constant, never data-bound')
+  assert.match(src, /'z-index':\s*1,/, 'zone z (ladder zone<group<edge<pkg)')
+  assert.match(src, /'z-index':\s*2,/, 'group z')
+  assert.match(src, /'z-index':\s*3,/, 'edge z')
+  assert.match(src, /'z-index':\s*10,/, 'pkg z')
   assert.match(src, /'text-valign':\s*'top-inside'/, 'zone/group labels inside-top (dist enum: top-inside)')
   assert.doesNotMatch(src, /inside-top/, 'inside-top is NOT a valid enum in 3.34.1')
   // spelling traps the dist proved (I-1/I-3): the wrong name parses to nothing
@@ -582,13 +667,22 @@ test('app.js: binds the AtlasModel contract exactly (sizing/enums/shapes/no-layo
     'a pkg label can never reach the next column label box')
   assert.doesNotMatch(src, /'text-max-width':\s*96/, 'the oversized 96px pkg label is gone')
   // cytoscape keeps position outside data (dist-verified) — paint must map x/y in.
-  // V2.9a R59 MIGRATION: the mapping gained its ONE override in front of the
-  // model slot (`ov ? override : slot`), so the pin now reads BOTH branches: the
-  // slot expression must still be exactly `el.data.x/el.data.y` (coordinates are
-  // still AtlasModel's, never a layout call) and the override must win on the
-  // left of the ternary.
-  assert.match(src, /var pos = \(ov && isFinite\(ov\.x\) && isFinite\(ov\.y\)\) \? \{ x: ov\.x, y: ov\.y \} : \{ x: el\.data\.x, y: el\.data\.y \}/,
-    'R59: the painted position is the finite drag override, else exactly el.data.x/el.data.y')
+  // V2.9a R59: the mapping gained its ONE override in front of the model slot
+  // (`ov ? override : slot`). V2.10b R64 MIGRATION: the middle branch grew —
+  // a never-dragged child of a DRAGGED parent rides `parentRendered +
+  // (slot − parentSlot)` (manual containment across repaints). Pins: the finite
+  // override still wins first, the plain-slot fallback is still EXACTLY
+  // `el.data.x/el.data.y` (coordinates are AtlasModel's, never a layout call),
+  // the ride expression uses only the two model slots and the parent's
+  // rendered position, and paint strips parent + stamps the inert mparent.
+  assert.match(src, /if \(ov && isFinite\(ov\.x\) && isFinite\(ov\.y\)\) pos = \{ x: ov\.x, y: ov\.y \}/,
+    'R59: the painted position starts from the finite drag override')
+  assert.match(src, /else pos = \{ x: el\.data\.x, y: el\.data\.y \}/,
+    '…and the no-override, no-ride fallback is exactly el.data.x/el.data.y')
+  assert.match(src, /pos = \{ x: pr\.x \+ \(d\.x - ps\.x\), y: pr\.y \+ \(d\.y - ps\.y\) \}/,
+    'V2.10b: the child rides parentRendered + (childSlot − parentSlot)')
+  assert.match(src, /if \(k !== 'parent'\) data\[k\] = d\[k\]/, 'V2.10b: the add-json strips parent — plain nodes')
+  assert.match(src, /data\.mparent = mp/, 'V2.10b: the model parent survives only as inert mparent')
   assert.match(src, /position: pos/, '…and that value is what the add-json position field carries')
   // R29 shapes via builtin mapping
   assert.match(src, /hexagon/, 'third-party hexagon')
@@ -731,8 +825,10 @@ function loadFocusLogic() {
 
 /**
  * Minimal cytoscape surface for applyClasses: elements()/nodes()/edges()
- * collections, getElementById, add/removeClass, hasClass, parents(). Compound
- * parents come from the element data (the AtlasModel contract).
+ * collections, getElementById, add/removeClass, hasClass, parents(). V2.10b:
+ * the paint json is parent-free; the containment the focus-ancestor walk
+ * needs is the inert `mparent` data paint stamps (parents() is kept for the
+ * harness's own convenience — the app no longer calls it).
  */
 function makeFakeCy(elements) {
   const els = elements.map((e) => ({
@@ -740,7 +836,7 @@ function makeFakeCy(elements) {
     group: e.group === 'nodes' ? 'nodes' : 'edges',
     data: e.data,
     classes: new Set(e.classes),
-    parent: e.group === 'nodes' && e.data.parent != null ? e.data.parent : null,
+    parent: e.group === 'nodes' && e.data.mparent != null ? String(e.data.mparent) : null,
   }))
   const byId = new Map(els.map((e) => [e.id, e]))
   const tokens = (s) => String(s).split(/\s+/).filter(Boolean)
@@ -5733,6 +5829,12 @@ test('V2.9b R62 CSS: the tinted region card at 8px geometry, the card rhythm, th
     'R62: a 1px #8883 rule divides group sections inside the members card — riding the COMPOUND form (.gmem+.jump.ghead, 1,3,0): the I-1 lesson says the simple selector would tie/lose and never paint')
   assert.ok(!css.includes('#details .gmem + .ghead {'), 'regression trap: the non-compound divider selector ties #details .jump.ghead and is source-order-fragile')
   const readme = readFileSync(join(WEB, '..', 'README.md'), 'utf8')
-  assert.match(readme, /组级档下被拖过的组卡，展开态下视觉由成员驱动、位置回组槽；切档后恢复其拖动位/,
-    'R62+: the V2.9a review (e) nuance ships in the README, verbatim wording from the brief')
+  // V2.10b R64 MIGRATION (was: the verbatim R62+ sentence 「展开态下视觉由成员
+  // 驱动、位置回组槽」 — that pinned the V2.9a review (e) nuance, i.e. the
+  // RE-CENTRING DEFECT itself). Full decoupling killed the defect, so the pin
+  // moves to the replacement sentence: the dragged-group behavior line must
+  // state the WYSIWYG identity, verbatim, in the drag paragraph.
+  assert.match(readme, /拖过的组卡切到包级不再被成员\s*\n?\s*重定心，未单独拖过的成员按「父渲染位＋模型内子相对槽偏移」跟随父框/,
+    'R62+→V2.10b: the README drag paragraph states the no-re-centring + ride rule verbatim')
+  assert.match(readme, /拖子不再带动父/, 'V2.10b: the retired ancestor-follow side effect is stated in the README, too')
 })

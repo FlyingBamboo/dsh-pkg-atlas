@@ -573,8 +573,15 @@ test('app.js: binds the AtlasModel contract exactly (sizing/enums/shapes/no-layo
   assert.ok(pkgRule.style['text-max-width'] <= CELL + GAP,
     'a pkg label can never reach the next column label box')
   assert.doesNotMatch(src, /'text-max-width':\s*96/, 'the oversized 96px pkg label is gone')
-  // cytoscape keeps position outside data (dist-verified) — paint must map x/y in
-  assert.match(src, /position:\s*\{\s*x:\s*el\.data\.x,\s*y:\s*el\.data\.y\s*\}/, 'data.x/y mapped to element position on add')
+  // cytoscape keeps position outside data (dist-verified) — paint must map x/y in.
+  // V2.9a R59 MIGRATION: the mapping gained its ONE override in front of the
+  // model slot (`ov ? override : slot`), so the pin now reads BOTH branches: the
+  // slot expression must still be exactly `el.data.x/el.data.y` (coordinates are
+  // still AtlasModel's, never a layout call) and the override must win on the
+  // left of the ternary.
+  assert.match(src, /var pos = \(ov && isFinite\(ov\.x\) && isFinite\(ov\.y\)\) \? \{ x: ov\.x, y: ov\.y \} : \{ x: el\.data\.x, y: el\.data\.y \}/,
+    'R59: the painted position is the finite drag override, else exactly el.data.x/el.data.y')
+  assert.match(src, /position: pos/, '…and that value is what the add-json position field carries')
   // R29 shapes via builtin mapping
   assert.match(src, /hexagon/, 'third-party hexagon')
   assert.match(src, /diamond/, 'broken diamond')
@@ -3610,7 +3617,7 @@ function loadMenuWiring() {
     'var state = { graph: { categories: [{ id: "kernel" }, { id: "tools" }, { id: "plugin" }] },\n'
     + '  byId: new Map([["a@1", { id: "a@1", kind: "package", name: "a" }], ["brk", { id: "brk", kind: "broken", name: "brk" }]]),\n'
     + '  groupIds: new Set(["bundle", "fs"]), groupZone: new Map([["fs", "tools"]]),\n'
-    + '  cy: null, focus: null, selected: null, pathStack: [],\n'
+    + '  cy: null, focus: null, selected: null, pathStack: [], dragged: {},\n'
     + '  tableMode: false, lang: "zh", theme: "light", fitted: false,\n'
     + '  view: { collapsedCats: new Set(), collapsedGroups: null, filterCats: new Set(), granularity: "groups", focus: null } }\n',
     'function coll(items) {\n'
@@ -3664,6 +3671,8 @@ function loadMenuWiring() {
     extractBalanced(src, 'function selectNode(id, nav) {') + '\n',
     extractBalanced(src, 'function toggleGroup(gid) {') + '\n',
     extractBalanced(src, 'function resetView() {') + '\n',
+    // V2.9a R59: the ⌗ command's real body (the menu row must reach it, not a stub)
+    extractBalanced(src, 'function autoArrange() {') + '\n',
     extractBalanced(src, 'function buildContextMenu(target, state, lang) {') + '\n',
     extractBalanced(src, 'function ctxMenu() {') + '\n',
     extractBalanced(src, 'function menuIsOpen() {') + '\n',
@@ -4152,12 +4161,20 @@ test('V2.5 buildContextMenu: row sets, shape-aware labels and enabled gates for 
   assert.equal(r[0].enabled, true)
   assert.equal(rows({ kind: 'pkg', id: 'brk' })[0].enabled, false, 'a broken node is not a path root → greyed, not hidden')
   assert.equal(rows({ kind: 'pkg', id: 'ghost@1' })[0].enabled, false, 'an unknown id greyed too')
-  // blank canvas: 复位视图 always live, 退出聚焦 rides the focus
+  // blank canvas: 复位视图 always live, 退出聚焦 rides the focus, and since
+  // V2.9a R59 自动排布 rides the DRAG OVERRIDE (non-empty state.dragged).
   r = rows({ kind: 'bg' })
-  assert.deepEqual(ids(r), ['reset-view', 'exit-focus'])
-  assert.deepEqual(keys(r), ['menuResetView', 'menuExitFocus'])
-  assert.deepEqual(en(r), [true, false], 'no focus → 退出聚焦 greyed (one rule: disabled, never hidden)')
-  assert.deepEqual(en(rows({ kind: 'bg' }, mkState({ focus: { rootId: 'p@1', depth: null } }))), [true, true])
+  assert.deepEqual(ids(r), ['reset-view', 'exit-focus', 'auto-arrange'])
+  assert.deepEqual(keys(r), ['menuResetView', 'menuExitFocus', 'menuArrange'])
+  assert.deepEqual(en(r), [true, false, false], 'no focus → 退出聚焦 greyed; nothing dragged → 自动排布 greyed (one rule: disabled, never hidden)')
+  assert.deepEqual(en(rows({ kind: 'bg' }, mkState({ focus: { rootId: 'p@1', depth: null } }))), [true, true, false])
+  // R59: the gate is the dragged map and NOTHING else — no focus/tier coupling
+  assert.equal(rows({ kind: 'bg' }, mkState({ dragged: { 'g:bundle': { x: 1, y: 2 } } }))[2].enabled, true,
+    'R59: a live drag override → 自动排布 offered')
+  assert.equal(rows({ kind: 'bg' }, mkState({ dragged: {} }))[2].enabled, false,
+    'R59: an EMPTY override map → greyed (everything already sits on its model slot)')
+  assert.equal(rows({ kind: 'bg' }, mkState({ focus: { rootId: 'p@1', depth: null }, dragged: { 'a@1': { x: 0, y: 0 } } }))[2].enabled, true,
+    'R59: a live focus neither arms nor disarms the arrangement command')
   // lang does NOT change the rows (labels resolve via t(labelKey) at render time)
   assert.deepEqual(buildContextMenu({ kind: 'bg' }, mkState(), 'en'), buildContextMenu({ kind: 'bg' }, mkState(), 'zh'))
   // junk targets emit nothing; a group target with only the full id normalizes the gid
@@ -4232,7 +4249,8 @@ test('V2.7 R50 menu wiring: 依赖图 rides the real zero-camera selectNode chai
   const before = { focus: w.state.focus, stack: w.state.pathStack.slice(), cats: [...w.state.view.filterCats] }
   assert.equal(anims0, 0, 'entry ran no camera op before ⌂ was even touched')
   w.cxt(w.blank())
-  assert.deepEqual(w.rows().map((b) => b.text), ['menuResetView', 'menuExitFocus'])
+  assert.deepEqual(w.rows().map((b) => b.text), ['menuResetView', 'menuExitFocus', 'menuArrange'],
+    'V2.9a R59: the canvas row set gained 自动排布 (appended — the two legacy rows keep their indexes)')
   assert.equal(w.rows()[1].disabled, false, 'focus is live → 退出聚焦 offered')
   w.LOG.length = 0
   w.rows()[0].handlers.click()
@@ -4250,6 +4268,37 @@ test('V2.7 R50 menu wiring: 依赖图 rides the real zero-camera selectNode chai
   assert.equal(w.state.focus, null, 'focus exited')
   assert.deepEqual(w.LOG, ['details', 'sync', 'paint:nofocus'], 'exit → ONE viewport-kept repaint — the snapshot glide is retired (R50)')
   assert.equal(w.ANIMS.length, anims0 + 1, '⌂ stays the ONLY glide in the battery: entry and exit added nothing')
+})
+
+// V2.9a (R59): the ⌗ twin of ⌂. Real runMenuCommand → real autoArrange; only the
+// leaf chrome (paint/animate) is the harness stub, exactly as in the rows above.
+// The dragfree WRITER is proven against the real vendored cytoscape in
+// test/ctx-menu-wiring.test.mjs — this half pins the door and the sequence.
+test('V2.9a R59 menu wiring: 自动排布 is GATED on the drag override, and runs clear → ONE repaint → ONE fit', () => {
+  const w = loadMenuWiring()
+  w.bind()
+  w.cxt(w.blank())
+  const cold = w.rows()
+  assert.deepEqual(cold.map((b) => b.text), ['menuResetView', 'menuExitFocus', 'menuArrange'])
+  assert.deepEqual(cold.map((b) => b.disabled), [false, true, true], 'nothing dragged (and no focus) → the last two rows ship GREYED')
+  assert.equal(cold[2].hidden, false, 'greyed, never hidden (the one menu rule)')
+  // the gate reads the override map and nothing else
+  w.state.dragged = { 'g:bundle': { x: 12, y: -30 }, 'cat:kernel': { x: 0, y: 9 } }
+  w.cxt(w.blank())
+  assert.equal(w.rows()[2].disabled, false, 'a live override → the command is offered')
+  w.LOG.length = 0 // the cxttap leg owns its peek-off; the COMMAND chain starts here
+  const anims0 = w.ANIMS.length
+  const before = { focus: w.state.focus, cats: [...w.state.view.filterCats], tier: w.state.view.granularity }
+  w.rows()[2].handlers.click()
+  assert.deepEqual(Object.keys(w.state.dragged), [], '⌗ cleared EVERY override — that is its whole state write')
+  assert.deepEqual(w.LOG, ['paint:nofocus', 'animate'], 'ONE viewport-kept repaint FIRST (the slots are back), then the camera')
+  assert.equal(w.ANIMS.length, anims0 + 1, 'exactly ONE camera move')
+  assert.equal(w.ANIMS[anims0].fit.padding, 40, 'the sanctioned ⌂ padding — one glide family, two doors')
+  assert.equal(w.ANIMS[anims0].duration, 250, 'and the sanctioned 250ms')
+  assert.equal(w.state.focus, before.focus, 'focus untouched')
+  assert.deepEqual([...w.state.view.filterCats], before.cats, 'filters untouched')
+  assert.equal(w.state.view.granularity, before.tier, 'tier untouched (a layout undo is not a view reset)')
+  assert.ok(w.menu().hidden, 'the menu closed inside the command, like every other row')
 })
 
 test('V2.5 menu lifecycle: open at the click point, edge flip/clamp, tap-SWALLOW, mousedown-then-tap swallow, pan/zoom dismiss, single reusable div, one XSS-safe header', () => {
@@ -4326,7 +4375,7 @@ test('V2.5 menu lifecycle: open at the click point, edge flip/clamp, tap-SWALLOW
 // once the entry/walk/re-root glides and the exit restore retired. The audit now
 // proves the RETIREMENT globally (executable lines; comments exempt) and pins the
 // surviving camera surface to exactly ONE fit + TWO cy.animate call sites.
-test('V2.7 R50 camera audit: the snapshot chain is deleted; ONE fit + TWO cy.animate sites (flash, ⌂); every transition zero-camera', () => {
+test('V2.7 R50 camera audit: the snapshot chain is deleted; ONE fit + THREE cy.animate sites (flash, ⌂, ⌗); every transition zero-camera', () => {
   const src = readFileSync(join(WEB, 'app.js'), 'utf8')
   const code = stripJsComments(src)
   assert.doesNotMatch(code, /snapshotViewport|restoreViewport|animateFitPath|pathFitEles/,
@@ -4339,8 +4388,8 @@ test('V2.7 R50 camera audit: the snapshot chain is deleted; ONE fit + TWO cy.ani
   assert.ok(paintBody.includes('closeMenu()'), 'paint closes an open menu before destroying elements (V2.5 pin survives)')
   assert.ok(!paintBody.includes('animate'), 'paint never animates — the camera lives outside the render path')
   assert.equal((src.match(/state\.cy\.fit\(/g) || []).length, 1, 'exactly ONE fit() call in the whole app (the boot gate)')
-  assert.equal((src.match(/state\.cy\.animate\(/g) || []).length, 2,
-    'exactly TWO cy.animate call sites: the named reveal flash + the explicit ⌂ reset')
+  assert.equal((src.match(/state\.cy\.animate\(/g) || []).length, 3,
+    'exactly THREE cy.animate call sites: the named reveal flash, the explicit ⌂ reset and the V2.9a ⌗ auto-arrange')
   const after = extractBalanced(src, 'function afterFocusChange(act, id) {')
   assert.ok(!/animate|fit\(|restore|snapshot/i.test(stripJsComments(after)), 'afterFocusChange (entry/walk/exit tail) moves NO camera (R50)')
   assert.ok(after.includes('paint()'), 'its tail is the viewport-kept repaint')
@@ -4356,11 +4405,25 @@ test('V2.7 R50 camera audit: the snapshot chain is deleted; ONE fit + TWO cy.ani
   assert.ok(!/animate|fit\(|snapshot|restore/i.test(stripJsComments(reveal)), 'reveal itself touches no other camera')
   const flash = extractBalanced(src, 'function flashReveal(id) {')
   assert.ok(flash.includes('state.cy.animate({ center'), 'the flash is the ONE named center+zoom animate site')
+  // R59 transparency: the reveal asks the ELEMENT where it is, so a dragged
+  // element reveals at its dragged spot with zero extra code in either side.
+  assert.doesNotMatch(flash, /data\(\s*['"]x['"]\s*\)|\.data\.x/,
+    'R59: flashReveal never reads a model slot — center rides the element position, overrides included')
   const rv = extractBalanced(src, 'function resetView() {')
   assert.match(rv, /fit:\s*\{[^}]*padding:\s*40/, '⌂ keeps fit padding 40')
   assert.match(rv, /duration:\s*250/, '250ms, the surviving glide family')
   assert.doesNotMatch(rv, /state\.(view|focus|selected|pathStack|fitted)\s*=[^=]/, 'resetView writes no state (the R45 pin survives the audit rewrite)')
   assert.doesNotMatch(rv, /paint\(/, 'resetView never repaints (zero structure work)')
+  // V2.9a R59: ⌗ is the third sanctioned site — the ONLY one that repaints,
+  // because returning to the model grid IS structure work.
+  const aa = extractBalanced(src, 'function autoArrange() {')
+  assert.match(aa, /state\.dragged = \{\}/, '⌗ writes exactly one state field: the drag-override map')
+  assert.ok(aa.indexOf('paint()') < aa.indexOf('state.cy.animate('),
+    '⌗ repaints BEFORE the fit, so the camera glides over the RESTORED slots')
+  assert.match(aa, /fit:\s*\{[^}]*padding:\s*40/, '⌗ reuses the ⌂ fit constants (padding 40)')
+  assert.match(aa, /duration:\s*250/, '…and the same 250ms family')
+  assert.doesNotMatch(aa, /state\.(view|focus|selected|pathStack|fitted)\s*=[^=]/,
+    '⌗ writes no other state — a layout undo, not a view reset')
   assert.match(src, /cy\.on\('mousedown', onCanvasMouseDown\)/, 'mousedown closes the menu (and arms the swallow)')
   assert.match(src, /cy\.on\('panstart', onCanvasGesture\)/, 'panstart closes without eating the NEXT click')
   assert.match(src, /cy\.on\('zoom', closeMenu\)/, 'zoom closes (named — the anonymous-zoom guard stays honest)')

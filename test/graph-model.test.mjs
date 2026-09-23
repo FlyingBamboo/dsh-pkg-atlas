@@ -166,7 +166,8 @@ test('V4-00 script contract: bare-sandbox globalThis.AtlasModel + ZONE_LAYOUT co
   assert.ok(Number.isFinite(L.GAP) && L.GAP > 0, 'GAP must be a positive constant')
   assert.ok(Number.isFinite(L.FLOW_W) && L.FLOW_W > 0, 'FLOW_W (group-row flow width) must be positive')
   assert.ok(Number.isFinite(L.ZONE_GAP) && L.ZONE_GAP > 0, 'ZONE_GAP must be positive')
-  assert.equal(L.ZONE_COLS, 4, 'brief rule 2: zones flow on a 4-column grid')
+  // V2.9a R58: the 4-column grid constant is replaced by the band width cap.
+  assert.ok(Number.isFinite(L.BAND_W) && L.BAND_W > 0, 'BAND_W (zone-band flow width) must be positive')
 })
 
 // =========================================================================
@@ -698,6 +699,178 @@ test('V5-16c I-5 slot flow is collapse-independent (V4 coordinate constancy re-p
         `${id} moved between collapse states`,
       )
     }
+  }
+})
+
+// =========================================================================
+// Task V2.9a (R58) — FLOWING ZONE BANDS. The ZONE_COLS equal-column grid is
+// retired: zones now flow left→right in CATEGORY_ORDER packed by their ACTUAL
+// w/h, wrapping at ZONE_LAYOUT.BAND_W, one band tall as the tallest zone in it.
+// Every assertion here reads the zone rectangles the model REPORTS (data.w/h)
+// and states the algebra the flow must satisfy — never a hardcoded coordinate
+// table, so the pins survive any honest retune of the constants and die the
+// moment the packing stops being tight.
+// =========================================================================
+
+/**
+ * bandGraph(3) → three zones, two collapsed cards each, categories z0/z1/z2 in
+ * that declared order (the model's zone order IS graph.categories order).
+ * `cards`/`members` are per group, so widths and heights move independently:
+ * cards drive the zone WIDTH, member counts drive its HEIGHT.
+ */
+function bandGraph(nZones, cards, members) {
+  const categories = []
+  const groups = []
+  const nodes = []
+  for (let z = 0; z < nZones; z++) {
+    categories.push({ id: 'z' + z, zh: 'Z' + z, en: 'Z' + z })
+    for (let c = 0; c < (Array.isArray(cards) ? cards[z] : cards); c++) {
+      const gid = 'g' + z + '_' + c
+      const m = Array.isArray(members) ? members[z] : members
+      groups.push({ id: gid, kind: 'official', category: 'z' + z, packageCount: m })
+      for (let k = 0; k < m; k++) nodes.push(node(`${gid}#${k}@1.0.0`, `${gid}p${k}`, 'package', 'official', gid, 'z' + z, ['web']))
+    }
+  }
+  return {
+    schema: 1, generatedAt: 'x', dshHome: '$DSH_HOME', warnings: [],
+    categories, profiles: [], groups, nodes, edges: [],
+  }
+}
+
+/** The rendered zone rectangles, in build order (CATEGORY_ORDER). */
+function zoneRects(res) {
+  return plain(nodeEls(res).filter((e) => e.data.kind === 'zone').map((e) => e.data))
+}
+/** Top-aligned flow ⇒ every zone of one band shares its top edge. */
+const bandTopOf = (z) => z.y - z.h / 2
+/** Zones grouped into bands by that shared top edge, top band first. */
+function bandsOf(zones) {
+  const byTop = new Map()
+  for (const z of zones) {
+    const k = String(bandTopOf(z))
+    if (!byTop.has(k)) byTop.set(k, [])
+    byTop.get(k).push(z)
+  }
+  return [...byTop.entries()]
+    .sort((a, b) => Number(a[0]) - Number(b[0]))
+    .map(([, zs]) => zs.slice().sort((p, q) => p.x - q.x))
+}
+
+test('V29-00 R58 band flow: zones pack tight — next left edge = previous right edge + ZONE_GAP', () => {
+  const M = loadModel()
+  const L = M.ZONE_LAYOUT
+  const zones = zoneRects(M.buildView(fixture(), {}))
+  assert.ok(zones.length >= 4, 'the rich fixture must exercise several zones')
+  const bands = bandsOf(zones)
+  for (const band of bands) {
+    assert.ok(band.length >= 2, 'this matrix needs a band with ≥2 zones to test adjacency')
+    for (let i = 1; i < band.length; i++) {
+      const prev = band[i - 1], cur = band[i]
+      const gap = (cur.x - cur.w / 2) - (prev.x + prev.w / 2)
+      assert.equal(gap, L.ZONE_GAP, `${cur.id} sits ${gap} after ${prev.id}, not ZONE_GAP=${L.ZONE_GAP} (a hole = the retired column grid)`)
+    }
+    const span = band[band.length - 1].x + band[band.length - 1].w / 2 - (band[0].x - band[0].w / 2)
+    assert.ok(span <= L.BAND_W + 1e-9, `band span ${span} exceeds BAND_W ${L.BAND_W}`)
+  }
+})
+
+test('V29-01 R58 band flow wraps at BAND_W — and each band is MAXIMAL (the wrapped zone could not have fit)', () => {
+  const M = loadModel()
+  const L = M.ZONE_LAYOUT
+  // 10 equal zones (two cards each): wide enough that BAND_W forces a wrap,
+  // narrow enough that the wrap lands away from any knife-edge multiple.
+  const zones = zoneRects(M.buildView(bandGraph(10, 2, 1), {}))
+  const bands = bandsOf(zones)
+  assert.ok(bands.length >= 2, `BAND_W=${L.BAND_W} must wrap 10 two-card zones (got ${bands.length} band)`)
+  assert.equal(bands.reduce((n, b) => n + b.length, 0), zones.length, 'every zone lands in exactly one band')
+  for (let i = 0; i < bands.length; i++) {
+    const band = bands[i]
+    const span = band[band.length - 1].x + band[band.length - 1].w / 2 - (band[0].x - band[0].w / 2)
+    const solo = band.length === 1 && band[0].w > L.BAND_W
+    if (!solo) assert.ok(span <= L.BAND_W + 1e-9, `band ${i} spans ${span} > BAND_W ${L.BAND_W}`)
+    const nxt = bands[i + 1] && bands[i + 1][0]
+    if (!nxt) continue
+    assert.ok(span + L.ZONE_GAP + nxt.w > L.BAND_W,
+      `band ${i} stopped early: ${nxt.id} (w=${nxt.w}) still had room (span ${span}, BAND_W ${L.BAND_W}) — greedy flow must take it`)
+  }
+})
+
+test('V29-02 R58 band height = tallest zone: next band top = band top + tallest + ZONE_GAP (top-aligned)', () => {
+  const M = loadModel()
+  const L = M.ZONE_LAYOUT
+  // Mixed heights: zone 2 — NOT first in its band — grows tall through a
+  // 9-member group, so the band advance must key on the tallest zone.
+  const g = bandGraph(12, 2, 1)
+  g.groups[4].packageCount = 9
+  for (let k = 0; k < 9; k++) g.nodes.push(node('g2_0#big' + k + '@1.0.0', 'big' + k, 'package', 'official', 'g2_0', 'z2', ['web']))
+  const zones = zoneRects(M.buildView(g, {}))
+  const bands = bandsOf(zones)
+  assert.ok(bands.length >= 2, 'fixture must wrap to test the band advance')
+  const tallBand = bands.find((b) => b.some((z) => z.id === 'cat:z2'))
+  assert.ok(tallBand.length > 1 && tallBand[0].id !== 'cat:z2',
+    'the tall zone sits mid-band (first position would let the leading height pass by accident)')
+  for (let i = 0; i < bands.length; i++) {
+    const tops = new Set(bands[i].map((z) => bandTopOf(z)))
+    assert.equal(tops.size, 1, `band ${i} zones share ONE top edge (got ${[...tops]}) — the flow tops-aligns, it never centers`)
+    const tall = Math.max(...bands[i].map((z) => z.h))
+    for (const z of bands[i]) assert.ok(z.h <= tall + 1e-9 && z.h > 0, `${z.id} height inside the band`)
+    const next = bands[i + 1]
+    if (!next) continue
+    assert.equal(bandTopOf(next[0]) - bandTopOf(bands[i][0]), tall + L.ZONE_GAP,
+      `band ${i + 1} must start one ZONE_GAP below band ${i}'s TALLEST zone (the tallest is ${tall}, not the first zone's ${bands[i][0].h})`)
+  }
+})
+
+test('V29-03 R58 band boundaries: empty graph renders no zone; a single zone sits at (w/2, h/2)', () => {
+  const M = loadModel()
+  const empty = M.buildView({ schema: 1, categories: [], profiles: [], groups: [], nodes: [], edges: [] }, {})
+  assert.deepEqual(plain(empty.elements), [], 'no zones, no flow, no crash')
+  const one = zoneRects(M.buildView(bandGraph(1, 2, 1), {}))
+  assert.equal(one.length, 1)
+  assert.equal(one[0].x, one[0].w / 2, 'the flow starts at x=0 ⇒ the only zone centers at w/2')
+  assert.equal(one[0].y, one[0].h / 2, 'and at y=0 ⇒ h/2 (the canvas origin is the flow origin)')
+})
+
+test('V29-04 R58 a zone wider than BAND_W still lands (first in its band) — never dropped, never loops', () => {
+  const M = loadModel()
+  const L = M.ZONE_LAYOUT
+  const g = bandGraph(3, 2, 1)
+  // 1100 members ⇒ ceil(sqrt)=34 cols ⇒ gridW 34*46+33*12 = 1960 ⇒ zone w 2016 > BAND_W
+  g.groups[0].packageCount = 1100
+  for (let k = 0; k < 1100; k++) g.nodes.push(node('wide' + k + '@1.0.0', 'w' + k, 'package', 'official', 'g0_0', 'z0', ['web']))
+  const zones = zoneRects(M.buildView(g, {}))
+  assert.equal(zones.length, 3, 'the oversized zone renders like any other')
+  const wide = zones.find((z) => z.id === 'cat:z0')
+  assert.ok(wide.w > L.BAND_W, `fixture must produce a zone wider than BAND_W (got ${wide.w})`)
+  assert.equal(wide.x, wide.w / 2, 'it takes the head of its band at x=0 (greedy flow never leaves it unplaced)')
+  const bands = bandsOf(zones)
+  assert.equal(bands[0].length, 1, 'nothing squeezes in beside it — the rest start a fresh band')
+  assertFiniteAll(M.buildView(g, {}), 'oversized zone')
+})
+
+test('V29-05 R58 the band flow is deterministic and view-independent (double build byte-equal)', () => {
+  const M = loadModel()
+  const g1 = bandGraph(7, 2, 1)
+  const g2 = bandGraph(7, 2, 1)
+  const a = JSON.stringify(M.buildView(g1, {}))
+  const b = JSON.stringify(M.buildView(g2, {}))
+  assert.equal(a, b, 'two builds over equal inputs must be byte-identical')
+  assert.deepEqual(zoneRects(M.buildView(g1, EXPANDED())), zoneRects(M.buildView(g1, {})),
+    'the band flow reads EXPANDED slot dims only — expanding groups changes WHICH elements render, never a zone rect')
+  const c = zoneRects(M.buildView(g1, {}))
+  const d = zoneRects(M.buildView(g1, { filterCats: ['z3'] }))
+  const dm = new Map(d.map((z) => [z.id, z]))
+  for (const z of c) {
+    if (!dm.has(z.id)) continue
+    assert.deepEqual(dm.get(z.id), z, `${z.id} zone rect moved when a NEIGHBOURING zone was filtered out (the flow must not re-pack on filters)`)
+  }
+})
+
+test('V29-06 R58 no ZONE_COLS consumer survives anywhere in the shipped code or the suite', () => {
+  const L = loadModel().ZONE_LAYOUT
+  assert.ok(!('ZONE_COLS' in L), 'ZONE_COLS is retired from ZONE_LAYOUT (the column grid is gone, not merely unused)')
+  for (const rel of ['../web/graph-model.js', '../web/app.js', '../web/index.html', '../web/style.css', '../lib/scan.js', '../lib/index.js', '../lib/http.js']) {
+    assert.ok(!/ZONE_COLS/.test(readFileSync(join(HERE, rel), 'utf8')), `${rel} still mentions ZONE_COLS`)
   }
 })
 

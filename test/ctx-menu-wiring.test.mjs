@@ -206,6 +206,7 @@ mk('focus-depth', 'select').value = '0'
 mk('focus-clear')
 mk('path-back')
 mk('reset-view', 'button')
+mk('arrange-view', 'button')
 mk('retry')
 mk('refresh')
 mk('lang-btn')
@@ -962,6 +963,164 @@ test('V2.8 R57 case 3: the zone shell ignores the dismiss-pair but answers a tru
   assert.equal(S().view.collapsedCats.has('kernel'), false, 'the toggle is a TOGGLE — the door still opens both ways')
   leftAt(6, 6)
   await sleep(350)
+})
+
+// =========================================================================
+// V2.9a R59 — DRAG SOVEREIGNTY, wired. A drag is the ONE gesture that moves
+// cytoscape elements directly, so the whole override lifecycle is proven here
+// against the REAL vendored dist: the press/move/release trio drives cytoscape's
+// own node-drag interaction, which fires the app's registered 'dragfree'
+// handler. Positions are then read back off the real elements across structural
+// repaints — the model slot for a never-dragged element is captured from the
+// untouched pipeline BEFORE any drag (R26: slots are view-independent).
+// =========================================================================
+
+/** Drag from a RENDERED point: press, MOVE, release (a dist-driven gesture). */
+const dragFrom = (pt, dx, dy) => {
+  fire(canvas, 'mousedown', { clientX: pt.x, clientY: pt.y, which: 1, button: 0 })
+  fire(canvas, 'mousemove', { clientX: pt.x + dx, clientY: pt.y + dy, which: 1, button: 0 })
+  fire(canvas, 'mouseup', { clientX: pt.x + dx, clientY: pt.y + dy, which: 1, button: 0 })
+}
+/** Drag an element by id from its rendered centre (zones need zonePt instead). */
+const dragBy = (id, dx, dy) => {
+  const a = rp(id)
+  if (!a) throw new Error('dragBy: ' + id + ' is not rendered')
+  dragFrom(a, dx, dy)
+  return a
+}
+const posOf = (id) => {
+  const el = S().cy.getElementById(id)
+  return el.length ? { x: el.position('x'), y: el.position('y') } : null
+}
+const dragKeys = () => Object.keys(S().dragged).sort()
+/** Model slots captured from the untouched pipeline BEFORE any drag. */
+const REF = {}
+
+test('R59 1: a real DOM drag records state.dragged, writes no view state, and survives structural repaints', async () => {
+  await sleep(300)
+  fire(doc.getElementById('retry'), 'click') // the real freshView boot: cold, all collapsed
+  await sleep(250)
+  assert.deepEqual(dragKeys(), [], 'a fresh boot starts with an empty override map')
+  fire(segP, 'click') // 包级: every group expanded, so members render and can be dragged
+  await sleep(250)
+  REF.pkg = posOf('r1@1'); REF.card = posOf('g:bundle'); REF.zone = posOf('cat:tools')
+  assert.ok(REF.pkg && REF.card && REF.zone, 'reference model slots captured (r1@1 / g:bundle / cat:tools)')
+  const anims0 = ANIMS.length
+  const before = posOf('r1@1')
+  const view0 = { tier: S().view.granularity, focus: S().focus, cats: [...S().view.filterCats] }
+  dragBy('r1@1', 70, 45)
+  await sleep(120)
+  const rec = S().dragged['r1@1']
+  assert.ok(rec && isFinite(rec.x) && isFinite(rec.y), 'dragfree RECORDED the release point: ' + JSON.stringify(rec))
+  // The gesture is +70/+45 in RENDERED px; the record is MODEL space, so the
+  // dist's own zoom divides it (model Δ = rendered Δ ÷ zoom — pinned, not guessed).
+  const z = S().cy.zoom()
+  assert.ok(Math.abs(rec.x - before.x - 70 / z) < 2 && Math.abs(rec.y - before.y - 45 / z) < 2,
+    'the record is the model-coordinate release point (zoom ' + z.toFixed(4) + ', from ' + JSON.stringify(before) + ' to ' + JSON.stringify(rec) + ')')
+  assert.ok(rec.x > before.x && rec.y > before.y, 'same direction as the gesture (no teleport, no sign flip)')
+  assert.deepEqual(posOf('r1@1'), { x: rec.x, y: rec.y }, 'the live element sits where it was released')
+  assert.equal(S().dragged['g:bundle'], undefined, 'a drag records its OWN element only')
+  assert.deepEqual(dragKeys(), ['r1@1'], 'exactly one entry')
+  assert.equal(S().focus, view0.focus, 'the drag wrote NO focus (a drag is not navigation)')
+  assert.equal(S().view.granularity, view0.tier, '…no tier…')
+  assert.deepEqual([...S().view.filterCats], view0.cats, '…and no filter change')
+  assert.equal(ANIMS.length - anims0, 0, 'and it moved the camera ZERO times')
+  // two structural repaints: 组级 (the member leaves the render set) then 包级 (it returns)
+  fire(segG, 'click')
+  await sleep(250)
+  fire(segP, 'click')
+  await sleep(250)
+  assert.deepEqual(posOf('r1@1'), { x: rec.x, y: rec.y },
+    'R59: the member came BACK from the repaint at its dragged spot, not its model slot')
+  assert.deepEqual(posOf('g:bundle'), REF.card, 'a never-dragged element still lands on its model slot')
+  assert.deepEqual(posOf('cat:tools'), REF.zone, '…same for the zone shell')
+  assert.deepEqual(dragKeys(), ['r1@1'], 'structural repaints never prune a live override')
+  assert.equal(ANIMS.length - anims0, 0, 'the two repaints moved the camera zero times (R50 intact)')
+})
+
+test('R59 2: ⌗ (header button) drops every override, repaints onto the model grid, and glides exactly once', async () => {
+  const rec = S().dragged['r1@1']
+  assert.ok(rec, 'precondition owned by R59 1: a drag override is live')
+  const anims0 = ANIMS.length
+  fire(doc.getElementById('arrange-view'), 'click')
+  await sleep(350)
+  assert.deepEqual(dragKeys(), [], '⌗ cleared the override map — its ONLY state write')
+  const slot = posOf('r1@1')
+  assert.deepEqual(slot, REF.pkg, 'the element is back on its MODEL slot')
+  assert.notDeepEqual(slot, { x: rec.x, y: rec.y }, '…and demonstrably NOT on the dragged spot')
+  assert.equal(ANIMS.length - anims0, 1, 'exactly ONE camera move, and it is the fit')
+  const a = ANIMS[anims0]
+  assert.ok(a && a.fit, 'the animate is a fit (not a center/zoom)')
+  assert.equal(a.fit.padding, 40, 'the sanctioned ⌂ padding — one glide family, two doors')
+  assert.equal(a.duration, 250, 'and the sanctioned 250ms')
+  assert.equal(S().view.granularity, 'packages', '⌗ left the tier alone (a layout undo, not a view reset)')
+  assert.equal(S().focus, null, '⌗ wrote no focus…')
+  assert.deepEqual(S().pathStack, [], '…and started no path stack')
+})
+
+test('R59 3: the canvas menu offers 自动排布 ONLY while an override is live, and its row runs the same funnel', async () => {
+  await sleep(300)
+  assert.deepEqual(dragKeys(), [], 'precondition: nothing dragged (R59 2 cleared it)')
+  rightAt(6, 6) // blank canvas → the view menu
+  await sleep(60)
+  assert.ok(menuEl() && !menuEl().hidden, 'the canvas menu opened')
+  assert.deepEqual(rows().map((b) => b.text), ['复位视图', '退出聚焦', '自动排布'], 'the canvas row set gained 自动排布')
+  assert.equal(rows()[2].disabled, true, 'nothing dragged → the row ships GREYED (the one rule: disabled, never hidden)')
+  assert.equal(rows()[2].hidden, false, 'greyed, not removed')
+  leftAt(770, 570) // dismiss the way a browser does: container press (+ swallowed tap)
+  await sleep(300)
+  dragBy('r1@1', -60, -30)
+  await sleep(120)
+  assert.deepEqual(dragKeys(), ['r1@1'], 'a drag is live again')
+  rightAt(6, 6)
+  await sleep(60)
+  assert.equal(rows()[2].disabled, false, 'override live → the command is offered')
+  const bgAnims = ANIMS.length
+  pressRow(rows()[2], { clientX: 6, clientY: 6 })
+  await sleep(350)
+  assert.deepEqual(dragKeys(), [], 'the menu command cleared the map (the SAME autoArrange funnel as ⌗)')
+  assert.deepEqual(posOf('r1@1'), REF.pkg, '…and the element returned to its model slot')
+  assert.equal(ANIMS.length - bgAnims, 1, '…plus exactly one fit')
+  assert.equal(ANIMS[bgAnims].fit.padding, 40)
+  assert.equal(S().focus, null, 'no focus side effect')
+})
+
+test('R59 4: a dragged ZONE moves its subtree and every moved element records itself; a rescan prunes exactly the vanished id', async () => {
+  await sleep(300)
+  // the tools zone's own universe, derived from the fixture (never hardcoded)
+  const toolsGids = GRAPH.groups.filter((g) => g.category === 'tools').map((g) => 'g:' + g.id)
+  const toolsPkgs = GRAPH.nodes.filter((n) => toolsGids.indexOf('g:' + n.group) >= 0).map((n) => n.id)
+  const EXPECT = ['cat:tools'].concat(toolsGids, toolsPkgs, ['r1@1']).sort()
+  const beforeZone = posOf('cat:tools'), beforeCard = posOf('g:fs')
+  dragBy('r1@1', 40, 20)
+  await sleep(120)
+  dragFrom(zonePt('cat:tools'), 30, -25) // a dragged ZONE SHELL (grabbed on its label strip)
+  await sleep(120)
+  assert.deepEqual(dragKeys(), EXPECT,
+    'dragging a COMPOUND parent drags its whole subtree (frozen-dist behavior) and dragfree fires per element — so the shell, its cards and its members each recorded themselves')
+  const dz = S().dragged['cat:tools'], dc = S().dragged['g:fs']
+  assert.ok(dz && dc, 'both the shell and one of its cards hold overrides')
+  assert.ok(Math.abs((dz.x - beforeZone.x) - (dc.x - beforeCard.x)) < 1e-6
+    && Math.abs((dz.y - beforeZone.y) - (dc.y - beforeCard.y)) < 1e-6,
+    'the subtree moved RIGIDLY (identical Δ vector) — that is why each element needs its own entry')
+  const zoneRec = { x: dz.x, y: dz.y }
+  // the rescan: r1@1 vanishes from the graph (the tools zone keeps its fs/db members)
+  const GRAPH_COPY = JSON.parse(JSON.stringify(GRAPH))
+  GRAPH.nodes = GRAPH.nodes.filter((n) => n.id !== 'r1@1')
+  GRAPH.edges = GRAPH.edges.filter((e) => e.from !== 'r1@1' && e.to !== 'r1@1')
+  try {
+    fire(doc.getElementById('retry'), 'click') // the real loadGraph(false,false) → applyGraph
+    await sleep(400)
+    assert.equal(S().byId.has('r1@1'), false, 'the rescan really lost the package')
+    assert.ok(S().cy.getElementById('cat:tools').length, '…while the tools zone shell still renders')
+    assert.deepEqual(dragKeys(), EXPECT.filter((k) => k !== 'r1@1'),
+      'exactly the vanished id was pruned; the surviving subtree overrides stayed (' + JSON.stringify(dragKeys()) + ')')
+    assert.deepEqual({ x: S().dragged['cat:tools'].x, y: S().dragged['cat:tools'].y }, zoneRec,
+      '…kept VERBATIM, not re-rounded or reset')
+  } finally {
+    GRAPH.nodes = GRAPH_COPY.nodes
+    GRAPH.edges = GRAPH_COPY.edges
+  }
 })
 
 test('C1 hygiene: no unhandled rejections, boot warnings clean', () => {

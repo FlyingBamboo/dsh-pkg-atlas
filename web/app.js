@@ -9,7 +9,10 @@
  * All coordinates arrive pre-computed in element data (AtlasModel slot layout);
  * NO cytoscape layout is ever invoked in v2. Every control in V6 mutates
  * `state.view` (or state.focus/selected/theme/lang) and then calls paint() —
- * no control touches cytoscape elements directly.
+ * no control touches cytoscape elements directly. R59 (V2.9a) is the one
+ * acknowledged exception: a user DRAG moves elements directly, and paint()
+ * re-applies those overrides from `state.dragged` on every repaint. The model
+ * stays out of it — data coordinates have exactly one source, the model.
  *
  * V2.7 R50 (camera doctrine, supersedes V2.5 R45): every repaint KEEPS the
  * viewport, and focus transitions are now FULLY camera-free — entering, walking,
@@ -17,9 +20,11 @@
  * snapshot (entry capture + exit restore glide) is retired as dead code, and so
  * is the entry/walk/re-root fit glide (animateFitPath). The ONLY surviving
  * camera paths are the boot first-frame fit (state.fitted gate), the explicit
- * resetView (⌂ / background-menu 复位视图), and the named-navigation reveal
- * center+flash (flashReveal, reached from revealNode — search hits, member rows,
- * the deep-link fallback). Everything else never touches the viewport.
+ * resetView (⌂ / background-menu 复位视图), the V2.9a autoArrange (⌗ /
+ * background-menu 自动排布 — a repaint plus ONE fit over the restored layout),
+ * and the named-navigation reveal center+flash (flashReveal, reached from
+ * revealNode — search hits, member rows, the deep-link fallback). Nothing else
+ * touches the viewport.
  *
  * Parent sizing (V5-M-6, VERIFIED against the vendored 3.34.1 dist by a headless
  * probe): compound nodes auto-fit their children (a 700x500 data-w/h parent with
@@ -77,7 +82,9 @@
       menuFocusGroup: '聚焦邻域（1 跳）', menuFocusGroupPkgs: '聚焦邻域（包形态）',
       menuSoloZone: '只看该区', menuHideZone: '隐藏该区',
       menuCollapseZone: '折叠该区', menuExpandZone: '展开该区',
-      menuPkgPath: '依赖图', menuResetView: '复位视图', menuExitFocus: '退出聚焦' },
+      menuPkgPath: '依赖图', menuResetView: '复位视图', menuExitFocus: '退出聚焦',
+      // V2.9a R59: ⌗ 自动排布 — the header button (title) and its menu twin
+      arrange: '自动排布（清除拖动，回到模型网格）', menuArrange: '自动排布' },
     en: { title: 'DSH Package Atlas', search: 'search packages…', refresh: 'rescan', retry: 'retry',
       loadFail: 'failed to load graph', warnings: 'data warnings', noDescription: '(no description)',
       langSwitch: '中文',
@@ -114,7 +121,9 @@
       menuFocusGroup: 'focus neighborhood (1 hop)', menuFocusGroupPkgs: 'focus neighborhood (packages)',
       menuSoloZone: 'show only this zone', menuHideZone: 'hide this zone',
       menuCollapseZone: 'collapse zone', menuExpandZone: 'expand zone',
-      menuPkgPath: 'dependency graph', menuResetView: 'reset view', menuExitFocus: 'exit focus' },
+      menuPkgPath: 'dependency graph', menuResetView: 'reset view', menuExitFocus: 'exit focus',
+      // V2.9a R59: ⌗ auto-arrange — the header button (title) and its menu twin
+      arrange: 'auto-arrange (drop the drags, back to the model grid)', menuArrange: 'auto-arrange' },
   }
   var lang = (navigator.language || 'zh').toLowerCase().indexOf('zh') === 0 ? 'zh' : 'en'
   function t(k) { return (I18N[state.lang] && I18N[state.lang][k]) || k }
@@ -239,6 +248,17 @@
     // camera plan at all (entry-capture/exit-restore retired with animateFitPath).
     pathStack: [],
     selected: null,
+    // R59 (V2.9a) DRAG SOVEREIGNTY — the doctrine in one line: the MODEL is the
+    // only source of data coordinates; `dragged` is a RENDER-LAYER OVERRIDE and
+    // the model never sees it (buildView gets `assembleView(state.view)`, never
+    // this map). id → {x, y}, keys are the rendered element ids ('cat:*', 'g:*',
+    // package ids). Lifecycle: written ONLY by the dragfree handler; applied by
+    // paint() as `dragged[id] ?? model slot`; KEPT across every structural
+    // repaint (tier switch, filters, collapse/merge, focus entry/exit — those
+    // change WHICH elements render, not where the user put them); pruned by
+    // applyGraph() for ids that no longer exist in the new graph; cleared ONLY
+    // by ⌗ autoArrange (the explicit "put everything back").
+    dragged: {},
   }
 
   // =======================================================================
@@ -1006,9 +1026,17 @@
       // data.x/data.y alone leave elements at 0,0) — so paint() maps AtlasModel's
       // data.x/data.y into the add-json `position` field. Coordinates still come
       // exclusively from AtlasModel; no layout call.
+      // R59: the ONE place the user's drags re-enter the render — an element with
+      // a `dragged` entry is placed there instead of on its model slot. The
+      // finite-number guard is load-bearing twice over: junk can never move an
+      // element, and an inherited Object.prototype key ('constructor', 'toString')
+      // can never masquerade as a drag (a prototype function has no finite x/y).
+      var drag = state.dragged
       var cyEls = built.elements.map(function (el) {
         if (el.group !== 'nodes') return el
-        return { group: el.group, classes: el.classes, data: el.data, position: { x: el.data.x, y: el.data.y } }
+        var ov = drag ? drag[el.data.id] : null
+        var pos = (ov && isFinite(ov.x) && isFinite(ov.y)) ? { x: ov.x, y: ov.y } : { x: el.data.x, y: el.data.y }
+        return { group: el.group, classes: el.classes, data: el.data, position: pos }
       })
       state.cy.elements().remove()
       state.cy.add(cyEls)
@@ -1277,6 +1305,27 @@
         hidePeek(); selectNode(null)
       }
     })
+    // R59 (V2.9a): DRAG SOVEREIGNTY — the only writer of state.dragged. Every
+    // draggable element records itself on release: zones, group cards and
+    // packages alike (cytoscape's `dragfree` fires once per gesture, after the
+    // last move). Edges are deliberately NOT bound: they have no data.x/y for
+    // paint() to restore — an edge's shape is derived from its endpoints, so an
+    // override for one would describe nothing the next repaint could honour.
+    // The position read back is cytoscape's own (model coordinates, the same
+    // space AtlasModel writes), so an override is directly comparable to a slot.
+    // Dragging a COMPOUND parent drags its whole subtree (frozen-dist behavior)
+    // and the dist fires dragfree per moved element — so a shell, its cards and
+    // its members each record themselves and the arrangement stays coherent
+    // across repaints (pinned by test/ctx-menu-wiring.test.mjs, R59 4).
+    // This is a render-layer note, never a graph mutation: state.view is
+    // untouched here, so a drag repaints nothing and the model stays inert.
+    cy.on('dragfree', 'node', function (evt) {
+      var el = evt.target
+      if (!el || typeof el.isNode !== 'function' || !el.isNode()) return
+      var p = el.position()
+      if (!p || !isFinite(p.x) || !isFinite(p.y)) return
+      state.dragged[el.id()] = { x: p.x, y: p.y }
+    })
   }
   function toggleGroup(gid) {
     if (!state.view.collapsedGroups) state.view.collapsedGroups = new Set(state.groupIds)
@@ -1540,6 +1589,12 @@
     } else if (target.kind === 'bg') {
       rows.push({ id: 'reset-view', labelKey: 'menuResetView', enabled: true })
       rows.push({ id: 'exit-focus', labelKey: 'menuExitFocus', enabled: !!focus })
+      // R59: 自动排布 means something ONLY while a drag override is live — with
+      // nothing dragged every element already sits on its model slot, so the row
+      // greys out instead of offering a no-op (the one rule: greyed, never hidden).
+      var drag = state.dragged
+      rows.push({ id: 'auto-arrange', labelKey: 'menuArrange',
+        enabled: !!(drag && Object.keys(drag).length > 0) })
     }
     return rows // any other kind (an edge) emits NO rows → no menu
   }
@@ -1683,6 +1738,7 @@
     // V2.7 R49 package dbl-tap door shares this exact nav semantics).
     if (cmd === 'pkg-path') { selectNode(String(target.id), true); return }
     if (cmd === 'reset-view') { resetView(); return }
+    if (cmd === 'auto-arrange') { autoArrange(); return }
     if (cmd === 'exit-focus') { exitFocusCommand(); return }
   }
   function onCtxTap(evt) {
@@ -1708,6 +1764,34 @@
   function resetView() {
     if (!state.cy || state.tableMode) return
     state.cy.animate({ fit: { eles: state.cy.nodes(), padding: 40 }, duration: 250 })
+  }
+  // V2.9a (R59): ⌗ AUTO-ARRANGE — the one command that hands the layout back to
+  // the model. It drops every drag override (the ONLY state it writes), repaints
+  // once through the normal viewport-keeping path so every element returns to
+  // its AtlasModel slot, then glides the camera over the restored layout with the
+  // sanctioned ⌂ constants (fit, padding 40, 250ms). Focus, selection, tier,
+  // filters, chips: zero touches — this is a layout undo, not a view reset.
+  // Order matters: paint FIRST, so the fit animates toward the RESTORED boxes.
+  function autoArrange() {
+    if (!state.cy || state.tableMode) return
+    state.dragged = {}
+    paint()
+    state.cy.animate({ fit: { eles: state.cy.nodes(), padding: 40 }, duration: 250 })
+  }
+  // R59 staleness rule: a dragged entry is only meaningful while its element
+  // still exists. applyGraph() re-derives the id universe (packages, group
+  // cards, zone shells) and drops everything else — a rescan that lost a
+  // package must not leave its override waiting for an id that may come back
+  // with a different home. Structural repaints (filters/collapse/focus/tier)
+  // never prune: the element still EXISTS there, only its render set changed.
+  function pruneDragged() {
+    var keep = new Set()
+    state.byId.forEach(function (_n, id) { keep.add(String(id)) })
+    state.groupIds.forEach(function (gid) { keep.add('g:' + gid) })
+    state.groupZone.forEach(function (zid) { keep.add('cat:' + zid) })
+    Object.keys(state.dragged).forEach(function (id) {
+      if (!keep.has(id)) delete state.dragged[id]
+    })
   }
 
   function depthOfCtl() {
@@ -2683,6 +2767,10 @@
     // A pane resize must never strand the context menu at old coordinates.
     var resetBtn = document.getElementById('reset-view')
     if (resetBtn) resetBtn.addEventListener('click', resetView)
+    // V2.9a (R59): ⌗ sits beside ⌂ as the ARRANGEMENT sibling of that camera
+    // sibling — ⌂ resets the eye, ⌗ gives the layout back to the model.
+    var arrangeBtn = document.getElementById('arrange-view')
+    if (arrangeBtn) arrangeBtn.addEventListener('click', autoArrange)
     try { window.addEventListener('resize', closeMenu) } catch (e) { /* non-browser */ }
     // V22b breadcrumb: 返回 walks back to the previous root (skipping entries
     // that died in a rescan), staying AT the current depth.
@@ -2804,6 +2892,9 @@
     state.graph = json
     state.byId = new Map(json.nodes.map(function (n) { return [n.id, n] }))
     computeGroupUniverse()
+    // R59: the id universe just moved — drop every drag override whose element
+    // no longer exists (both paths: keepView keeps the VIEW, not the ghosts).
+    pruneDragged()
     if (keepView) {
       // a focus root that vanished OR stopped being a package cannot anchor R35
       if (state.focus && !isFocusRoot(state.focus.rootId)) state.focus = null

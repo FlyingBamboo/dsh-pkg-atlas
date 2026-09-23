@@ -11,12 +11,15 @@
     <h1 data-i18n="title">dsh-pkg-atlas</h1>
     <span class="grow"></span>
     <!-- V2.6 R47 顶栏四分区：纯展示层 wrapper，不改任何 id/class 钩子，JS 零改动。
-         ① ⌂ 复位 + 粒度两段 | ② 聚焦控件（面包屑在其中，聚焦时出现，无聚焦不占位）
+         ① ⌂ 复位 + ⌗ 自动排布 + 粒度两段 | ② 聚焦控件（面包屑在其中，聚焦时出现，无聚焦不占位）
          | ③ 大类 chips（行尾 全部显示/全部隐藏 由应用层建在 #zone-chips 内）
          | ④ 搜索 + 语言 +（主题随 prefers-color-scheme，无控件）+ 重扫。
          段间 1px 分隔线 + 呼吸间距见 style.css .tb-seg/.tb-div。 -->
     <div class="tb-seg">
       <button id="reset-view" data-i18n-title="menuResetView">⌂</button>
+      <!-- V2.9a R59: ⌗ 自动排布 — drop every drag override and glide back to the
+           model's band layout. Same command surface as the canvas right-click. -->
+      <button id="arrange-view" data-i18n-title="arrange">⌗</button>
       <span id="lod-ctl" data-i18n-title="lodLabel">
         <button data-seg="groups" data-i18n="lodGroups">组级</button>
         <button data-seg="packages" data-i18n="lodPkgs">包级</button>

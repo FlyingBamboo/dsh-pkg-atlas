@@ -33,6 +33,15 @@
  * base path now emits NO aggregate edges at all (user ruling R43): only
  * packages-tier real/cross edges survive there and meta.aggEdges is 0 in
  * every base view. meta.focus gains rootKind:'package'|'group'.
+ *
+ * V2.9a (R58) touches the GEOMETRY SECTION only: the zone band GRID (equal
+ * columns, four zones per row) is replaced by a FLOW — zones pack left→right by
+ * their actual w/h into bands capped at ZONE_LAYOUT.BAND_W, wrapping exactly
+ * like group cards do inside a zone (FLOW_W). The output SHAPE is untouched:
+ * same elements, same fields, every id still fully positioned, and
+ * pathSets/groupFocusSets are byte-for-byte unchanged. The user's drags live
+ * in the app layer (R59 `state.dragged`) — the model never sees them: a build
+ * always returns the model slots, and the render layer decides to override.
  */
 ;(function () {
   'use strict'
@@ -43,10 +52,10 @@
     CARD_W: 132,       // collapsed group card
     CARD_H: 36,
     GAP: 12,           // gap between pkg cells / group cards / zone rows
-    ZONE_GAP: 32,      // gap between zones in the band grid (both axes)
+    ZONE_GAP: 32,      // gap between zones in the band flow (both axes)
     ZONE_PAD: 28,      // zone inner padding (left/right/top/below label)
     ZONE_LABEL_H: 30,  // zone label strip above the group rows
-    ZONE_COLS: 4,      // zones per band-grid row (brief rule 2)
+    BAND_W: 2000,      // R58: max width of one flowing zone band (wrap cap)
     FLOW_W: 480,       // max group-card row width inside a zone
   })
 
@@ -382,20 +391,28 @@
       zz.w = zz.contentW + 2 * L.ZONE_PAD
       zz.h = L.ZONE_LABEL_H + zz.contentH + 2 * L.ZONE_PAD
     })
-    // zones flow on a ZONE_COLS-column grid in CATEGORY_ORDER (band grid, rule 2)
+    // R58 (V2.9a): the zones FLOW. CATEGORY_ORDER, left→right, packed by each
+    // zone's ACTUAL w/h — the equal-column grid is retired (a 2-card zone used
+    // to burn a whole column and leave a hole on the band's right edge). A zone
+    // that would push the band past BAND_W starts the next band; the band is as
+    // tall as its tallest zone and every zone TOP-ALIGNS inside it (the group
+    // cards inside a zone top-align the same way — one alignment rule, two
+    // levels). Pure function of the zones above: no view input, no randomness,
+    // and a zone wider than the cap simply takes the head of its own band
+    // (bandX === 0 never wraps ⇒ it can never be dropped or loop forever).
     ;(function () {
-      var bandY = 0
-      for (var s = 0; s < zones.length; s += L.ZONE_COLS) {
-        var row = zones.slice(s, s + L.ZONE_COLS)
-        var x = 0, rh = 0
-        row.forEach(function (zz) {
-          zz.x = x + zz.w / 2
-          zz.y = bandY + zz.h / 2
-          x += zz.w + L.ZONE_GAP
-          if (zz.h > rh) rh = zz.h
-        })
-        bandY += rh + L.ZONE_GAP
-      }
+      var bandX = 0, bandY = 0, bandH = 0
+      zones.forEach(function (zz) {
+        if (bandX > 0 && bandX + zz.w > L.BAND_W) {
+          bandY += bandH + L.ZONE_GAP
+          bandX = 0
+          bandH = 0
+        }
+        zz.x = bandX + zz.w / 2
+        zz.y = bandY + zz.h / 2
+        bandX += zz.w + L.ZONE_GAP
+        if (zz.h > bandH) bandH = zz.h
+      })
     })()
     // group centers + member cell centers (grid centered in the slot => stable under collapse)
     zones.forEach(function (zz) {

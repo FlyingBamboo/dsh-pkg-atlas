@@ -5,11 +5,14 @@
  * Date.now, no Math.random — unit tests load it into a BARE `{}` VM sandbox
  * (fs.readFileSync + vm.runInNewContext) and read `globalThis.AtlasModel`.
  *
- * Contract (R26): `buildView(graph, view)` returns fully-positioned cytoscape
- * elements. Coordinates come from slot pre-allocation computed on EXPANDED
- * dimensions over the FULL graph (layout universe), so collapse and filters
- * change WHICH elements render — never ANY coordinates. Two builds over equal
- * inputs are deep-equal; the model mutates neither graph nor view.
+ * Contract (R26 → revised by R63, V2.10a): `buildView(graph, view)` returns
+ * fully-positioned cytoscape elements. Coordinates are a PURE FUNCTION OF
+ * (graph, view): slots size to what the CURRENT view renders (collapsed
+ * groups take the card slot, expanded groups the member grid), so the same
+ * view double-builds byte-equal and a tier/group-state switch deliberately
+ * RE-FLOWS the canvas. The output SHAPE — ids, classes, data-field sets — is
+ * view-invariant; only x/y/w/h numbers are view-dependent. The model mutates
+ * neither graph nor view.
  *
  * Public surface (frozen): buildView(graph, view) -> { elements, meta },
  * pathSets(graph, rootId, depth), groupFocusSets(graph, gid), ZONE_LAYOUT.
@@ -42,6 +45,16 @@
  * pathSets/groupFocusSets are byte-for-byte unchanged. The user's drags live
  * in the app layer (R59 `state.dragged`) — the model never sees them: a build
  * always returns the model slots, and the render layer decides to override.
+ *
+ * V2.10a (R63) touches the LAYOUT SECTION only: slots are sized to the
+ * CURRENT view (see "layout universe" below) instead of pre-allocating the
+ * expanded worst case — the default view now hugs its card grid (measured:
+ * real-home zone area 1.87M → 0.77M, card fill 12.9% → 31.6% of zone box,
+ * 75.5% of the slot flow area). The zone flow, the R58 band flow, the focus
+ * branches, pathSets/groupFocusSets and the frozen export surface are
+ * byte-for-byte the same algorithms; positions become a pure fn of
+ * (graph, view) — the R59 drag override is id-keyed and applied at paint, so
+ * user positions survive every reflow.
  */
 ;(function () {
   'use strict'
@@ -351,11 +364,32 @@
     zones.sort(function (a, b) { return zoneRank(a.id) - zoneRank(b.id) || nameCmp(a.id, b.id) })
     zones.forEach(function (zz) { zz.groups.sort(function (a, b) { return nameCmp(a.id, b.id) }) })
 
-    // ---------- layout universe: slot pre-allocation on EXPANDED dims (rule 2) ----------
+    // ---------- layout universe: slots on CURRENT-VIEW dims (rule 2, R63) ----------
     var L = ZONE_LAYOUT
-    var nodePos = new Map() // node -> {x, y} absolute, pure function of graph
+    // R63 (V2.10a, user ruling): a slot carries what the CURRENT view renders —
+    // the collapsed view ships the 132×36 CARD, the expanded view the member
+    // grid. The card-vs-grid answer is the model's OWN view semantics, no new
+    // fields: granularity 'packages' expands everything (R38); a focus that
+    // renders PACKAGES in place reuses this universe with grid slots (R42/R39,
+    // the V22-13 byte-equality) — a g: focus WITHOUT packages renders cards
+    // only, so it does not force the universe open; at groups tier a group
+    // expands iff it is absent from collapsedGroups (null ⇒ all collapsed).
+    // Consequence: coordinates are a pure fn of (graph, view) — byte-equal per
+    // view, re-flowing across views (⌗ auto-arrange + drag sovereignty are
+    // the user's recovery tools for the reflow). Focus REQUESTED-with-packages
+    // counts even if it later starves to the base fallback (V22-15) — the
+    // fallback then renders the base view over the grid universe, byte-identical
+    // to the all-expanded build.
+    var focusRendersPkgs = !!focusIn && (focusIn.rootId.slice(0, 2) !== 'g:' || !!focusIn.packages)
+    var allExpandedSlots = granularity === 'packages' || focusRendersPkgs
+    // groupCollapsed needs the view defaults resolved above; hoisted use below.
+    function groupCollapsedAtLayout(gid2) {
+      if (granularity === 'packages') return false // R38: collapsedGroups is ignored
+      return collapsedGroups ? collapsedGroups.has(gid2) : true
+    }
+    var nodePos = new Map() // node -> {x, y} absolute, pure function of (graph, view)
     zones.forEach(function (zz) {
-      // group slots: max(collapsed card, expanded ceil(sqrt(m)) grid)
+      // group slots: EXPANDED ⇒ max(card, ceil(sqrt(m)) grid); COLLAPSED ⇒ the card
       zz.groups.forEach(function (gr) {
         var m = gr.members.length
         var cols = Math.max(1, Math.ceil(Math.sqrt(m)))
@@ -363,8 +397,17 @@
         var gridW = cols * L.CELL + (cols - 1) * L.GAP
         var gridH = rows * L.CELL + (rows - 1) * L.GAP
         gr.cols = cols; gr.rows = rows
-        gr.slotW = Math.max(L.CARD_W, gridW)
-        gr.slotH = Math.max(L.CARD_H, gridH)
+        // A focus that renders this group's members in place needs the grid slot
+        // even when collapsedGroups lists the group (V22-13/V22-14 byte-equality
+        // with the packages universe) — that is what allExpandedSlots carries.
+        var collapsedSlot = !allExpandedSlots && groupCollapsedAtLayout(gr.id)
+        if (collapsedSlot) {
+          gr.slotW = L.CARD_W
+          gr.slotH = L.CARD_H
+        } else {
+          gr.slotW = Math.max(L.CARD_W, gridW)
+          gr.slotH = Math.max(L.CARD_H, gridH)
+        }
       })
       // groups flow into rows; row height = max inside the row.
       // I-5: EVERY item needs its OWN leading-edge offset inside the row. A single
@@ -414,7 +457,8 @@
         if (zz.h > bandH) bandH = zz.h
       })
     })()
-    // group centers + member cell centers (grid centered in the slot => stable under collapse)
+    // group centers + member cell centers (grid centered in the slot; R63: the
+    // slot is per-view, so a tier switch re-centers the whole canvas on purpose)
     zones.forEach(function (zz) {
       var top = zz.y - zz.h / 2
       var left = zz.x - zz.w / 2
@@ -465,10 +509,9 @@
     })
     function zoneShown(cat) { return !excludeCats.has(cat) && (survivorsByZone.get(cat) || 0) > 0 }
     function groupShown(gid2) { return (survivorsByGroup.get(gid2) || 0) > 0 && zoneShown(groupById.get(gid2).category) }
-    function groupCollapsed(gid2) {
-      if (granularity === 'packages') return false // R38: collapsedGroups is ignored
-      return collapsedGroups ? collapsedGroups.has(gid2) : true
-    }
+    // R63: ONE source of truth — the render's collapse decision is the exact
+    // predicate the layout section above already spent on slot sizing.
+    function groupCollapsed(gid2) { return groupCollapsedAtLayout(gid2) }
 
     // ---------- R42 GROUP-root focus ('g:' rootId) — a NEW branch; the ----------
     // ---------- package-root focus path below stays byte-untouched ----------

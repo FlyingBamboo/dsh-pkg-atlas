@@ -299,7 +299,7 @@ test('AtlasModel: default view (all-collapsed) emits a well-formed, parent-safe 
   assert.equal(meta.edges, 0)
 })
 
-test('AtlasModel: fully expanded view keeps every invariants and the same coordinates', () => {
+test('AtlasModel: fully expanded view keeps every shape invariant (R63: coords are per-view)', () => {
   const { buildView } = loadModel()
   const g = fixture()
   const collapsed = buildView(g, {})
@@ -314,13 +314,21 @@ test('AtlasModel: fully expanded view keeps every invariants and the same coordi
     assert.equal(p.data.h, undefined, 'packages carry NO w/h (V5-M-6)')
     assert.ok(String(p.data.parent).startsWith('g:'), 'pkg parent is a group')
   }
-  // R26 re-pin: coordinates never move between collapse states
+  // R63 (V2.10a) UPDATED: the R26 "coordinates never move between collapse
+  // states" claim is retired on purpose — slots now size to the CURRENT view,
+  // so a tier switch RE-FLOWS. What stays pinned: per-view determinism and the
+  // POSITIVE reflow (shared cards actually move).
+  assert.equal(JSON.stringify(buildView(g, {}).elements), JSON.stringify(collapsed.elements),
+    'the same view builds byte-equal (pure fn of (graph, view))')
   const posOf = (els) => new Map(els.map((e) => [e.data.id, [e.data.x, e.data.y]]))
   const pc = posOf(collapsed.elements)
+  let moved = 0
   for (const el of expanded.elements) {
-    if (!pc.has(el.data.id)) continue
-    assert.deepEqual(pc.get(el.data.id), [el.data.x, el.data.y], `stable coords for ${el.data.id}`)
+    if (el.group !== 'nodes' || !pc.has(el.data.id)) continue
+    const p = pc.get(el.data.id)
+    if (p[0] !== el.data.x || p[1] !== el.data.y) moved++
   }
+  assert.ok(moved > 0, 'tier switch reflows the shared elements (R63 compact layout)')
 })
 
 test('AtlasModel: collapsed zone (collapsedCats) is a shell — zone node stays, children vanish', () => {

@@ -5,9 +5,13 @@
  * fs.readFileSync + vm.runInNewContext with a BARE `{}` sandbox — that is the
  * purity proof: no DOM, no cytoscape, no Date.now, no Math.random available.
  *
- * Every semantic rule from the brief (1-8) is pinned here, with the
- * coordinate-constancy test (R26) as the centerpiece: collapsed vs expanded
- * builds must agree on x/y for every shared element id.
+ * Every semantic rule from the brief (1-8) is pinned here. The coordinate
+ * doctrine was REVISED by user ruling R63 (V2.10a): positions are a pure
+ * function of (graph, view) — the same view double-builds byte-equal, while a
+ * tier/group-state switch is a DELIBERATE reflow (slots size to what the
+ * current view renders instead of pre-allocating the expanded worst case).
+ * The output SHAPE (ids/classes/data fields) stays view-invariant; only the
+ * x/y/w/h numbers become view-dependent.
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -15,6 +19,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
+import { scan, resolveDshHome } from '../lib/scan.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const MODEL_PATH = join(HERE, '..', 'web', 'graph-model.js')
@@ -263,35 +268,65 @@ test('V4-03 expanded view: pkgs/profile render inside groups; kinds and classes 
 })
 
 // =========================================================================
-// R26 — COORDINATE CONSTANCY (the heart of this task)
+// R26 → R63 — COORDINATE PURITY, REVISED (the heart of V2.10a).
+// BASE doctrine: slot pre-allocation on EXPANDED dims ⇒ coordinates never
+// move between views. USER RULING R63 replaces it: slots size to the CURRENT
+// view (collapsed group ⇒ the 132×36 card, expanded ⇒ the grid), so the
+// default view is compact and a tier/group-state switch RE-FLOWS the canvas.
+// The purity contract that remains: positions are a pure function of
+// (graph, view) — the same view double-builds byte-equal; and the output
+// SHAPE (ids, parents, data-field sets, class vocabulary) is view-invariant.
 // =========================================================================
-test('V4-04 R26 coordinate constancy: collapsed vs expanded builds — same ids share x/y', () => {
+test('V4-04 R63 per-view layout: same view byte-equal, switch re-flows, shape invariant', () => {
   const M = loadModel()
   const graph = fixture()
+  // (a) same-view determinism: double build byte-equal for BOTH tiers
+  assert.equal(JSON.stringify(M.buildView(graph, {})), JSON.stringify(M.buildView(graph, {})),
+    'groups-tier build must be byte-reproducible')
+  assert.equal(JSON.stringify(M.buildView(graph, EXPANDED())), JSON.stringify(M.buildView(graph, EXPANDED())),
+    'expanded build must be byte-reproducible')
+
   const collapsed = M.buildView(graph, {})               // all groups collapsed
   const expanded = M.buildView(graph, EXPANDED())        // nothing collapsed
   const ce = elMap(collapsed)
   const ee = elMap(expanded)
+
+  // (b) SHAPE invariant: every collapsed node id exists expanded with the same
+  // parent and the same data-field key set; classes differ only by 'collapsed'.
   for (const e of els(collapsed)) {
     if (e.group !== 'nodes') continue // edges legitimately differ across collapse states
     assert.ok(ee.has(e.data.id), `collapsed element ${e.data.id} must exist in expanded build`)
-    assert.equal(ee.get(e.data.id).data.x, e.data.x, `${e.data.id}.x must not move on expand`)
-    assert.equal(ee.get(e.data.id).data.y, e.data.y, `${e.data.id}.y must not move on expand`)
+    const q = ee.get(e.data.id)
+    assert.equal(q.data.parent, e.data.parent, `${e.data.id}: parent must not change on expand`)
+    assert.deepEqual(plain(Object.keys(e.data)).sort(), plain(Object.keys(q.data)).sort(),
+      `${e.data.id}: data field set must not change on expand`)
+    assert.deepEqual(plain(e.classes.filter((c) => c !== 'collapsed')).sort(),
+      plain(q.classes.filter((c) => c !== 'collapsed')).sort(),
+      `${e.data.id}: class vocabulary must not change on expand`)
   }
-  // every expanded-side node id that exists when collapsed must be checked (superset OK)
-  for (const e of els(expanded)) {
-    if (e.group !== 'nodes' || !ce.has(e.data.id)) continue
-    assert.equal(ce.get(e.data.id).data.x, e.data.x)
-    assert.equal(ce.get(e.data.id).data.y, e.data.y)
-  }
-  // zone shells: geometry is a pure function of the graph, identical across views
+
+  // (c) compactness: every zone shrinks (never grows) when groups collapse —
+  // zones now HUG the cards the view actually shows (the R63 point).
+  let areaC = 0, areaE = 0
   for (const id of kindIds(collapsed, 'zone')) {
-    assert.deepEqual(
-      { w: ce.get(id).data.w, h: ce.get(id).data.h, x: ce.get(id).data.x, y: ce.get(id).data.y },
-      { w: ee.get(id).data.w, h: ee.get(id).data.h, x: ee.get(id).data.x, y: ee.get(id).data.y },
-      `zone ${id} slot must be invariant`,
-    )
+    const c = ce.get(id).data
+    const q = ee.get(id).data
+    assert.ok(c.w <= q.w && c.h <= q.h, `zone ${id} must shrink on collapse (c ${c.w}x${c.h} vs e ${q.w}x${q.h})`)
+    areaC += c.w * c.h
+    areaE += q.w * q.h
   }
+  assert.ok(areaC < areaE, `collapsed zone area (${areaC}) must be strictly below expanded (${areaE})`)
+
+  // (d) REFLOW is POSITIVE: at least one shared positioned element moved.
+  // (This is the accepted cost of compact slots — it REPLACES the old
+  // cross-view x/y constancy assertion, which R63 retired on purpose.)
+  let moved = 0
+  for (const e of els(collapsed)) {
+    if (e.group !== 'nodes') continue
+    const q = ee.get(e.data.id).data
+    if (q.x !== e.data.x || q.y !== e.data.y) moved++
+  }
+  assert.ok(moved > 0, 'tier switch must reposition something (R63 compact layout reflows)')
 })
 
 test('V4-04b R26 filterCats never moves coordinates of surviving elements (rule 5)', () => {
@@ -686,19 +721,26 @@ test('V5-16b I-5 slot flow: multi-row zone — widest row equals the zone conten
   assert.equal(ys.length, 2, 'kernel has two card rows at distinct y')
 })
 
-test('V5-16c I-5 slot flow is collapse-independent (V4 coordinate constancy re-pinned)', () => {
+test('V5-16c R63 slot flow is per-view: invariants hold inside each view and tiers re-flow', () => {
+  // R63 replaces the old "flow is collapse-independent" claim: each view gets
+  // its OWN tight flow (V5-16 asserts re-run per view below), and switching a
+  // tier MOVES the shared cards — the reflow the user accepted for compactness.
   const M = loadModel()
   for (const graph of [fixture(), wideGraph()]) {
+    assertSlotGeometry(M, graph, {}, 'R63 collapsed view', { exactFill: false })
+    assertSlotGeometry(M, graph, EXPANDED(), 'R63 expanded view', { exactFill: false })
     const c = elMap(M.buildView(graph, {}))
     const e = elMap(M.buildView(graph, EXPANDED()))
+    let moved = 0
     for (const id of [...c.keys()]) {
-      if (!e.has(id) || c.get(id).group !== 'nodes') continue
-      assert.deepEqual(
-        { x: c.get(id).data.x, y: c.get(id).data.y },
-        { x: e.get(id).data.x, y: e.get(id).data.y },
-        `${id} moved between collapse states`,
-      )
+      const a = c.get(id), b = e.get(id)
+      if (!b || a.group !== 'nodes') continue
+      if (a.data.x !== b.data.x || a.data.y !== b.data.y) moved++
     }
+    assert.ok(moved > 0, 'the tier switch must reposition shared cards (positive reflow)')
+    // …and each view is still byte-reproducible (pure fn of (graph, view))
+    assert.equal(JSON.stringify(M.buildView(graph, {})), JSON.stringify(M.buildView(graph, {})))
+    assert.equal(JSON.stringify(M.buildView(graph, EXPANDED())), JSON.stringify(M.buildView(graph, EXPANDED())))
   }
 })
 
@@ -800,15 +842,20 @@ test('V29-02 R58 band height = tallest zone: next band top = band top + tallest 
   const L = M.ZONE_LAYOUT
   // Mixed heights: zone 2 — NOT first in its band — grows tall through a
   // 9-member group, so the band advance must key on the tallest zone.
+  // R63 note: tall slots come from EXPANDED sizing, so the battery runs on the
+  // expanded view — the one where a 9-member group outgrows its card neighbors.
+  // (The assertions are relational; they stay retune-proof for either tier.)
   const g = bandGraph(12, 2, 1)
   g.groups[4].packageCount = 9
   for (let k = 0; k < 9; k++) g.nodes.push(node('g2_0#big' + k + '@1.0.0', 'big' + k, 'package', 'official', 'g2_0', 'z2', ['web']))
-  const zones = zoneRects(M.buildView(g, {}))
+  const zones = zoneRects(M.buildView(g, EXPANDED()))
   const bands = bandsOf(zones)
   assert.ok(bands.length >= 2, 'fixture must wrap to test the band advance')
   const tallBand = bands.find((b) => b.some((z) => z.id === 'cat:z2'))
   assert.ok(tallBand.length > 1 && tallBand[0].id !== 'cat:z2',
     'the tall zone sits mid-band (first position would let the leading height pass by accident)')
+  assert.ok(Math.max(...tallBand.map((z) => z.h)) > tallBand[0].h,
+    'the mid-band zone really is taller than the band head (the fixture premise)')
   for (let i = 0; i < bands.length; i++) {
     const tops = new Set(bands[i].map((z) => bandTopOf(z)))
     assert.equal(tops.size, 1, `band ${i} zones share ONE top edge (got ${[...tops]}) — the flow tops-aligns, it never centers`)
@@ -835,28 +882,48 @@ test('V29-04 R58 a zone wider than BAND_W still lands (first in its band) — ne
   const M = loadModel()
   const L = M.ZONE_LAYOUT
   const g = bandGraph(3, 2, 1)
-  // 1100 members ⇒ ceil(sqrt)=34 cols ⇒ gridW 34*46+33*12 = 1960 ⇒ zone w 2016 > BAND_W
+  // 1100 members ⇒ ceil(sqrt)=34 cols ⇒ gridW 34*46+33*12 = 1960 ⇒ zone w 2016 > BAND_W.
+  // R63: oversized slots are an EXPANDED-view fact (a collapsed slot is a card),
+  // so this battery rides the expanded tier — where an oversized zone still occurs.
   g.groups[0].packageCount = 1100
   for (let k = 0; k < 1100; k++) g.nodes.push(node('wide' + k + '@1.0.0', 'w' + k, 'package', 'official', 'g0_0', 'z0', ['web']))
-  const zones = zoneRects(M.buildView(g, {}))
+  const zones = zoneRects(M.buildView(g, EXPANDED()))
   assert.equal(zones.length, 3, 'the oversized zone renders like any other')
   const wide = zones.find((z) => z.id === 'cat:z0')
   assert.ok(wide.w > L.BAND_W, `fixture must produce a zone wider than BAND_W (got ${wide.w})`)
   assert.equal(wide.x, wide.w / 2, 'it takes the head of its band at x=0 (greedy flow never leaves it unplaced)')
   const bands = bandsOf(zones)
   assert.equal(bands[0].length, 1, 'nothing squeezes in beside it — the rest start a fresh band')
-  assertFiniteAll(M.buildView(g, {}), 'oversized zone')
+  assertFiniteAll(M.buildView(g, EXPANDED()), 'oversized zone')
 })
 
-test('V29-05 R58 the band flow is deterministic and view-independent (double build byte-equal)', () => {
+test('V29-05 R58 band flow: per-view deterministic, re-flows on tier, never re-packs on filters', () => {
   const M = loadModel()
   const g1 = bandGraph(7, 2, 1)
   const g2 = bandGraph(7, 2, 1)
   const a = JSON.stringify(M.buildView(g1, {}))
   const b = JSON.stringify(M.buildView(g2, {}))
   assert.equal(a, b, 'two builds over equal inputs must be byte-identical')
-  assert.deepEqual(zoneRects(M.buildView(g1, EXPANDED())), zoneRects(M.buildView(g1, {})),
-    'the band flow reads EXPANDED slot dims only — expanding groups changes WHICH elements render, never a zone rect')
+  assert.equal(JSON.stringify(M.buildView(g1, EXPANDED())), JSON.stringify(M.buildView(g1, EXPANDED())),
+    'the EXPANDED view is equally deterministic (R63: purity holds per view)')
+  // R63 UPDATED: the band flow reads CURRENT-VIEW slot dims (was: EXPANDED dims
+  // for every view) — zones legitimately grow when groups expand. Positive
+  // reflow claim: every expanded zone is taller than its collapsed twin, while
+  // each band stays a tight, top-aligned flow under either view.
+  const cz = zoneRects(M.buildView(g1, {}))
+  const ez = zoneRects(M.buildView(g1, EXPANDED()))
+  const em = new Map(ez.map((z) => [z.id, z]))
+  for (const z of cz) {
+    const q = em.get(z.id)
+    assert.ok(q && q.h > z.h, `${z.id} expanded zone must be taller (its 1-member slots outgrow the 36 card)`)
+  }
+  for (const band of bandsOf(ez)) {
+    assert.equal(new Set(band.map(bandTopOf)).size, 1, 'band top-aligned under the expanded view too')
+    for (let i = 1; i < band.length; i++) {
+      const gap = (band[i].x - band[i].w / 2) - (band[i - 1].x + band[i - 1].w / 2)
+      assert.equal(gap, M.ZONE_LAYOUT.ZONE_GAP, 'tight adjacency holds in the expanded view too')
+    }
+  }
   const c = zoneRects(M.buildView(g1, {}))
   const d = zoneRects(M.buildView(g1, { filterCats: ['z3'] }))
   const dm = new Map(d.map((z) => [z.id, z]))
@@ -1745,4 +1812,94 @@ test('V24-14 (hardened from review A) packages-mode g: focus renders the pkgsBot
   assert.deepEqual(plain(res.meta.focus),
     { rootKind: 'group', rootId: 'g:gA', depth: 1, members: 5, edges: 4 },
     'meta members count the both-side member too (5 = r1 r2 x y z, 4 = the four root-incident keys)')
+})
+
+// =========================================================================
+// Task V2.10a (R63) — COMPACT PER-VIEW SLOT SIZING replaces the expanded-dim
+// pre-allocation. Slot dims read the view inputs that ALREADY EXISTED
+// (granularity :291, collapsedGroups via groupCollapsed :468, and which focus
+// renders packages) — no new view fields. The zone flow and the R58 band flow
+// are untouched algorithms consuming different slot numbers; pathSets and
+// groupFocusSets are byte-unchanged.
+// =========================================================================
+
+test('V210-01 R63 per-group expanded state sizes slots at groups tier (mixed zone heights)', () => {
+  const M = loadModel()
+  const L = M.ZONE_LAYOUT
+  const res = M.buildView(fixture(), { collapsedGroups: new Set(['llm', 'plugin', 'profiles', 'broken', 'fs', 'tools']) })
+  const m = elMap(res)
+  // kernel: bundle/util NOT in collapsedGroups → expanded AT GROUP TIER (grid slot,
+  // 1 member ⇒ CELL-tall). tools: collapsed → the slot IS the card.
+  assert.equal(m.get('g:bundle').data.h, L.CELL, 'expanded at groups tier keeps the CELL-tall grid slot')
+  assert.equal(m.get('g:llm').data.h, L.CARD_H, 'collapsed group slot IS the card — no expanded-dim reserve')
+  assert.ok(m.has(A1), 'the expanded group renders its members in place (view semantics, not a new field)')
+  assert.ok(!m.has(P1), 'the collapsed group renders none')
+  assert.equal(m.get('cat:kernel').data.h, L.ZONE_LABEL_H + L.CELL + 2 * L.ZONE_PAD, 'zone height = tallest VIEW slot + label + pad')
+  assert.equal(m.get('cat:tools').data.h, L.ZONE_LABEL_H + L.CARD_H + 2 * L.ZONE_PAD, 'a card-tall zone beside a grid-tall one')
+})
+
+test('V210-02 R63 focus slot universe follows what the focus renders (cards ⇒ compact, packages ⇒ grid)', () => {
+  const M = loadModel()
+  const L = M.ZONE_LAYOUT
+  // g: focus WITHOUT packages:true renders CARDS ⇒ the compact universe, even
+  // though a focus is active (the request decides, never the fallback logic).
+  const gm = elMap(M.buildView(fixture(), { focus: { rootId: 'g:bundle' } }))
+  assert.equal(gm.get('cat:kernel').data.h, L.ZONE_LABEL_H + L.CARD_H + 2 * L.ZONE_PAD,
+    'card focus rides the compact universe (default-collapsed view)')
+  // Package-root focus RENDERS PACKAGES ⇒ grid slots — this is what keeps the
+  // V22-13/V24-07 byte-equality with the granularity:packages universe.
+  const fm = elMap(M.buildView(fixture(), { focus: { rootId: A1, depth: null } }))
+  assert.equal(fm.get('g:llm').data.h, 46, 'member-carrying focus keeps the expanded slot dims')
+  // And the requested-but-unapplied focus (unknown root) keeps its grid universe
+  // byte-identical to the all-expanded base — the V22-15 fallback property.
+  const fb = M.buildView(fixture(), Object.assign(EXPANDED(), { focus: { rootId: 'nope@9.9.9', depth: null } }))
+  assert.equal(JSON.stringify(fb.elements), JSON.stringify(M.buildView(fixture(), EXPANDED()).elements),
+    'a starved grid focus falls back to the base view of the same (expanded) universe')
+  assert.equal(fb.meta.focus, null, 'the request that did not apply is still recorded null')
+})
+
+test('V210-03 R63 REAL 13-zone data guard: the compact groups view packs the card grid tight', async (t) => {
+  let graph
+  try {
+    graph = await scan({ dshHome: resolveDshHome() })
+  } catch (err) {
+    t.skip('no scannable ~/.dsh on this machine: ' + (err && err.message))
+    return
+  }
+  const M = loadModel()
+  const L = M.ZONE_LAYOUT
+  const res = M.buildView(graph, {}) // THE default groups-tier view
+  assert.equal(JSON.stringify(res), JSON.stringify(M.buildView(graph, {})),
+    'same-view determinism on REAL data: two builds byte-equal')
+  const zones = nodeEls(res).filter((e) => e.data.kind === 'zone')
+  const cards = nodeEls(res).filter((e) => e.data.kind === 'group')
+  if (zones.length < 13) {
+    t.skip(`real home currently renders ${zones.length} zones (< 13) — fill thresholds calibrated on the 13-zone shape`)
+    return
+  }
+  assert.ok(cards.length >= 20, 'the guard needs a real spread of cards, got ' + cards.length)
+  const zoneArea = zones.reduce((a, z) => a + z.data.w * z.data.h, 0)
+  const cardArea = cards.reduce((a, c) => a + c.data.w * c.data.h, 0)
+  // Diagnosis-probe fill (cards-sum / zone-rect-sum): measured 12.9% on the old
+  // expanded-dim pre-allocation, 31.6% compact. The constants are FROZEN this
+  // task and ZONE_PAD(28)+LABEL_H(30) eat a 36px row proportionally, so the
+  // floor here is the honest 25 — the real table ships in the V2.10 report.
+  const fill = (100 * cardArea) / zoneArea
+  assert.ok(fill >= 25, `global card fill on real data = ${fill.toFixed(1)}% (probe: 31.6; pre-R63: 12.9)`)
+  // The ≥55% target, on the SLOT AREA the cards actually flow into (zone box
+  // minus label strip + padding): how tight the CARD GRID itself is (probe: 75.5%).
+  const slotArea = zones.reduce((a, z) =>
+    a + (z.data.w - 2 * L.ZONE_PAD) * (z.data.h - L.ZONE_LABEL_H - 2 * L.ZONE_PAD), 0)
+  const slotFill = (100 * cardArea) / slotArea
+  assert.ok(slotFill >= 55, `cards/slot-area fill on real data = ${slotFill.toFixed(1)}% (target ≥55)`)
+  // Compactness bound: a compact zone is exactly its card flow + pad — never a
+  // reserved column. (contentW ≤ FLOW_W is the flow's own invariant.)
+  for (const z of zones) {
+    assert.ok(z.data.w - 2 * L.ZONE_PAD <= L.FLOW_W, `${z.data.id}: content ${z.data.w - 2 * L.ZONE_PAD} exceeds FLOW_W`)
+  }
+  // And the compact tier is DRAMATICALLY smaller than the expanded tier it
+  // replaced (measured: 767k vs 1873k on the 13-zone home — < 45%).
+  const ez = nodeEls(M.buildView(graph, EXPANDED())).filter((e) => e.data.kind === 'zone')
+  const ezArea = ez.reduce((a, z) => a + z.data.w * z.data.h, 0)
+  assert.ok(zoneArea < 0.5 * ezArea, `groups-tier zone area ${zoneArea} should be under half the expanded ${ezArea}`)
 })

@@ -972,7 +972,9 @@ test('V2.8 R57 case 3: the zone shell ignores the dismiss-pair but answers a tru
 // own node-drag interaction, which fires the app's registered 'dragfree'
 // handler. Positions are then read back off the real elements across structural
 // repaints — the model slot for a never-dragged element is captured from the
-// untouched pipeline BEFORE any drag (R26: slots are view-independent).
+// untouched pipeline BEFORE any drag (R63: slots are PER-VIEW — each REF is
+// captured in, and compared inside, the same view; see the R63 test below for
+// the tier-switch case, where the reflow itself is under test).
 // =========================================================================
 
 /** Drag from a RENDERED point: press, MOVE, release (a dist-driven gesture). */
@@ -1121,6 +1123,61 @@ test('R59 4: a dragged ZONE moves its subtree and every moved element records it
     GRAPH.nodes = GRAPH_COPY.nodes
     GRAPH.edges = GRAPH_COPY.edges
   }
+})
+
+test('R63: an id-keyed drag override survives the tier-switch REFLOW and re-applies where the element is a leaf', async () => {
+  // R63 makes model slots a pure fn of (graph, view): a tier switch RE-FLOWS
+  // every card onto the current view's slot. The app's dragged map is id-keyed
+  // (state.dragged[id]) and applies AT PAINT (dragged[id] ?? model slot), so a
+  // dragged id SURVIVES the reflow — it is keyed by id, never by slot.
+  //
+  // Honest scope note (report §drag): while the dragged element renders as a
+  // LEAF (a collapsed card in the groups tier), cytoscape honours the override
+  // position exactly. The moment it EXPANDS into a compound parent, cytoscape's
+  // own re-centering re-anchors the parent on its children — a pre-existing
+  // V2.9a render-layer behavior (verified: it also re-centers in BASE), NOT an
+  // R63 change and not the model's doing (paint still passes dragged ?? slot;
+  // the dist moves it after add). That is V2.10b parent-frame territory. So we
+  // pin the id-keyed survival (map persists across both switches) and the
+  // paint-level re-apply in the tier where the element is a leaf (groups tier),
+  // plus the never-dragged card's reflow round-trip (per-view determinism).
+  await sleep(300)
+  fire(doc.getElementById('arrange-view'), 'click') // clear any override left by the prior test before booting refs
+  await sleep(350)
+  fire(doc.getElementById('retry'), 'click') // the real freshView boot: cold groups tier, all collapsed
+  await sleep(250)
+  assert.equal(S().view.granularity, 'groups', 'cold boot rides the default tier')
+  assert.deepEqual(dragKeys(), [], 'the board starts with an empty override map')
+  const REF = { fs: posOf('g:fs'), db: posOf('g:db') } // groups-tier model slots (both are LEAF cards)
+  assert.ok(REF.fs && REF.db, 'both tools cards render at groups tier')
+  dragBy('g:fs', 45, 60)
+  await sleep(120)
+  const rec = S().dragged['g:fs']
+  assert.ok(rec && isFinite(rec.x) && isFinite(rec.y), 'the card drag recorded its release point')
+  assert.deepEqual(dragKeys(), ['g:fs'], 'exactly one override')
+  assert.deepEqual(posOf('g:fs'), { x: rec.x, y: rec.y }, 'while a leaf, the dragged card sits on its override')
+
+  // TIER SWITCH → reflow: a never-dragged card moves off its groups-tier slot,
+  // and the DRAGGED ID's override entry survives untouched (id-keyed, not slot).
+  fire(segP, 'click')
+  await sleep(250)
+  assert.deepEqual(dragKeys(), ['g:fs'], 'the tier switch pruned nothing (all ids still live)')
+  assert.deepEqual(S().dragged['g:fs'], rec, 'R63: the id-keyed override survived the tier-switch reflow verbatim')
+  assert.notDeepEqual(posOf('g:db'), REF.db, 'R63: the never-dragged card really re-flowed off its groups-tier slot')
+
+  // BACK TO GROUPS: g:fs is a leaf card again → paint re-applies the override
+  // onto the re-flowed slot, and the clean card lands on the SAME per-view slot
+  // it left (pure fn of (graph, view)).
+  fire(segG, 'click')
+  await sleep(250)
+  assert.deepEqual(posOf('g:fs'), { x: rec.x, y: rec.y }, 'R63: back as a leaf, paint re-applies the surviving override')
+  assert.deepEqual(posOf('g:db'), REF.db, 'the never-dragged card returns to its exact groups-tier slot')
+
+  // ⌗ is the sanctioned exit: overrides drop, the card lands back on its slot.
+  fire(doc.getElementById('arrange-view'), 'click')
+  await sleep(350)
+  assert.deepEqual(dragKeys(), [], '⌗ cleared the override map')
+  assert.deepEqual(posOf('g:fs'), REF.fs, '…and the card returned to its (per-view) model slot')
 })
 
 test('C1 hygiene: no unhandled rejections, boot warnings clean', () => {

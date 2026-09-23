@@ -9,13 +9,19 @@
 <body>
   <header>
     <h1 data-i18n="title">dsh-pkg-atlas</h1>
-    <span class="grow"></span>
-    <!-- V2.6 R47 顶栏四分区：纯展示层 wrapper，不改任何 id/class 钩子，JS 零改动。
-         ① ⌂ 复位 + ⌗ 自动排布 + 粒度两段 | ② 聚焦控件（面包屑在其中，聚焦时出现，无聚焦不占位）
-         | ③ 大类 chips（行尾 全部显示/全部隐藏 由应用层建在 #zone-chips 内）
-         | ④ 搜索 + 语言 +（主题随 prefers-color-scheme，无控件）+ 重扫。
-         段间 1px 分隔线 + 呼吸间距见 style.css .tb-seg/.tb-div。 -->
-    <div class="tb-seg">
+    <!-- V2.9b R60/R61 顶栏分区重排（v2.6 R47 四分区的信息架构不变，只重排+加段标题）：
+         行1 [聚焦段(条件出现,段首)] [视图: ⌂ ⌗ 组级|包级] [筛选: 类型▾ Profile▾ 边类型☑×5 真实跨包线☐]
+             [工具(右对齐): 搜索 EN 重扫] #meta；行2 [分区: chips 全排 + 全部显示/全部隐藏]。
+         每段左端一枚 10px 段标题（data-i18n cap*，zh/en 双语齐）；结构=纯 wrapper div + CSS，
+         零 JS 钩子改动（守卫：header id 多重集 == BASE 68b063a + 控件归属段断言）。
+         边类型 label 挂 data-swatch，::before 色块取应用层 styleFor 的边色常量（守卫钉相等）；
+         无聚焦时 :has 把聚焦段整体收起不占位；.tb-div 段间分隔线保留。 -->
+    <div class="tb-seg tb-div tb-focus">
+      <span class="tb-cap" data-i18n="capFocus"></span>
+      <span id="focus-ctl" hidden><button id="path-back" hidden></button><span data-i18n="focusLabel">聚焦深度</span><select id="focus-depth"><option value="0" data-i18n="focusUnlimited" selected>不限</option><option value="1">1</option><option value="2">2</option><option value="3">3</option></select><button id="focus-clear" data-i18n="focusOff">退出依赖图</button></span>
+    </div>
+    <div class="tb-seg tb-div tb-view">
+      <span class="tb-cap" data-i18n="capView"></span>
       <button id="reset-view" data-i18n-title="menuResetView">⌂</button>
       <!-- V2.9a R59: ⌗ 自动排布 — drop every drag override and glide back to the
            model's band layout. Same command surface as the canvas right-click. -->
@@ -25,27 +31,29 @@
         <button data-seg="packages" data-i18n="lodPkgs">包级</button>
       </span>
     </div>
-    <label class="ctl"><span data-i18n="scopeLabel">类型</span><select id="scope-filter"></select></label>
-    <label class="ctl"><span data-i18n="profileLabel">Profile</span><select id="profile-filter"></select></label>
-    <span id="edge-kinds" class="chips" data-i18n-title="edgeKindsLabel">
-      <label><input type="checkbox" data-kind="dep" checked>dep</label>
-      <label><input type="checkbox" data-kind="mount" checked>mount</label>
-      <label><input type="checkbox" data-kind="peer" checked>peer</label>
-      <label><input type="checkbox" data-kind="peer-optional" checked>peer-opt</label>
-    </span>
-    <label class="ctl"><input id="show-real-cross" type="checkbox"><span data-i18n="realCrossLabel">真实跨包线</span></label>
-    <div class="tb-seg tb-div">
-      <span id="focus-ctl" hidden><button id="path-back" hidden></button><span data-i18n="focusLabel">聚焦深度</span><select id="focus-depth"><option value="0" data-i18n="focusUnlimited" selected>不限</option><option value="1">1</option><option value="2">2</option><option value="3">3</option></select><button id="focus-clear" data-i18n="focusOff">退出依赖图</button></span>
+    <div class="tb-seg tb-div tb-filter">
+      <span class="tb-cap" data-i18n="capFilter"></span>
+      <label class="ctl"><span data-i18n="scopeLabel">类型</span><select id="scope-filter"></select></label>
+      <label class="ctl"><span data-i18n="profileLabel">Profile</span><select id="profile-filter"></select></label>
+      <span id="edge-kinds" class="chips" data-i18n-title="edgeKindsLabel">
+        <label data-swatch="dep"><input type="checkbox" data-kind="dep" checked>dep</label>
+        <label data-swatch="mount"><input type="checkbox" data-kind="mount" checked>mount</label>
+        <label data-swatch="peer"><input type="checkbox" data-kind="peer" checked>peer</label>
+        <label data-swatch="peer-optional"><input type="checkbox" data-kind="peer-optional" checked>peer-opt</label>
+      </span>
+      <label class="ctl"><input id="show-real-cross" type="checkbox"><span data-i18n="realCrossLabel">真实跨包线</span></label>
     </div>
-    <div class="tb-seg tb-div">
-      <span id="zone-chips" class="chips"></span>
-    </div>
-    <div class="tb-seg tb-div">
+    <div class="tb-seg tb-div tb-tools">
+      <span class="tb-cap" data-i18n="capTools"></span>
       <input id="search" type="search" data-i18n-ph="search" autocomplete="off">
       <button id="lang-btn" data-i18n="langSwitch">EN</button>
       <button id="refresh" data-i18n="refresh"></button>
     </div>
     <span id="meta"></span>
+    <div class="tb-seg tb-zones">
+      <span class="tb-cap" data-i18n="capZones"></span>
+      <span id="zone-chips" class="chips"></span>
+    </div>
   </header>
   <div id="progress-bar" hidden>
     <div class="progress-track"><div class="progress-fill"></div></div>

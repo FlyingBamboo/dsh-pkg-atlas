@@ -84,7 +84,9 @@
       menuCollapseZone: '折叠该区', menuExpandZone: '展开该区',
       menuPkgPath: '依赖图', menuResetView: '复位视图', menuExitFocus: '退出聚焦',
       // V2.9a R59: ⌗ 自动排布 — the header button (title) and its menu twin
-      arrange: '自动排布（清除拖动，回到模型网格）', menuArrange: '自动排布' },
+      arrange: '自动排布（清除拖动，回到模型网格）', menuArrange: '自动排布',
+      // V2.9b R60: 顶栏段标题（上款小字，每段左端）
+      capView: '视图', capFilter: '筛选', capZones: '分区', capTools: '工具', capFocus: '聚焦' },
     en: { title: 'DSH Package Atlas', search: 'search packages…', refresh: 'rescan', retry: 'retry',
       loadFail: 'failed to load graph', warnings: 'data warnings', noDescription: '(no description)',
       langSwitch: '中文',
@@ -123,7 +125,9 @@
       menuCollapseZone: 'collapse zone', menuExpandZone: 'expand zone',
       menuPkgPath: 'dependency graph', menuResetView: 'reset view', menuExitFocus: 'exit focus',
       // V2.9a R59: ⌗ auto-arrange — the header button (title) and its menu twin
-      arrange: 'auto-arrange (drop the drags, back to the model grid)', menuArrange: 'auto-arrange' },
+      arrange: 'auto-arrange (drop the drags, back to the model grid)', menuArrange: 'auto-arrange',
+      // V2.9b R60: header segment captions (the small "上款" at each segment head)
+      capView: 'View', capFilter: 'Filter', capZones: 'Zones', capTools: 'Tools', capFocus: 'Focus' },
   }
   var lang = (navigator.language || 'zh').toLowerCase().indexOf('zh') === 0 ? 'zh' : 'en'
   function t(k) { return (I18N[state.lang] && I18N[state.lang][k]) || k }
@@ -2060,6 +2064,14 @@
     d.appendChild(k); d.appendChild(v); box.appendChild(d); return d
   }
   function secTitle(box, text) { var s = document.createElement('div'); s.className = 'sec'; escText(s, text); box.appendChild(s); return s }
+  // V2.9b R62: 面板区域化 — every CONTENT region (kv / members / related / the
+  // path lists / README / description) is painted into one tinted .card wrapper
+  // (style.css owns the wash + the recomputed-AA grounds; the guard recomputes
+  // every text-vs-composite pair). The panel HEAD (crumbs + h2 + badges) and
+  // the control row (.btns) are NOT content and stay unwrapped. Conditional
+  // sections render into a DETACHED card and only attach it when it got
+  // children — an empty wash never shows, and no removeChild dance is needed.
+  function regionCard() { var c = document.createElement('div'); c.className = 'card'; return c }
   function jumpButton(box, label, onClick) {
     var b = document.createElement('button'); b.className = 'jump'
     escText(b, label)
@@ -2177,11 +2189,17 @@
   }
   // The panel header h2 — the single home of the level chip, the V2.8 scope
   // badge and the hoisted version. Reads BOTH fake-DOM shapes (tag/tagName).
+  // V2.9b R62: the content renderers now receive a detached .card wrapper —
+  // when that is the box, the h2 lives one level up, so walk a short parent
+  // chain (bounded: the card has no parent before attach, and #details has no
+  // second H2 above it).
   function h2Of(box) {
-    var kids = box.children || []
-    for (var i = 0; i < kids.length; i++) {
-      var k = kids[i]
-      if (k && (k.tagName === 'H2' || k.tag === 'h2')) return k
+    for (var lvl = 0; lvl < 3 && box; lvl++, box = box.parentNode) {
+      var kids = box.children || []
+      for (var i = 0; i < kids.length; i++) {
+        var k = kids[i]
+        if (k && (k.tagName === 'H2' || k.tag === 'h2')) return k
+      }
     }
     return null
   }
@@ -2292,10 +2310,17 @@
     var groups = []
     state.groupIds.forEach(function (gid) { if (state.groupZone.get(gid) === cid) groups.push(gid) })
     groups.sort()
+    // V2.9b R62: 区域化 — the 组N kv row is the info card, the group sections
+    // ride the members card (attached FIRST so the scope badge's h2Of can walk
+    // up from the card to the panel header, and so DOM order is the read order).
+    var info = regionCard()
+    box.appendChild(info)
     // R56.3: the 组 N count is a structural count — the value span takes .cnt.
-    var grow = kvRow(box, t('groupsLabel'), groups.length)
+    var grow = kvRow(info, t('groupsLabel'), groups.length)
     grow.children[1].className = 'cnt'
-    zoneGroupSections(box, groups)
+    var members = regionCard()
+    box.appendChild(members)
+    zoneGroupSections(members, groups)
   }
   function zoneGroupSections(box, groups) {
     var shown = 0
@@ -2351,11 +2376,19 @@
     // V2.3: the retired hand-rolled member loop (name-only rows, 100-cap, no
     // scope/kind/unsat/broken signal) is now the shared memberSection — the same
     // rows a zone shows, filtered to this group.
-    memberSection(box, { kind: 'group', id: gid })
+    // V2.9b R62: rendered INTO the members card (attached before filling, so
+    // memberSection's scope-badge/version-hoist still find the panel h2 above).
+    var memberCard = regionCard()
+    box.appendChild(memberCard)
+    memberSection(memberCard, { kind: 'group', id: gid })
     // V2.4b: the 相关组/相关包 section belongs to the CURRENT GROUP FOCUS ROOT
     // only — a neighbor card's details show its own members, and walking there
     // makes ITS neighborhood the one the canvas highlights and this panel lists.
-    if (state.focus && String(state.focus.rootId) === 'g:' + gid) relatedSection(box, 'g:' + gid)
+    if (state.focus && String(state.focus.rootId) === 'g:' + gid) {
+      var relCard = regionCard()
+      box.appendChild(relCard)
+      relatedSection(relCard, 'g:' + gid)
+    }
   }
 
   // ---------- V2.4b group-focus related-neighborhood rows ----------
@@ -2422,24 +2455,37 @@
     escText(badge, String(n.kind) + (n.scope ? ' · ' + n.scope : ''))
     crumbs.appendChild(badge)
     box.appendChild(crumbs)
-    if (n.version && n.version !== '-') kvRow(box, 'v', n.version)
-    if (n.path) { var p = document.createElement('div'); p.className = 'path'; escText(p, n.path); box.appendChild(p) }
+    // V2.9b R62: 区域化 — every content region below gets its own card (see
+    // regionCard()). Conditional regions paint into a DETACHED card and only
+    // attach when non-empty; the .btns control row stays card-free chrome.
+    var info = regionCard()
+    if (n.version && n.version !== '-') kvRow(info, 'v', n.version)
+    if (n.path) { var p = document.createElement('div'); p.className = 'path'; escText(p, n.path); info.appendChild(p) }
+    if (n.flags && n.flags.unreadable) kvRow(info, 'flags', 'unreadable')
+    if (info.children.length) box.appendChild(info)
+    var descCard = regionCard()
+    box.appendChild(descCard)
     var desc = document.createElement('div'); desc.className = 'desc'
     escText(desc, n.description || t('noDescription'))
-    box.appendChild(desc)
-    if (n.flags && n.flags.unreadable) kvRow(box, 'flags', 'unreadable')
+    descCard.appendChild(desc)
 
     // R35: the two path lists replace the old 挂载方 block and the kind-grouped
     // deps/dependents counts — they carry everything those did (mounted-by is the
     // `mount` row of the up list) plus the whole transitive chain.
     var lists = buildPathLists(AtlasModel.pathSets(state.graph, n.id, null), state.graph, state.byId)
-    pathListSection(box, t('pathDownLabel'), lists.down)
-    pathListSection(box, t('pathUpLabel'), lists.up)
+    var downCard = regionCard(); box.appendChild(downCard)
+    pathListSection(downCard, t('pathDownLabel'), lists.down)
+    var upCard = regionCard(); box.appendChild(upCard)
+    pathListSection(upCard, t('pathUpLabel'), lists.up)
     // `mount` is not a DOWN path kind (R35: X→mount→Y means Y's path runs UP to
     // X), so what THIS node mounts is invisible to both lists. It is the app's
     // headline question (「dsh-base 到底把哪些包挂载进来」), so it keeps its own
     // section — rows of the same shape, built straight off the mount out-edges.
-    mountOutSection(box, n.id)
+    // R62: the renderer paints into a detached card; an EMPTY section (no mount
+    // out-edges — the common case) never attaches its wash.
+    var mountCard = regionCard()
+    mountOutSection(mountCard, n.id)
+    if (mountCard.children.length) box.appendChild(mountCard)
 
     // profile nodes: declared deps + bundle surface (graph.profiles entry)
     if (n.kind === 'profile') {
@@ -2450,9 +2496,10 @@
         var deps = prof.dependencies && typeof prof.dependencies === 'object' ? prof.dependencies : {}
         var names = Object.keys(deps)
         if (names.length) {
-          secTitle(box, t('declaredDepsLabel'))
+          var depCard = regionCard(); box.appendChild(depCard)
+          secTitle(depCard, t('declaredDepsLabel'))
           names.forEach(function (dn) {
-            jumpButton(box, dn + ' ' + String(deps[dn]), function () {
+            jumpButton(depCard, dn + ' ' + String(deps[dn]), function () {
               var target = nodeByName(dn)
               if (target) revealNode(target)
             })
@@ -2460,9 +2507,10 @@
         }
         var bundles = Array.isArray(prof.bundles) ? prof.bundles : []
         if (bundles.length) {
-          secTitle(box, t('bundleSurfaceLabel'))
+          var bundleCard = regionCard(); box.appendChild(bundleCard)
+          secTitle(bundleCard, t('bundleSurfaceLabel'))
           bundles.forEach(function (bn) {
-            jumpButton(box, String(bn), function () {
+            jumpButton(bundleCard, String(bn), function () {
               var target = nodeByName(String(bn))
               if (target) revealNode(target)
             })
@@ -2482,6 +2530,7 @@
     // response after the selection moved on)
     if (n.kind === 'package') {
       var holder = document.createElement('div')
+      holder.className = 'card' // R62: the holder IS the card (its async payload never lands loose)
       box.appendChild(holder)
       fetch(PREFIX + '/api/readme?id=' + encodeURIComponent(n.id)).then(function (res) { return res.ok ? res.text() : null })
         .then(function (text) {

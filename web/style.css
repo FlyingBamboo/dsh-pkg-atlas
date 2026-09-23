@@ -3,17 +3,34 @@
 body { margin: 0; font: 13px/1.5 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; display: flex; flex-direction: column; height: 100vh; }
 header { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 8px 12px; border-bottom: 1px solid #8884; position: sticky; top: 0; background: light-dark(#f7f8fa, #12161b); z-index: 3; }
 header h1 { font-size: 15px; margin: 0; }
-header .grow { flex: 1; }
 header label { white-space: nowrap; }
 header label.ctl { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; }
-/* V2.6 R47: 顶栏四分区（纯展示层）——① ⌂+粒度 ② 聚焦控件 ③ chips ④ 搜索+语言+重扫。
-   段 = inline-flex 容器；.tb-div 给段间 1px 分隔线 + 呼吸间距；header 的 flex-wrap
-   让窄屏下 chips 段整体换行（段内控件再按各自 wrap 折行）。JS 钩子零改动。 */
+/* V2.6 R47 → V2.9b R60: 顶栏分段（纯展示层）——段 = inline-flex 容器，.tb-div
+   段间 1px 分隔线 + 呼吸间距，header 的 flex-wrap 让窄屏整体折行。JS 钩子零改动。 */
 .tb-seg { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .tb-seg.tb-div { border-left: 1px solid #8884; padding-left: 14px; }
-/* 无聚焦 ⇒ #focus-ctl 隐藏 ⇒ ② 段是空的：分隔线跟着内容一起消失，
-   否则 1px 线会孤悬。:has 是 2023+ 基线，不支持时最坏多一根细线，无害降级。 */
-.tb-seg:has(> #focus-ctl[hidden]) { border-left: 0; padding-left: 0; }
+/* V2.9b R60/R61 顶栏段标题 + 信息型文字（色彩=类型，沿用面板词汇；零新增色值——
+   守卫把 V2.8 色板扫描扩到本段）。R60：段标题=上款小字；.tb-tools 右对齐（auto
+   margin）；.tb-zones flex-basis:100% ⇒ 分区段独占第二行；无聚焦 ⇒ 聚焦段（含
+   标题与分隔线）整体收起，不占位——:has 是 2023+ 基线，不支持时最坏多一根细线。
+   R61：控件标签=11px 次级灰蓝（opacity .62 —— 与 #details .ver 同族"TREATMENT"，
+   是继承墨的不透明度，不是新色）；⌂⌗ 14px 主色（主色=继承墨）；chip 名 12px、
+   排除态点灰用 filter（点色是 app.js 内联的面板常量，CSS 只能灰度化它）；
+   边类型行首色块 = styleFor 画该边种的同款色（守卫钉 CSS↔JS 双主题相等）。 */
+.tb-cap { font-size: 10px; font-weight: 600; letter-spacing: .08em; opacity: .55; }
+.tb-tools { margin-left: auto; }
+.tb-zones { flex-basis: 100%; }
+.tb-seg:has(> #focus-ctl[hidden]) { display: none; }
+#reset-view, #arrange-view { font-size: 14px; color: inherit; }
+header label.ctl > span, #focus-ctl > span, #edge-kinds label { font-size: 11px; opacity: .62; }
+.chip .n { font-size: 12px; }
+.chip.off .dot { filter: grayscale(1); }
+#edge-kinds label { display: inline-flex; align-items: center; gap: 4px; }
+#edge-kinds label::before { content: ""; flex: 0 0 10px; height: 3px; border-radius: 1px; }
+#edge-kinds label[data-swatch="dep"]::before { background: light-dark(#9aa7b4, #44505e); }
+#edge-kinds label[data-swatch="mount"]::before { background: light-dark(#3f9d6d, #57b98a); }
+#edge-kinds label[data-swatch="peer"]::before { background: light-dark(#4c7fb8, #6da3d8); }
+#edge-kinds label[data-swatch="peer-optional"]::before { background: light-dark(#9dc1e8, #3f5a74); }
 input[type=search] { width: 220px; padding: 4px 8px; }
 button { padding: 3px 10px; }
 select { font-size: 11px; }
@@ -84,7 +101,7 @@ header .chips { display: inline-flex; gap: 6px; flex-wrap: wrap; align-items: ce
 .chip .dot { width: 9px; height: 9px; border-radius: 50%; }
 .chip.off { opacity: .38; }
 .chip.off .n { text-decoration: line-through; }
-#edge-kinds label { font-size: 11px; }
+/* R61: the edge-kind voice (11px/.62) and its 行首色块 ship in the V2.9b header block above. */
 /* V2.3 granularity segment (组级 | 包级 — two states, the auto tier is gone) and
    the active-segment mark. The shell/selector names survive from V22b (#lod-ctl,
    .on) so the control keeps one identity across the change. */
@@ -213,6 +230,24 @@ header .chips { display: inline-flex; gap: 6px; flex-wrap: wrap; align-items: ce
 /* V2.8-fix M1: both live in the panel h2, where the UA title bold would bleed
    into them — every other .ver/.badge voice in the panel is normal weight. */
 #details h2 .gver, #details .badge.scope { font-weight: 400; }
+/* V2.9b R62 面板区域化：内容区（kv / 成员包 / 相关 / 依赖·被依赖 / README / 描述）
+   各装一枚淡底圆角卡（#888 系淡染，仓库既有 alpha-chrome 族；圆角 8 / 内边距 8 /
+   卡间距 8）。面板头（crumbs+h2+徽章）与 .btns 控制行不入卡。
+   AA 连坐：染底改写了卡内文字的"实际地面"——alpha 合成 (tint over panel) 后
+   全表重算（test/render-smoke.test.mjs 的 R62 合成底 AA 守卫按 CSS 解析重跑，
+   不许硬编码地面值）。#8881（alpha 1/15）是保持全部受门控对 ≥4.5 的那一档：
+   更浓一档 #8883 会把 light 侧琥珀压到 3.98、把 .55 段标题压到 4.48 —— 出局；
+   #8882 也让琥珀到 4.26。最低受门对 = 4.56（light 琥珀）。
+   告警红（.unsat/.brk #d0433f）在 BASE 裸底即已 sub-AA（4.49/3.98），系出厂既有、
+   且属禁改的 shipped 文字色，不在本次 AA 门内（守卫如实钉住该事实，并钉住本档
+   染底未把它进一步压垮）。hover 底同理（瞬态、BASE 已 sub-AA），静态底为门。 */
+#details .card { background: #8881; border-radius: 8px; padding: 8px; }
+#details .card + .card { margin-top: 8px; }
+#details .card .sec:first-child { margin-top: 0; }
+/* R62: 成员卡内组间 1px 细线（#8883 族），替代纯缩进——骑 COMPOUND 选择器
+   (.gmem+.jump.ghead, 1,3,0)：V2.8-fix I-1 的教训，简单形式与后面的 #details
+   .jump 打平、靠源码序续命，脆。 */
+#details .gmem + .jump.ghead { border-top: 1px solid #8883; margin-top: 6px; padding-top: 5px; }
 /* V2.6-fix (M2): no top/left here on purpose — positionSearchBox() anchors the
    popover on the search input's own getBoundingClientRect, and it can only do
    that against viewport space, so the box is position:fixed. The pair this rule

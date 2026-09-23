@@ -865,6 +865,20 @@ function allText(el) {
   return s
 }
 
+/**
+ * V2.9b R62: the panel box's CONTENT children — the .card wrappers expanded one
+ * level, everything else passed through. The row-shape guards below keep their
+ * exact teeth; only the ADDRESS moved (doctrine unchanged: scalars, never trees).
+ */
+function flatKids(box) {
+  const out = []
+  for (const c of box.children || []) {
+    if (String(c.className).split(' ').includes('card')) out.push(...(c.children || []))
+    else out.push(c)
+  }
+  return out
+}
+
 /** deepFreeze recursively — a pure helper that writes into graph/view now THROWS. */
 function deepFreeze(x) {
   if (x && typeof x === 'object' && !Object.isFrozen(x)) {
@@ -3314,7 +3328,7 @@ test('V2.3/R51 member rows: the ZONE detail groups them by GROUP, and the shared
   assert.match(zone, /ZONE_GROUP_CAP/, 'each section caps at ZONE_GROUP_CAP member rows')
   assert.match(zone, /groupMoreLabel/, 'a cut section tails with 还有 N')
   assert.doesNotMatch(zone, /memberSection/, 'the flat zone member section is retired (group keeps its own)')
-  assert.match(grp, /memberSection\(box, \{ kind: 'group', id: gid \}\)/, 'group detail = its own member packages')
+  assert.match(grp, /memberSection\(memberCard, \{ kind: 'group', id: gid \}\)/, 'group detail = its own member packages (V2.9b R62: rendered INTO the members card — same shared builder)')
   assert.doesNotMatch(zone, /jumpButton/, 'the old group-name jump list is gone (one member surface, not two)')
   assert.doesNotMatch(grp, /kvRow\(box, t\(\x27membersLabel\x27\)/,
     'no duplicate count row — the 成员包（N） header IS the member count (V2.3)')
@@ -4081,8 +4095,8 @@ test('V24b wiring guards: assembled view in paint, group-focus fit guard, focus 
   assert.match(src, /if \(state\.focus && isGroupRootId\(state\.focus\.rootId\)\) state\.focus = groupFocusShape\(state\.focus\.rootId\)/,
     'a tier switch re-derives a live group focus (packages flag vs granularity, never a stale shape)')
   const grp = src.slice(src.indexOf('function detailsGroup(box, gid) {'), src.indexOf('function detailsEdge(box, id) {'))
-  assert.match(grp, /if \(state\.focus && String\(state\.focus\.rootId\) === 'g:' \+ gid\) relatedSection\(box, 'g:' \+ gid\)/,
-    'the 相关组/相关包 section rides the ROOT group card only (the walk target shows ITS own neighborhood)')
+  assert.match(grp, /if \(state\.focus && String\(state\.focus\.rootId\) === 'g:' \+ gid\)[\s\S]{0,160}?relatedSection\(relCard, 'g:' \+ gid\)/,
+    'the 相关组/相关包 section rides the ROOT group card only (the walk target shows ITS own neighborhood); V2.9b R62: into its own relCard wrapper')
   const rel = src.slice(src.indexOf('function relatedSection(box, rootCardId) {'))
   assert.match(rel, /t\('relatedPkgsLabel'\)/, 'the packages-tier header is a literal t() key (i18n parity scan reaches it)')
   assert.match(rel, /t\('relatedGroupsLabel'\)/, 'the groups-tier header is a literal t() key')
@@ -4499,12 +4513,20 @@ test('V2.6 R46 nav audit: the tap is the ONE nav-free selection door; menu/rows/
   assert.match(readme, /依赖图/, 'README keeps the V2.7 renamed vocabulary (依赖图)')
 })
 
-// ---------- V2.6 R47: the segmented toolbar (display layer only) ----------
+// ---------- V2.6 R47 → V2.9b R60: the captioned segmented toolbar ----------
+// R47 shipped four unnamed .tb-seg segments; R60 re-flowed the SAME display
+// layer into five CAPTIONED segments across two rows (聚焦|视图|筛选|工具 right,
+// 分区 on its own row) — still wrapper divs + CSS only, zero JS-hook renames.
+// The guard MIGRATED rather than weakened: the old per-segment membership and
+// "every id ships exactly once" pins are subsumed by a strictly stronger form —
+// the header id MULTISET must equal BASE 68b063a's frozen set (no hook lost,
+// renamed, duplicated, or smuggled in), and each control must sit in its
+// ASSERTED segment.
 
-/** balanced <div> content of every .tb-seg wrapper, in document order */
+/** balanced <div> content of every .tb-seg wrapper: {cls, body}, document order */
 function segBlocks(region) {
   const out = []
-  const open = /<div class="tb-seg[^"]*">/g
+  const open = /<div class="(tb-seg[^"]*)">/g
   let m
   while ((m = open.exec(region))) {
     const tags = /<div\b[^>]*>|<\/div>/g
@@ -4512,48 +4534,145 @@ function segBlocks(region) {
     let depth = 1, t
     while (depth > 0 && (t = tags.exec(region))) depth += t[0] === '</div>' ? -1 : 1
     assert.ok(depth === 0, 'segment wrappers are balanced')
-    out.push(region.slice(open.lastIndex, t.index))
+    out.push({ cls: m[1], body: region.slice(open.lastIndex, t.index) })
   }
   return out
 }
 
-test('V2.6 R47 toolbar segmentation: four .tb-seg segments, the brief membership per segment, every JS hook still inside the header', () => {
+// the complete id multiset of the BASE 68b063a header, frozen (16 hooks).
+const BASE_HEADER_IDS = ['arrange-view', 'edge-kinds', 'focus-clear', 'focus-ctl', 'focus-depth',
+  'lang-btn', 'lod-ctl', 'meta', 'path-back', 'profile-filter', 'refresh', 'reset-view',
+  'scope-filter', 'search', 'show-real-cross', 'zone-chips']
+
+test('V2.9b R60 header segments: five captioned .tb-seg segments, the BASE id multiset byte-equal, every control in its asserted segment', () => {
   const html = readFileSync(join(WEB, 'index.html'), 'utf8')
+  const src = readFileSync(join(WEB, 'app.js'), 'utf8')
   const header = /<header>[\s\S]*?<\/header>/.exec(html)
   assert.ok(header, 'the header block exists')
+  // —— the ONE structure lock: id multiset BASE↔HEAD identical (sorted multiset,
+  //    so a duplicate or a rename trips it exactly like a loss would)
+  const ids = [...header[0].matchAll(/id="([^"]+)"/g)].map((m) => m[1]).sort()
+  assert.deepEqual(ids, [...BASE_HEADER_IDS].sort(),
+    'the header id MULTISET equals BASE 68b063a (wrappers+CSS only — no control lost its hook)')
+  // —— five segments, identity classes, document order = the brief's reading order
   const segs = segBlocks(header[0])
-  assert.equal(segs.length, 4, 'exactly four .tb-seg segments')
-  // ① ⌂ 复位 + 粒度两段
-  assert.ok(segs[0].includes('id="reset-view"') && segs[0].includes('id="lod-ctl"'), 'segment ①: ⌂ reset + the granularity segment')
-  assert.ok(!segs[0].includes('id="search"'), 'segment ① owns only its two controls')
-  // ② 聚焦控件 + 面包屑（聚焦时出现，无聚焦不占位 — focus-ctl ships hidden,
-  //    and the V22b guard above pins #path-back INSIDE #focus-ctl）
-  assert.ok(segs[1].includes('id="focus-ctl"'), 'segment ②: the focus control (+ its breadcrumb)')
-  assert.match(segs[1], /id="focus-ctl"\s+hidden/, 'segment ② ships collapsed (no placeholder unfocused)')
-  // ③ chips + 全显示/全隐藏 (the row-tail buttons are BUILT inside #zone-chips)
-  assert.ok(segs[2].includes('id="zone-chips"'), 'segment ③: the zone chips (+ built-in show-all/hide-all)')
-  // ④ 搜索 + 语言 + 主题跟随 + 重扫 (theme is prefers-color-scheme — no chrome hook,
-  //    so segment ④ carries the three real controls the header has)
-  assert.ok(segs[3].includes('id="search"') && segs[3].includes('id="lang-btn"') && segs[3].includes('id="refresh"'),
-    'segment ④: search + language + rescan')
-  // document order ① ② ③ ④ through the header
-  const marks = ['reset-view', 'focus-ctl', 'zone-chips', 'search'].map((id) => header[0].indexOf(`id="${id}"`))
-  assert.ok(marks.every((i) => i >= 0), 'every anchored control is in the header')
-  assert.deepEqual(marks, [...marks].sort((a, b) => a - b), 'segments ship left→right: ① reset ② focus ③ chips ④ search')
-  // ZERO hook loss: every id/class the JS binds must ship exactly once in the header
-  for (const idOfIt of ['reset-view', 'lod-ctl', 'focus-ctl', 'path-back', 'focus-depth', 'focus-clear', 'zone-chips',
-    'search', 'lang-btn', 'refresh', 'scope-filter', 'profile-filter', 'edge-kinds', 'show-real-cross', 'meta']) {
-    assert.equal((header[0].match(new RegExp(`id="${idOfIt}"`, 'g')) || []).length, 1, `#${idOfIt} ships exactly once`)
+  assert.equal(segs.length, 5, 'five .tb-seg segments: 聚焦 | 视图 | 筛选 | 工具 | 分区')
+  assert.deepEqual(segs.map((s) => s.cls.split(' ').find((c) => /^tb-(focus|view|filter|tools|zones)$/.test(c))),
+    ['tb-focus', 'tb-view', 'tb-filter', 'tb-tools', 'tb-zones'],
+    'document order: focus (conditional, segment-HEAD), view, filter, tools — zones on the second row')
+  const byCls = {}
+  for (const s of segs) byCls[s.cls.split(' ').find((c) => /^tb-(focus|view|filter|tools|zones)$/.test(c))] = s
+  const inSeg = (seg, id) => assert.ok(byCls[seg].body.includes(`id="${id}"`), `#${id} sits inside the ${seg} segment`)
+  const notInSeg = (seg, id) => assert.ok(!byCls[seg].body.includes(`id="${id}"`), `#${id} must NOT sit inside the ${seg} segment`)
+  // 聚焦段 (条件出现): the control + its breadcrumb furniture
+  inSeg('tb-focus', 'focus-ctl')
+  assert.match(byCls['tb-focus'].body, /id="focus-ctl"\s+hidden/, 'the focus segment ships collapsed (no placeholder unfocused)')
+  for (const id of ['path-back', 'focus-depth', 'focus-clear']) inSeg('tb-focus', id)
+  // 视图段: ⌂ 复位 + ⌗ 自动排布 + 粒度两段
+  for (const id of ['reset-view', 'arrange-view', 'lod-ctl']) inSeg('tb-view', id)
+  assert.equal((byCls['tb-view'].body.match(/data-seg="/g) || []).length, 2, 'the two granularity buttons survived the wrap')
+  // 筛选段: 类型▾ Profile▾ 边类型☑×5 真实跨包线▾
+  for (const id of ['scope-filter', 'profile-filter', 'edge-kinds', 'show-real-cross']) inSeg('tb-filter', id)
+  assert.equal((byCls['tb-filter'].body.match(/data-kind="/g) || []).length, 4, 'all four edge-kind checkboxes ride the filter segment')
+  // 工具段 (右对齐): 搜索 EN 重扫
+  for (const id of ['search', 'lang-btn', 'refresh']) inSeg('tb-tools', id)
+  notInSeg('tb-view', 'search'); notInSeg('tb-filter', 'search'); notInSeg('tb-zones', 'search')
+  // 分区段 (行2): chips 全排 + 应用层建在 #zone-chips 内的 全部显示/全部隐藏
+  inSeg('tb-zones', 'zone-chips')
+  // brand first, status tail, both OUTSIDE the captioned segments
+  assert.ok(header[0].indexOf('<h1') < header[0].indexOf('tb-focus'), 'the brand opens the header, before every segment')
+  assert.ok(!segs.some((s) => s.body.includes('id="meta"')), '#meta rides the header tail outside the captioned segments')
+  assert.ok(header[0].indexOf('id="meta"') > header[0].indexOf('tb-tools'), '#meta sits after the tools segment')
+  // —— 段标题: each segment hangs its caption as its FIRST child, keyed for i18n
+  const CAPS = { 'tb-focus': 'capFocus', 'tb-view': 'capView', 'tb-filter': 'capFilter', 'tb-tools': 'capTools', 'tb-zones': 'capZones' }
+  for (const [seg, key] of Object.entries(CAPS)) {
+    assert.match(byCls[seg].body, new RegExp(`^\\s*<span class="tb-cap" data-i18n="${key}"></span>`),
+      `the ${seg} segment leads with its caption span (data-i18n=${key})`)
   }
-  assert.equal((header[0].match(/data-seg="/g) || []).length, 2, 'the two granularity buttons survived the wrap')
-  // the CSS half: segmented flex, 1px separators + breathing gaps, wrapping pane
+  // caption zh/en parity (the V6 parity scan also sweeps these data-i18n keys —
+  // this pins the FIVE new keys exist in BOTH locales by name, not just by scan)
+  const I18N = new Function(extractBalanced(src, 'var I18N = {') + '\nreturn I18N')()
+  for (const key of Object.values(CAPS)) {
+    assert.ok(I18N.zh[key] && I18N.en[key], `caption key ${key} resolves in BOTH locales`)
+  }
+  // —— the CSS half (R60): captions, right-aligned tools, own-row zones, conditional focus
   const css = readFileSync(join(WEB, 'style.css'), 'utf8')
-  assert.match(header[0], /class="tb-seg tb-div"/, 'the separator variant ships on the inner segments')
+  assert.match(css, /\.tb-cap \{ font-size: 10px; font-weight: 600; letter-spacing: \.08em; opacity: \.55; \}/,
+    'R60 caption voice: 10px/600/.08em letter-spacing/.55 — the 上款 of every segment')
+  assert.match(css, /\.tb-tools \{ margin-left: auto/, 'R60: the tools segment is pushed right by auto margin')
+  assert.match(css, /\.tb-zones \{ flex-basis: 100%/, 'R60: the zones segment takes the full SECOND header row')
+  assert.match(css, /\.tb-seg:has\(> #focus-ctl\[hidden\]\) \{ display: none/,
+    'R60: without a focus the WHOLE focus segment (caption + separator) leaves no placeholder')
+  assert.match(header[0], /class="tb-seg tb-div/, 'the separator variant ships on the inner segments')
   assert.match(css, /\.tb-seg \{[^}]*display:\s*inline-flex[^}]*align-items:\s*center[^}]*gap:\s*\d+px/, 'segments are centered inline-flex boxes with internal gaps')
   assert.match(css, /\.tb-seg\.tb-div \{[^}]*border-left:\s*1px solid/, '1px separator between segments')
   assert.match(css, /\.tb-seg\.tb-div \{[^}]*padding-left:\s*(1[0-9]|[6-9])px/, '…plus a breathing gap around it')
-  assert.match(css, /header \{[^}]*flex-wrap:\s*wrap/, 'the header wraps → the chips segment moves to the next line whole on narrow panes')
+  assert.match(css, /header \{[^}]*flex-wrap:\s*wrap/, 'the header wraps → narrow panes fold the segments onto new lines')
   assert.match(css, /\.tb-seg \{[^}]*flex-wrap:\s*wrap/, 'and a segment lets its own controls wrap inside it')
+})
+
+test('V2.9b R61 header text system: labels sink to the secondary voice, edge swatches read app.js OWN edge colors, and the header invents no new hue', () => {
+  const html = readFileSync(join(WEB, 'index.html'), 'utf8')
+  const src = readFileSync(join(WEB, 'app.js'), 'utf8')
+  const css = readFileSync(join(WEB, 'style.css'), 'utf8')
+  // —— ① every edge-kind label carries its swatch key (the CSS hook), the checkbox
+  //       data-kind hooks stay byte-identical (app.js binds '#edge-kinds input[data-kind]')
+  for (const kind of ['dep', 'mount', 'peer', 'peer-optional']) {
+    assert.match(html, new RegExp(`<label data-swatch="${kind}"><input type="checkbox" data-kind="${kind}" checked>`),
+      `the ${kind} label pairs its swatch attribute with the untouched data-kind checkbox`)
+  }
+  assert.equal((html.match(/data-swatch="/g) || []).length, 4, 'exactly the four edge kinds get swatches')
+  // —— ② CSS↔JS equality (the V2.8 palette-guard idiom, now on the header): the
+  //       swatch hue IS the constant styleFor() paints those edges with, BOTH themes.
+  const edgeHex = (name) => {
+    const m = new RegExp(`var ${name} = dark \\? '(#[0-9a-f]{6})' : '(#[0-9a-f]{6})'`).exec(src)
+    assert.ok(m, `app.js still declares \`var ${name} = dark ? … : …\` (the edge-color constant)`)
+    return { dark: m[1].toLowerCase(), light: m[2].toLowerCase() }
+  }
+  const EDGE = { dep: edgeHex('edgeLine'), mount: edgeHex('mount'), peer: edgeHex('peer'), 'peer-optional': edgeHex('peerOpt') }
+  for (const [kind, c] of Object.entries(EDGE)) {
+    const rule = new RegExp(`#edge-kinds label\\[data-swatch="${kind}"\\]::before \\{ background: light-dark\\((#[0-9a-f]{6}), (#[0-9a-f]{6})\\); \\}`).exec(css)
+    assert.ok(rule, `R61: the ${kind} swatch rule ships as a light-dark pair`)
+    assert.equal(rule[1].toLowerCase(), c.light, `${kind} swatch LIGHT hue == app.js edgeLine/peer/… constant`)
+    assert.equal(rule[2].toLowerCase(), c.dark, `${kind} swatch DARK hue == the same constant's dark arm`)
+  }
+  // —— ③ the R61 voice: secondary 11px labels (the .62 TREATMENT — opacity on the
+  //       inherited ink, the same family as #details .ver, deliberately NOT a hex),
+  //       14px primary icon buttons, 12px chip names, excluded chips greyed at the dot.
+  assert.match(css, /header label\.ctl > span, #focus-ctl > span, #edge-kinds label \{ font-size: 11px; opacity: \.62; \}/,
+    'R61: control labels are 11px at the .62 secondary opacity (same treatment as the panel .ver — no new color invented)')
+  assert.match(css, /#reset-view, #arrange-view \{ font-size: 14px; color: inherit; \}/,
+    'R61: the ⌂/⌗ icon buttons are 14px in the primary (inherited) ink')
+  assert.match(css, /\.chip \.n \{ font-size: 12px; \}/, 'R61: chip names are the 12px primary voice (the dot stays the zone color)')
+  assert.match(css, /\.chip\.off \.dot \{ filter: grayscale\(1\); \}/,
+    'R61: an excluded chip dims as a whole (.38, shipped) AND its zone dot goes grey — filter, because the dot color is an inline palette constant')
+  // —— ④ the V2.8 no-new-hue sweep EXTENDED to the header block: every hex in the
+  //       V2.9b header window must already ship in app.js's palettes/edge constants
+  //       or in the pre-existing chrome outside the window.
+  const mark = css.indexOf('/* V2.9b R60')
+  const end = css.indexOf('input[type=search]', mark)
+  assert.ok(mark >= 0 && end > mark, 'the V2.9b header CSS block is delimited (R60 marker … input[type=search])')
+  const hexRe = /#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{4}|[0-9a-fA-F]{3})\b/g
+  const norm6 = (tok) => {
+    const h = tok.slice(1).toLowerCase()
+    if (h.length === 3) return '#' + h.split('').map((c) => c + c).join('')
+    if (h.length === 4) return '#' + h.slice(0, 3).split('').map((c) => c + c).join('')
+    return '#' + h.slice(0, 6)
+  }
+  const win = css.slice(mark, end)
+  const winHexes = [...win.matchAll(hexRe)].map((m) => norm6(m[0]))
+  assert.ok(winHexes.length >= 8, `the header window carries the swatch hexes (got ${winHexes.length}) — the sweep is not vacuous`)
+  const allowed = new Set()
+  for (const c of Object.values(EDGE)) { allowed.add(c.dark); allowed.add(c.light) }
+  for (const block of [src.slice(src.indexOf('var ZONE_COLORS = {'), src.indexOf('var ZONE_IDS_FALLBACK')),
+    src.slice(src.indexOf('var FOCUS_COLORS = {'), src.indexOf('var PATH_ROW_CAP'))]) {
+    for (const m of block.matchAll(hexRe)) allowed.add(norm6(m[0]))
+  }
+  for (const m of (css.slice(0, mark) + css.slice(end)).matchAll(hexRe)) allowed.add(norm6(m[0]))
+  for (const h of winHexes) assert.ok(allowed.has(h), `header-block hex ${h} is outside the existing palette (no new hues — brief doctrine)`)
+  // teeth: an invented hue is rejected by exactly this set (and the pattern catches it)
+  assert.ok(!allowed.has('#12ab34'), 'teeth: a synthetic hue is NOT palette-legal')
+  assert.equal([... '#tb-seg { color: #12ab34 }'.matchAll(hexRe)].map((m) => norm6(m[0]))[0], '#12ab34', '…and the sweep pattern would see it')
 })
 
 // =========================================================================
@@ -5053,6 +5172,7 @@ function loadZoneDetailsDom() {
     extractBalanced(src, 'function catById(graph) {') + '\n',
     extractBalanced(src, 'function zoneTitle(catId) {') + '\n',
     extractBalanced(src, 'function head(box, text) {') + '\n',
+    extractBalanced(src, 'function regionCard() {') + '\n',
     extractBalanced(src, 'function kvRow(box, key, value) {') + '\n',
     extractBalanced(src, 'function secTitle(box, text) {') + '\n',
     extractBalanced(src, 'function lvlChip(h, label) {') + '\n',
@@ -5103,9 +5223,9 @@ test('V2.7 R51 zone details list BY GROUP through the real builders: chip, alpha
   assert.equal(box.children[0].children[0].className, 'lvl', 'the 区 chip rides INSIDE the h2 (R51)')
   assert.equal(box.children[0].children[0].text, '区', 'chip text is the zh dictionary label')
   assert.equal(box.children[0].text, '工具', 'the h2 title is the zone title')
-  const kv = (key) => box.children.find((c) => c.className === 'kv' && c.children[0].text === key)
+  const kv = (key) => flatKids(box).find((c) => c.className === 'kv' && c.children[0].text === key)
   assert.equal(kv('GROUPS').children[1].text, '4', 'the GROUPS row counts every group in the zone…')
-  const heads = box.children.filter((c) => (c.className || '').split(' ').includes('ghead'))
+  const heads = flatKids(box).filter((c) => (c.className || '').split(' ').includes('ghead'))
   // V2.8 R54 MIGRATION: this fixture's groups are all-one-version, so the
   // version HOISTS onto the header — the composed label is gid + ×TRUE + · ver
   // (spans: plain name / .cnt / .ver), read as one concatenated string.
@@ -5113,7 +5233,7 @@ test('V2.7 R51 zone details list BY GROUP through the real builders: chip, alpha
   assert.deepEqual(heads.map((h) => h.children.filter((c) => c.className === 'cnt').map((c) => c.text)), [[' ×2'], [' ×13'], [' ×1']], '…the ×N count rides its own .cnt span (R56)…')
   assert.deepEqual(heads.map((h) => h.children.filter((c) => c.className === 'ver').map((c) => c.text)), [[' · 1.0.0'], [' · 1.0.0'], [' · 1.0.0']], '…the hoisted version rides its own .ver span (R54)…')
   assert.equal(heads.some((h) => allText(h).startsWith('empty')), false, '…and the zero-member group is invisible (the flat list showed nothing for it either)')
-  const gmems = box.children.filter((c) => c.className === 'gmem')
+  const gmems = flatKids(box).filter((c) => c.className === 'gmem')
   assert.deepEqual(gmems.map((g) => g.children.length), [2, dom.CAP + 1, 1], 'each section lists AT MOST CAP member rows inside its wrapper…')
   assert.ok(gmems[1].children.slice(0, dom.CAP).every((c) => c.className === 'jump'), '…the first CAP children of the capped section are member rows…')
   const more = gmems.reduce((acc, g) => acc.concat(g.children.filter((c) => c.className === 'kv' && c.children[1].text === 'MORE:3')), [])
@@ -5131,8 +5251,8 @@ test('V2.7 R51 zone details list BY GROUP through the real builders: chip, alpha
   dom.state.groupIds = new Set()
   dom.state.groupZone = new Map()
   dom.detailsZone(emptyBox, 'tools')
-  assert.equal(emptyBox.children.filter((c) => c.className === 'ghead' || c.className === 'gmem').length, 0, 'no sections at all')
-  assert.equal(emptyBox.children[emptyBox.children.length - 1].text, 'MEMBERS(0)', '…just the honest zero header')
+  assert.equal(flatKids(emptyBox).filter((c) => c.className === 'ghead' || c.className === 'gmem').length, 0, 'no sections at all')
+  assert.equal(flatKids(emptyBox)[flatKids(emptyBox).length - 1].text, 'MEMBERS(0)', '…just the honest zero header')
 })
 
 // =========================================================================
@@ -5206,14 +5326,14 @@ test('V2.8 R53+R54 zone panel render: one scope badge, prefix-omitted rows, hois
   assert.equal(badges[0].text, '@deepseek-ai/', 'badge text = the shared npm scope (escText)')
   assert.equal(String(badges[0].className), 'badge scope', 'it rides the badge shell + the scope modifier (CSS-owned look)')
   // R54 headers: majority+1 on ds, trivially-all on solo
-  const heads = box.children.filter((c) => (c.className || '').split(' ').includes('ghead'))
+  const heads = flatKids(box).filter((c) => (c.className || '').split(' ').includes('ghead'))
   assert.deepEqual(heads.map(allText), ['ds ×3 · 0.1.5', 'solo ×1 · 9.9.9'], 'majority and all-same both hoist the version onto the group header')
   assert.equal(heads[0].children[1].className, 'cnt', 'the ×N count is its own .cnt span (amber mono, no bold — R56)')
   assert.equal(heads[0].attrs.title, 'ds', 'the header keeps a full-gid title (setAttribute string)')
   heads[0].handlers.click()
   assert.deepEqual(dom.LOG, ['select:g:ds:bare'], 'R51 doctrine INTACT under the new spans: the header door is still the bare selectNode group door')
   // R54 rows: silence for the majority, inline AMBER for the exception
-  const gmem = box.children.filter((c) => c.className === 'gmem')
+  const gmem = flatKids(box).filter((c) => c.className === 'gmem')
   const rows = gmem[0].children
   assert.deepEqual(rows.map((r) => r.children[0].text), ['aa', 'bb', 'cc'], 'R53: the shared prefix is gone from EVERY row name span')
   assert.deepEqual(rows.map((r) => r.children.filter((c) => c.className.includes('ver')).map((c) => c.text)), [[], [], ['@0.2.0']],
@@ -5224,7 +5344,7 @@ test('V2.8 R53+R54 zone panel render: one scope badge, prefix-omitted rows, hois
   assert.deepEqual(gmem[1].children[0].children.map((c) => c.text), ['pp'], 'the single-row group hoists too: bare name, no version span')
   assert.equal(gmem[1].children[0].attrs.title, '@deepseek-ai/pp@9.9.9', '…with the full version kept in the title')
   // R51 structure under all of the above: alphabetical, one .gmem per section
-  assert.deepEqual(box.children.filter((c) => c.className === 'gmem').length, 2, 'one indent wrapper per section')
+  assert.deepEqual(flatKids(box).filter((c) => c.className === 'gmem').length, 2, 'one indent wrapper per section')
 
   // mixed panel: one scope-less row kills the omission; all-different versions kill the hoist
   const nodes2 = [
@@ -5242,9 +5362,9 @@ test('V2.8 R53+R54 zone panel render: one scope badge, prefix-omitted rows, hois
   const box2 = new dom.El('div')
   dom.detailsZone(box2, 'tools')
   assert.equal(box2.children[0].children.filter((c) => String(c.className).split(' ').includes('scope')).length, 0, 'no-scope-mixed → NO scope badge')
-  const heads2 = box2.children.filter((c) => (c.className || '').split(' ').includes('ghead'))
+  const heads2 = flatKids(box2).filter((c) => (c.className || '').split(' ').includes('ghead'))
   assert.equal(allText(heads2[0]), 'mix ×3', 'all-different → the header shows NO version')
-  const rows2 = box2.children.filter((c) => c.className === 'gmem')[0].children
+  const rows2 = flatKids(box2).filter((c) => c.className === 'gmem')[0].children
   assert.deepEqual(rows2.map((r) => r.children[0].text), ['@deepseek-ai/z', 'left-pad', 'm3'], 'mixed panel → rows keep their FULL names (sorted by name: the scoped one first)')
   assert.deepEqual(rows2.map((r) => r.children.filter((c) => String(c.className).split(' ').includes('ver')).map((c) => c.text)), [['@2.0.0'], ['@1.0.0'], ['@3.0.0']],
     'all-diff → EVERY row shows its own version inline')
@@ -5275,10 +5395,10 @@ test('V2.8 R53+R54 zone panel render: one scope badge, prefix-omitted rows, hois
   const dumpE = () => JSON.stringify(boxE, (k, v) => (k === 'parentNode' ? undefined : v))
   assert.equal(dumpE().includes('innerHTML'), false, 'no HTML sink anywhere in the composed panel')
   assert.equal(dumpE().includes('outerHTML'), false, '…nor any other HTML surface')
-  const headE = boxE.children.filter((c) => (c.className || '').split(' ').includes('ghead'))[0]
+  const headE = flatKids(boxE).filter((c) => (c.className || '').split(' ').includes('ghead'))[0]
   assert.equal(headE.children[0].text, 'evil/<svg>', 'the attacker GROUP ID renders as text in the name span')
   assert.equal(headE.children.filter((c) => String(c.className).split(' ').includes('ver'))[0].text, ' · <i>9</i>', 'the attacker VERSION hoists as text, never as markup')
-  const rowsE = boxE.children.filter((c) => c.className === 'gmem')[0].children
+  const rowsE = flatKids(boxE).filter((c) => c.className === 'gmem')[0].children
   assert.deepEqual(rowsE.map((r) => r.children[0].text), ['x', 'y'], 'the evil prefix is omitted from the rows too (it is still a unanimous scope)')
   assert.equal(rowsE[0].attrs.title, '@evil/' + evil + '/x@<i>9</i>', '…and the full attacker identity survives ONLY as a title attribute string')
 })
@@ -5304,7 +5424,7 @@ test('V2.8 R54 group-detail page: the group header h2 takes the hoisted version 
   assert.ok(h2, 'the group panel opens with its header')
   assert.equal(h2.children.filter((c) => String(c.className).split(' ').includes('scope')).map((c) => c.text).join('|'), '@deepseek-ai/', 'the group page badges the shared scope once, in the header')
   assert.deepEqual(h2.children.filter((c) => String(c.className).split(' ').includes('gver')).map((c) => c.text), [' · 0.1.5'], 'the majority version rides the GROUP HEADER (gver = the version channel in the header)')
-  const rows = box.children.filter((c) => c.className === 'jump')
+  const rows = flatKids(box).filter((c) => c.className === 'jump')
   assert.equal(rows.length, 3, 'memberSection still paints one row per member (R51 shape untouched)')
   assert.deepEqual(rows.map((r) => r.children[0].text), ['aa', 'bb', 'cc'], 'rows drop the shared prefix (panel-wide decision)')
   assert.deepEqual(rows.map((r) => r.children.filter((c) => c.className.includes('ver-exc')).map((c) => c.text)), [[], [], ['@0.2.0']], 'the odd row is the amber exception, inline')
@@ -5361,6 +5481,7 @@ test('V2.8 R56 palette guard: the details color system invents NO hue — every 
     .filter((ln) => /^#details/.test(ln) || /^\s*(?:\/\*|\*)/.test(ln))
     .join('\n')
   assert.ok(details.includes('#details .tier'), 'M3: the .tier rules ABOVE the container rule are inside the sweep')
+  assert.ok(details.includes('#details .card'), 'V2.9b R62: the region-card rule is inside the sweep too (its #8881 wash normalizes to the chrome #888 family, not a new hue)')
   for (const m of details.matchAll(HEX)) {
     assert.ok(palette.has(norm6(m[0])), `details-block hex ${m[0]} is outside the existing palette (no new hues — brief doctrine)`)
   }
@@ -5398,7 +5519,8 @@ test('V2.8 R56 palette guard: the details color system invents NO hue — every 
   for (const d of dual) assert.ok(css.includes(d), `rule ${d} ships`)
 })
 
-test('V2.8 R56 WCAG-AA contrast guard: every details text channel clears 4.5:1 on BOTH panel grounds', () => {
+test('V2.9b R62 recomputed-AA gate: every panel text pair clears 4.5:1 on its ACTUAL ground (card tint composited over the PARSED panel ground)', () => {
+  const css = readFileSync(join(WEB, 'style.css'), 'utf8')
   const lum = (hex) => {
     const c = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
       .map((v) => (v <= 0.04047 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)))
@@ -5412,27 +5534,91 @@ test('V2.8 R56 WCAG-AA contrast guard: every details text channel clears 4.5:1 o
     const l1 = lum(fg), l2 = lum(bg)
     return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05)
   }
-  const DK = '#10141a', LT = '#fbfcfd'
+  // —— grounds are PARSED from the stylesheet, never lit-hardcoded (R62c).
+  //    Panel ground: the #details light-dark pair. Card tint: the .card rule's
+  //    single wash (an #888-family token, alpha included). The ACTUAL ground
+  //    behind card text = tint alpha-composited over the panel ground.
+  const rgbaTok = (tok) => {
+    const h = tok.slice(1).toLowerCase()
+    const n = (h.length === 3 || h.length === 4) ? h.match(/./g).map((c) => c + c) : h.match(/../g)
+    return { r: parseInt(n[0], 16), g: parseInt(n[1], 16), b: parseInt(n[2], 16), a: n.length > 3 ? parseInt(n[3], 16) / 255 : 1 }
+  }
+  const over = (tintTok, bgHex) => {
+    const t = rgbaTok(tintTok), b = rgbaTok(bgHex)
+    return '#' + ['r', 'g', 'b'].map((k) => hex2(t[k] * t.a + b[k] * (1 - t.a))).join('')
+  }
+  const panel = /#details \{[^}]*background: light-dark\((#[0-9a-f]{6}), (#[0-9a-f]{6})\);/.exec(css)
+  assert.ok(panel, 'the #details container ground ships as a light-dark pair')
+  const tint = /#details \.card \{ background: (#[0-9a-f]{3,8});/.exec(css)
+  assert.ok(tint, 'R62: the region-card rule ships its tint (single token, alpha allowed)')
+  const cardL = over(tint[1], panel[1]), cardD = over(tint[1], panel[2])
+  assert.notEqual(cardL, panel[1], 'teeth: the LIGHT card ground is actually different from the bare panel (the recompute is not vacuous)')
+  assert.notEqual(cardD, panel[2], 'teeth: the DARK card ground is actually different from the bare panel')
+  // the README <pre> paints its OWN #888-family wash ON TOP of the card → a third
+  // composite ground for its text.
+  const pre = /#details pre\.readme \{[^}]*background: (#[0-9a-f]{3,8});/.exec(css)
+  assert.ok(pre, 'the README pre keeps its own wash (inside the README card)')
+  const preL = over(pre[1], cardL), preD = over(pre[1], cardD)
+  // —— the FULL pair table on the COMPOSITE grounds. Panel-head channels
+  //    (crumbs/.85, the .lvl chip/.85 — outside any card) keep the bare ground;
+  //    the semantic pills keep their own OPAQUE pill grounds (the card wash never
+  //    shows through them). Opacity channels composite over the INHERITED ink,
+  //    which on the panel default text is black (light) / white (dark) — exactly
+  //    the model the V2.8 guard established; every pair now re-runs on card/pre/
+  //    panel/pill grounds as the DOM actually nests them.
   const pairs = [
-    ['entity name / default text (light)', '#000000', LT],
-    ['entity name / default text (dark)', '#ffffff', DK],
-    ['.ver secondary at .62 (light)', mix('#000000', LT, 0.62), LT],
-    ['.ver secondary at .62 (dark)', mix('#ffffff', DK, 0.62), DK],
-    ['.sec label at .55 (light)', mix('#000000', LT, 0.55), LT],
-    ['.sec label at .55 (dark)', mix('#ffffff', DK, 0.55), DK],
-    ['.ghead steel (light)', '#4f6b8a', LT],
-    ['.ghead steel (dark)', '#8fa9c9', DK],
-    ['.cnt / .ver-exc amber (light)', '#b45309', LT],
-    ['.cnt / .ver-exc amber (dark)', '#f59e0b', DK],
-    ['pill text on gold (light)', '#10141a', '#d9a441'],
-    ['pill text on gold (dark)', '#10141a', '#eec06a'],
-    ['pill text on purple (light)', '#10141a', '#9a6ac2'],
-    ['pill text on purple (dark)', '#10141a', '#c194e8'],
+    ['default text in a card (light) — kv / rows / desc / badges / readme…', '#000000', cardL],
+    ['default text in a card (dark)', '#ffffff', cardD],
+    ['.ver secondary at .62 in a card (light)', mix('#000000', cardL, 0.62), cardL],
+    ['.ver secondary at .62 in a card (dark)', mix('#ffffff', cardD, 0.62), cardD],
+    ['.sec label at .55 in a card (light)', mix('#000000', cardL, 0.55), cardL],
+    ['.sec label at .55 in a card (dark)', mix('#ffffff', cardD, 0.55), cardD],
+    ['.sub/.path at .7 in a card (light)', mix('#000000', cardL, 0.7), cardL],
+    ['.sub/.path at .7 in a card (dark)', mix('#ffffff', cardD, 0.7), cardD],
+    ['.dist layer token at .6 (light)', mix('#000000', cardL, 0.6), cardL],
+    ['.dist layer token at .6 (dark)', mix('#ffffff', cardD, 0.6), cardD],
+    ['.tier header at .8 (light)', mix('#000000', cardL, 0.8), cardL],
+    ['.tier header at .8 (dark)', mix('#ffffff', cardD, 0.8), cardD],
+    ['.ghead steel on the members card (light)', '#4f6b8a', cardL],
+    ['.ghead steel on the members card (dark)', '#8fa9c9', cardD],
+    ['.cnt / .ver-exc amber on the tint (light)', '#b45309', cardL],
+    ['.cnt / .ver-exc amber on the tint (dark)', '#f59e0b', cardD],
+    ['README default text on the DOUBLE composite (light)', '#000000', preL],
+    ['README default text on the DOUBLE composite (dark)', '#ffffff', preD],
+    ['pill text on gold (own opaque pill bg, light)', '#10141a', '#d9a441'],
+    ['pill text on gold (own opaque pill bg, dark)', '#10141a', '#eec06a'],
+    ['pill text on purple (own opaque pill bg, light)', '#10141a', '#9a6ac2'],
+    ['pill text on purple (own opaque pill bg, dark)', '#10141a', '#c194e8'],
+    ['panel-head crumbs at .85 on the BARE panel (light)', mix('#000000', panel[1], 0.85), panel[1]],
+    ['panel-head crumbs at .85 on the BARE panel (dark)', mix('#ffffff', panel[2], 0.85), panel[2]],
+    ['.lvl chip at .85 on the BARE panel (light)', mix('#000000', panel[1], 0.85), panel[1]],
+    ['.lvl chip at .85 on the BARE panel (dark)', mix('#ffffff', panel[2], 0.85), panel[2]],
   ]
+  const rowsOut = []
+  let worst = Infinity
   for (const [label, fg, bg] of pairs) {
     const r = ratio(fg, bg)
+    worst = Math.min(worst, r)
+    rowsOut.push(`  ${label} | ${fg} on ${bg} | ${r.toFixed(2)}:1`)
     assert.ok(r >= 4.5, `${label}: ${fg} on ${bg} = ${r.toFixed(2)}:1 — below AA 4.5:1`)
   }
+  // —— the inherited warning-red channel (.unsat/.brk #d0433f): it shipped BELOW
+  //    AA on the BARE grounds already (≈4.49 light / ≈3.98 dark at BASE — the
+  //    V2.8 table never carried it), it is a shipped TEXT color (the tint is the
+  //    only knob R62 allows to move, and raising a dark ground makes red WORSE,
+  //    not better), so the AA set does not include it. Honest bookkeeping: pin
+  //    the BASE violation as a KNOWN pre-existing condition, and pin that the
+  //    chosen tint does not collapse it further. Hover-state grounds join this
+  //    exclusion for the same reason (transient, already sub-AA at BASE).
+  const redBaseL = ratio('#d0433f', panel[1]), redBaseD = ratio('#d0433f', panel[2])
+  const redL = ratio('#d0433f', cardL), redD = ratio('#d0433f', cardD)
+  assert.ok(redBaseL < 4.5 && redBaseD < 4.5,
+    `teeth: red ALREADY missed AA at BASE (${redBaseL.toFixed(2)}/${redBaseD.toFixed(2)}) — this guard does not pretend otherwise`)
+  rowsOut.push(`  [inherited, not AA-set] .unsat/.brk red | #d0433f on bare ${panel[1]}/${panel[2]} | ${redBaseL.toFixed(2)}/${redBaseD.toFixed(2)}:1 → on tint ${redL.toFixed(2)}/${redD.toFixed(2)}:1`)
+  assert.ok(redL >= 4.0 && redD >= 3.4, `the tint must not collapse the red channel further (got ${redL.toFixed(2)}/${redD.toFixed(2)})`)
+  console.log('V2.9b R62 composite-AA pair table (gate ≥ 4.5 on every gated pair):')
+  console.log(rowsOut.join('\n'))
+  console.log(`  worst gated pair: ${worst.toFixed(2)}:1`)
 })
 
 test('V2.8 R55 density tune: member rows, the section rhythm and the .gmem indent each drop a notch', () => {
@@ -5476,4 +5662,69 @@ test('V2.8-fix M1 guard: h2 voice reset — gver and the scope pill shed the UA 
   const css = readFileSync(join(WEB, 'style.css'), 'utf8')
   assert.ok(css.includes('#details h2 .gver, #details .badge.scope { font-weight: 400; }'),
     'every other .ver/.badge in the panel is normal weight; inside the UA-bold h2 the reset must be explicit')
+})
+
+// =========================================================================
+// Task V2.9b — R62 panel region cards. The cards are DISPLAY wrappers built by
+// the detailsX renderers (createElement + className, escText discipline
+// unchanged); the guard below runs the REAL builders and pins that (a) content
+// lands inside .card wrappers, (b) the panel head stays outside them, and (c)
+// the buttons row — chrome, not content — is never wrapped. The contrast side
+// of the card (its tint changes the ground under EVERY card text) is gated by
+// the recomputed-AA pair table above.
+// =========================================================================
+
+test('V2.9b R62 region cards: content regions render inside .card wrappers through the real builders; the panel head and the buttons row stay outside', () => {
+  const dom = loadZoneDetailsDom()
+  const graph = zoneDetailsGraph()
+  dom.state.graph = graph
+  dom.state.byId = new Map(graph.nodes.map((n) => [n.id, n]))
+  dom.state.groupIds = new Set(['alpha', 'beta', 'empty', 'zeta'])
+  dom.state.groupZone = new Map([['alpha', 'tools'], ['beta', 'tools'], ['empty', 'tools'], ['zeta', 'tools']])
+  const box = new dom.El('div')
+  dom.detailsZone(box, 'tools')
+  assert.equal(box.children[0].tag, 'h2', 'the panel head is a DIRECT child — no card swallows the head')
+  const cards = box.children.filter((c) => c.className === 'card')
+  assert.equal(cards.length, 2, 'exactly two cards: the 组N kv info card + the members card')
+  assert.ok(cards[0].children.some((c) => c.className === 'kv' && c.children[0].text === 'GROUPS'), 'the kv info content lives inside the first card')
+  assert.equal(box.children.filter((c) => c.className === 'kv').length, 0, '…and no kv row is loose under the panel box')
+  assert.ok(cards[1].children.some((c) => (c.className || '').split(' ').includes('ghead')), 'the group sections live inside the members card')
+  assert.equal(cards[1].children.filter((c) => c.className === 'gmem').length, 3, '…all three indent wrappers inside it')
+  assert.equal(cards[1].children[0].className, 'jump ghead', 'the first group header tops the members card, no section is orphaned in the panel')
+  // the group page: one members card, crumbs + h2 stay outside it
+  const gbox = new dom.El('div')
+  dom.detailsGroup(gbox, 'beta')
+  assert.equal(gbox.children[0].className, 'crumbs', 'the breadcrumb row is outside every card')
+  assert.equal(gbox.children[1].tag, 'h2', 'the h2 is outside every card')
+  const gcards = gbox.children.filter((c) => c.className === 'card')
+  assert.equal(gcards.length, 1, 'one card carries the members section')
+  assert.equal(gcards[0].children[0].className, 'sec', 'the 成员包（N） header tops the card')
+  assert.ok(gcards[0].children.filter((c) => c.className === 'jump').length > 0, 'the member rows render inside it')
+  // XSS re-probe over the NEW composed shape: the card is a div, nothing else
+  const dump = (b) => JSON.stringify(b, (k, v) => (k === 'parentNode' ? undefined : v))
+  assert.equal(dump(box).includes('innerHTML'), false, 'no HTML sink anywhere in the carded panel')
+  assert.equal(dump(gbox).includes('outerHTML'), false, '…nor any other HTML surface')
+  // the package page wires the SAME wrapper at every content edge (detailsNode
+  // has no fake-DOM harness — the source shape is the contract here):
+  const src = readFileSync(join(WEB, 'app.js'), 'utf8')
+  const dn = src.slice(src.indexOf('function detailsNode(box, n, tok) {'), src.indexOf('---------- V21 R35 path-list blocks'))
+  assert.ok((dn.match(/regionCard\(\)/g) || []).length >= 6, 'every package-panel content edge opens a regionCard()')
+  assert.match(dn, /if \(info\.children\.length\) box\.appendChild\(info\)/, 'the kv card never attaches empty (no wash without content)')
+  assert.match(dn, /if \(mountCard\.children\.length\) box\.appendChild\(mountCard\)/, 'the mount card attaches lazily — the renderer paints into the detached card, an empty one is never hung')
+  assert.match(dn, /box\.appendChild\(btns\)/, 'the focus-button row is chrome — it stays OUT of any card')
+  assert.match(dn, /holder\.className = 'card'/, 'the README holder IS the card (async content never lands loose)')
+})
+
+test('V2.9b R62 CSS: the tinted region card at 8px geometry, the card rhythm, the group-section divider, and the README R62+ line', () => {
+  const css = readFileSync(join(WEB, 'style.css'), 'utf8')
+  assert.match(css, /#details \.card \{ background: #8881; border-radius: 8px; padding: 8px; \}/,
+    'R62: the lightest #888-family wash — the tint darkness that keeps EVERY gated composite pair ≥4.5 (see the recomputed-AA table)')
+  assert.match(css, /#details \.card \+ \.card \{ margin-top: 8px; \}/, 'R62: 8px between cards')
+  assert.match(css, /#details \.card \.sec:first-child \{ margin-top: 0; \}/, 'a section label at the card top does not double its gap into the padding')
+  assert.match(css, /#details \.gmem \+ \.jump\.ghead \{ border-top: 1px solid #8883; margin-top: 6px; padding-top: 5px; \}/,
+    'R62: a 1px #8883 rule divides group sections inside the members card — riding the COMPOUND form (.gmem+.jump.ghead, 1,3,0): the I-1 lesson says the simple selector would tie/lose and never paint')
+  assert.ok(!css.includes('#details .gmem + .ghead {'), 'regression trap: the non-compound divider selector ties #details .jump.ghead and is source-order-fragile')
+  const readme = readFileSync(join(WEB, '..', 'README.md'), 'utf8')
+  assert.match(readme, /组级档下被拖过的组卡，展开态下视觉由成员驱动、位置回组槽；切档后恢复其拖动位/,
+    'R62+: the V2.9a review (e) nuance ships in the README, verbatim wording from the brief')
 })

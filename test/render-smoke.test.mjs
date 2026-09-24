@@ -4581,12 +4581,12 @@ test('V2.7 R50 camera audit: the snapshot chain is deleted; ONE fit + THREE cy.a
   assert.match(src, /cy\.on\('zoom', closeMenu\)/, 'zoom closes (named — the anonymous-zoom guard stays honest)')
 })
 
-test('V2.5 chrome ships: the ⌂ reset-view button (i18n-title), the clickable #ctx-menu CSS, and every menu labelKey resolves in BOTH locales', () => {
+test('V2.5 chrome ships: the reset-view button (i18n-title; V2.11 R66: static icon body), the clickable #ctx-menu CSS, and every menu labelKey resolves in BOTH locales', () => {
   const html = readFileSync(join(WEB, 'index.html'), 'utf8')
   const src = readFileSync(join(WEB, 'app.js'), 'utf8')
   const css = readFileSync(join(WEB, 'style.css'), 'utf8')
-  assert.match(html, /<button id="reset-view"[^>]*data-i18n-title="menuResetView"[^>]*>⌂<\/button>/,
-    'the ⌂ button rides the header with the shared menu label as title')
+  assert.match(html, /<button id="reset-view"[^>]*data-i18n-title="menuResetView"[^>]*><svg xmlns="http:\/\/www\.w3\.org\/2000\/svg"[^>]*aria-hidden="true">/,
+    'V2.11 R66: the button keeps the shared menu label as title; its glyph body is now the static inline SVG (aria-hidden — the title carries the semantics)')
   assert.match(src, /getElementById\('reset-view'\)/, 'the binder wires the button')
   assert.match(src, /resetBtn\.addEventListener\('click', resetView\)/, 'click → the one resetView funnel')
   assert.match(src, /window\.addEventListener\('resize', closeMenu\)/, 'a pane resize cannot strand the menu')
@@ -4733,20 +4733,24 @@ test('V2.9b R60 header segments: five captioned .tb-seg segments, the BASE id mu
   for (const key of Object.values(CAPS)) {
     assert.ok(I18N.zh[key] && I18N.en[key], `caption key ${key} resolves in BOTH locales`)
   }
-  // —— the CSS half (R60): captions, right-aligned tools, own-row zones, conditional focus
+  // —— the CSS half (R60, RESTACKED by V2.11 R67): captions, right-aligned tools,
+  //    own-row zones, conditional focus. The row-shape pins MIGRATED with the two-row
+  //    segment (caption above, .tb-row controls below) — every SEMANTIC they lock
+  //    (no-placeholder collapse, separators, wrapping, right alignment) survives.
   const css = readFileSync(join(WEB, 'style.css'), 'utf8')
-  assert.match(css, /\.tb-cap \{ font-size: 10px; font-weight: 600; letter-spacing: \.08em; opacity: \.55; \}/,
-    'R60 caption voice: 10px/600/.08em letter-spacing/.55 — the 上款 of every segment')
+  assert.match(css, /\.tb-cap \{ font-size: 10px; font-weight: 600; letter-spacing: \.12em; color: light-dark\(#4f6b8a, #8fa9c9\); align-self: flex-start; \}/,
+    'R67 caption voice: 10px/600/.12em + the panel-steel family (AA recomputed on the header grounds by the R62 gate)')
   assert.match(css, /\.tb-tools \{ margin-left: auto/, 'R60: the tools segment is pushed right by auto margin')
   assert.match(css, /\.tb-zones \{ flex-basis: 100%/, 'R60: the zones segment takes the full SECOND header row')
-  assert.match(css, /\.tb-seg:has\(> #focus-ctl\[hidden\]\) \{ display: none/,
-    'R60: without a focus the WHOLE focus segment (caption + separator) leaves no placeholder')
+  assert.match(css, /\.tb-seg:has\(#focus-ctl\[hidden\]\) \{ display: none/,
+    'R60: without a focus the WHOLE focus segment (caption + separator) leaves no placeholder (R67: the ctl rides one row deeper — the :has drops the now-wrong child combinator, the semantic is identical)')
   assert.match(header[0], /class="tb-seg tb-div/, 'the separator variant ships on the inner segments')
-  assert.match(css, /\.tb-seg \{[^}]*display:\s*inline-flex[^}]*align-items:\s*center[^}]*gap:\s*\d+px/, 'segments are centered inline-flex boxes with internal gaps')
+  assert.match(css, /\.tb-seg \{[^}]*display:\s*inline-flex[^}]*flex-direction:\s*column/, 'R67: a segment is a vertical two-row box (caption row, control row)')
+  assert.match(css, /\.tb-row \{[^}]*display:\s*inline-flex[^}]*align-items:\s*center[^}]*gap:\s*\d+px/, 'the control row is the centered inline-flex box with internal gaps')
   assert.match(css, /\.tb-seg\.tb-div \{[^}]*border-left:\s*1px solid/, '1px separator between segments')
   assert.match(css, /\.tb-seg\.tb-div \{[^}]*padding-left:\s*(1[0-9]|[6-9])px/, '…plus a breathing gap around it')
   assert.match(css, /header \{[^}]*flex-wrap:\s*wrap/, 'the header wraps → narrow panes fold the segments onto new lines')
-  assert.match(css, /\.tb-seg \{[^}]*flex-wrap:\s*wrap/, 'and a segment lets its own controls wrap inside it')
+  assert.match(css, /\.tb-row \{[^}]*flex-wrap:\s*wrap/, 'and a segment lets its own controls wrap inside the row')
 })
 
 test('V2.9b R61 header text system: labels sink to the secondary voice, edge swatches read app.js OWN edge colors, and the header invents no new hue', () => {
@@ -4777,10 +4781,10 @@ test('V2.9b R61 header text system: labels sink to the secondary voice, edge swa
   // —— ③ the R61 voice: secondary 11px labels (the .62 TREATMENT — opacity on the
   //       inherited ink, the same family as #details .ver, deliberately NOT a hex),
   //       14px primary icon buttons, 12px chip names, excluded chips greyed at the dot.
-  assert.match(css, /header label\.ctl > span, #focus-ctl > span, #edge-kinds label \{ font-size: 11px; opacity: \.62; \}/,
-    'R61: control labels are 11px at the .62 secondary opacity (same treatment as the panel .ver — no new color invented)')
-  assert.match(css, /#reset-view, #arrange-view \{ font-size: 14px; color: inherit; \}/,
-    'R61: the ⌂/⌗ icon buttons are 14px in the primary (inherited) ink')
+  assert.match(css, /header label\.ctl > span, #focus-ctl > span \{ font-size: 11px; opacity: \.62; \}/,
+    'R61 (V2.11: the edge-kind labels LEFT this rule for the pill family — ON text is full voice now): info labels stay 11px at the .62 secondary opacity')
+  assert.match(css, /#reset-view, #arrange-view \{ min-width: 0; width: 28px; height: 28px; padding: 0; font-size: 16px; color: inherit; display: inline-flex; align-items: center; justify-content: center; \}/,
+    'R61 + V2.11 R66/R69: the icon buttons are 16px icons (1em currentColor, inherited ink) in 28×28 squares')
   assert.match(css, /\.chip \.n \{ font-size: 12px; \}/, 'R61: chip names are the 12px primary voice (the dot stays the zone color)')
   assert.match(css, /\.chip\.off \.dot \{ filter: grayscale\(1\); \}/,
     'R61: an excluded chip dims as a whole (.38, shipped) AND its zone dot goes grey — filter, because the dot color is an inline palette constant')
@@ -5668,7 +5672,7 @@ test('V2.8 R56 palette guard: the details color system invents NO hue — every 
   for (const d of dual) assert.ok(css.includes(d), `rule ${d} ships`)
 })
 
-test('V2.9b R62 recomputed-AA gate: every panel text pair clears 4.5:1 on its ACTUAL ground (card tint composited over the PARSED panel ground)', () => {
+test('V2.9b R62 + V2.11 R67 recomputed-AA gate: every gated pair clears 4.5:1 on its ACTUAL ground (card tint over the PARSED panel ground; V2.11 extends the ground parsing to the HEADER)', () => {
   const css = readFileSync(join(WEB, 'style.css'), 'utf8')
   const lum = (hex) => {
     const c = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
@@ -5708,6 +5712,20 @@ test('V2.9b R62 recomputed-AA gate: every panel text pair clears 4.5:1 on its AC
   const pre = /#details pre\.readme \{[^}]*background: (#[0-9a-f]{3,8});/.exec(css)
   assert.ok(pre, 'the README pre keeps its own wash (inside the README card)')
   const preL = over(pre[1], cardL), preD = over(pre[1], cardD)
+  // —— V2.11 R67: the SAME parsing discipline extended to the HEADER grounds. The
+  //    stacked captions moved from an opacity treatment to a REAL steel color, so
+  //    their contrast must clear AA on the header's own parsed grounds — and the
+  //    pill/chip text voices move onto the capsule's own opaque background.
+  const hdr = /header \{[^}]*background: light-dark\((#[0-9a-f]{6}), (#[0-9a-f]{6})\);/.exec(css)
+  assert.ok(hdr, 'the header ground ships as a light-dark pair (parsed, R62 doctrine — never hardcoded)')
+  const cap = /\.tb-cap \{[^}]*color: light-dark\((#[0-9a-f]{6}), (#[0-9a-f]{6})\);/.exec(css)
+  assert.ok(cap, 'R67: the steel caption color is parsed from the .tb-cap rule')
+  const gheadPair = /#details \.jump\.ghead \{[^}]*color: light-dark\((#[0-9a-f]{6}), (#[0-9a-f]{6})\);/.exec(css)
+  assert.ok(cap && gheadPair && cap[1].toLowerCase() === gheadPair[1].toLowerCase() && cap[2].toLowerCase() === gheadPair[2].toLowerCase(),
+    'R67: the captions ride the SAME steel family as the panel group heads — one family, and capFocus shares the rule (every .tb-cap)')
+  const capsule = /\.pill, #edge-kinds label \{[^}]*background: light-dark\((#[0-9a-f]{3,8}), (#[0-9a-f]{3,8})\);/.exec(css)
+  assert.ok(capsule, 'R68: the shared pill capsule ships its own opaque light-dark background (parsed)')
+  const n6 = (t) => { const h = t.slice(1).toLowerCase(); return h.length === 3 ? '#' + h.split('').map((c) => c + c).join('') : '#' + h.slice(0, 6) }
   // —— the FULL pair table on the COMPOSITE grounds. Panel-head channels
   //    (crumbs/.85, the .lvl chip/.85 — outside any card) keep the bare ground;
   //    the semantic pills keep their own OPAQUE pill grounds (the card wash never
@@ -5742,6 +5760,15 @@ test('V2.9b R62 recomputed-AA gate: every panel text pair clears 4.5:1 on its AC
     ['panel-head crumbs at .85 on the BARE panel (dark)', mix('#ffffff', panel[2], 0.85), panel[2]],
     ['.lvl chip at .85 on the BARE panel (light)', mix('#000000', panel[1], 0.85), panel[1]],
     ['.lvl chip at .85 on the BARE panel (dark)', mix('#ffffff', panel[2], 0.85), panel[2]],
+    // —— V2.11 R67/R68 header voices on their ACTUAL grounds (all parsed above):
+    ['steel segment caption on the header ground (light)', cap[1].toLowerCase(), hdr[1].toLowerCase()],
+    ['steel segment caption on the header ground (dark)', cap[2].toLowerCase(), hdr[2].toLowerCase()],
+    ['header .62 secondary label (light)', mix('#000000', hdr[1].toLowerCase(), 0.62), hdr[1].toLowerCase()],
+    ['header .62 secondary label (dark)', mix('#ffffff', hdr[2].toLowerCase(), 0.62), hdr[2].toLowerCase()],
+    ['pill/chip ON text on the capsule ground (light)', '#000000', n6(capsule[1])],
+    ['pill/chip ON text on the capsule ground (dark)', '#ffffff', n6(capsule[2])],
+    ['meta/status at .65 on the header ground (light)', mix('#000000', hdr[1].toLowerCase(), 0.65), hdr[1].toLowerCase()],
+    ['meta/status at .65 on the header ground (dark)', mix('#ffffff', hdr[2].toLowerCase(), 0.65), hdr[2].toLowerCase()],
   ]
   const rowsOut = []
   let worst = Infinity
@@ -5765,7 +5792,7 @@ test('V2.9b R62 recomputed-AA gate: every panel text pair clears 4.5:1 on its AC
     `teeth: red ALREADY missed AA at BASE (${redBaseL.toFixed(2)}/${redBaseD.toFixed(2)}) — this guard does not pretend otherwise`)
   rowsOut.push(`  [inherited, not AA-set] .unsat/.brk red | #d0433f on bare ${panel[1]}/${panel[2]} | ${redBaseL.toFixed(2)}/${redBaseD.toFixed(2)}:1 → on tint ${redL.toFixed(2)}/${redD.toFixed(2)}:1`)
   assert.ok(redL >= 4.0 && redD >= 3.4, `the tint must not collapse the red channel further (got ${redL.toFixed(2)}/${redD.toFixed(2)})`)
-  console.log('V2.9b R62 composite-AA pair table (gate ≥ 4.5 on every gated pair):')
+  console.log('V2.9b R62 + V2.11 R67 composite/header-AA pair table (gate ≥ 4.5 on every gated pair):')
   console.log(rowsOut.join('\n'))
   console.log(`  worst gated pair: ${worst.toFixed(2)}:1`)
 })
@@ -6066,4 +6093,144 @@ test('V2.10c R65 static guards: state.sectionMore ships, the four key namespaces
   assert.doesNotMatch(src, /kvRow\((box|rows|holder), '', /, 'the inert grey kvRow tails are DEAD at all four sites')
   assert.equal((src.match(/t\('groupMoreLabel'\)/g) || []).length, 1, 'the zone tail still rides t(groupMoreLabel) — ZERO new i18n keys…')
   assert.equal((src.match(/t\('moreLabel'\)/g) || []).length, 3, '…and the other three tails still ride t(moreLabel)')
+})
+
+// =========================================================================
+// Task V2.11 — the header polish round: R66 the two icon buttons take static
+// inline lucide SVGs (brief-verbatim; the icons NEVER touch a network), R67 the
+// segment captions stack above their controls in steel (AA re-gated in the R62
+// test above), R68 zone chips + edge-kind checkboxes + 真实跨包线 speak ONE pill
+// toggle language, R69 the header ships one control-size system. All guards are
+// source/structure level (scalar asserts only). The MUST-STAY-GREEN baseline —
+// the R60 id multiset, the R61 CSS↔styleFor swatch equality, the composite-AA
+// gate and the palette sweep — is untouched below: the header edits wrap, never
+// rename; the edge-kind label markup stays byte-frozen. The keyboard half of
+// R68 runs for real in test/ctx-menu-wiring.test.mjs.
+// =========================================================================
+
+const ICON_MAXIMIZE = '<svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3m8 0h3a2 2 0 0 0 2-2v-3"/></svg>'
+const ICON_LAYOUT_GRID = '<svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><rect fill="currentColor" width="7" height="7" x="3" y="3" rx="1"/><rect fill="currentColor" width="7" height="7" x="14" y="3" rx="1"/><rect fill="currentColor" width="7" height="7" x="14" y="14" rx="1"/><rect fill="currentColor" width="7" height="7" x="3" y="14" rx="1"/></g></svg>'
+
+test('V2.11 R66 icon guards: EXACTLY two inline SVGs, brief-verbatim, currentColor, inside the untouched titled buttons; the ⌂/⌗ glyphs retire', () => {
+  const html = readFileSync(join(WEB, 'index.html'), 'utf8')
+  assert.equal((html.match(/<svg\b/g) || []).length, 2, 'exactly two <svg> in the whole document — the reset + arrange pair, nothing smuggled in')
+  assert.ok(html.includes(`<button id="reset-view" data-i18n-title="menuResetView">${ICON_MAXIMIZE}</button>`),
+    'R66: 复位 takes lucide:maximize BYTE-EXACT from the brief, hung on the unchanged button + data-i18n-title')
+  assert.ok(html.includes(`<button id="arrange-view" data-i18n-title="arrange">${ICON_LAYOUT_GRID}</button>`),
+    'R66: 排布 takes lucide:layout-grid BYTE-EXACT, same unchanged-button discipline')
+  assert.ok(!/[⌂⌗]/.test(html), 'the ⌂/⌗ glyph text is retired from index.html (icons replaced the glyphs; the 右键菜单 rows stay TEXT — a menu is a text surface)')
+  assert.equal((html.match(/aria-hidden="true"/g) || []).length, 2, 'both icons are aria-hidden — the semantics ride the button titles (zh hover intact)')
+  assert.ok(ICON_MAXIMIZE.includes('currentColor') && ICON_LAYOUT_GRID.includes('currentColor'),
+    'both icons paint with currentColor (继承墨) — the ink is never re-declared per theme')
+})
+
+test('V2.11 R66 offline discipline: web/ ships NO icon service — the icon pair is inline, zero fetches (vendor stays frozen)', () => {
+  for (const f of ['index.html', 'app.js', 'style.css']) {
+    const body = readFileSync(join(WEB, f), 'utf8')
+    assert.ok(!/iconify/i.test(body), `web/${f} mentions no iconify`)
+    assert.ok(!/api\.icon/i.test(body), `web/${f} carries no icon-api string`)
+    assert.ok(!/https:\/\//.test(body), `web/${f} ships no https URL (the web layer is fully local)`)
+  }
+  const html = readFileSync(join(WEB, 'index.html'), 'utf8')
+  assert.equal((html.match(/http:\/\/www\.w3\.org\/2000\/svg/g) || []).length, 2,
+    'the only http strings in index.html are the two SVG namespace CONSTANTS (XML identifiers, never network)')
+  assert.ok(!/iconify/i.test(readFileSync(join(WEB, 'vendor', 'cytoscape.min.js'), 'utf8')), '…and the frozen vendor carries none either (the offline claim covers all of web/)')
+})
+
+test('V2.11 R67 stacked-caption structure: every .tb-seg = caption first, ONE .tb-row of controls second (ids unmoved — the R60 multiset stays the lock)', () => {
+  const html = readFileSync(join(WEB, 'index.html'), 'utf8')
+  const css = readFileSync(join(WEB, 'style.css'), 'utf8')
+  const header = /<header>[\s\S]*?<\/header>/.exec(html)[0]
+  const segs = segBlocks(header) // the R60 balanced-div extractor — the row wrapper is a span, div balance intact
+  assert.equal(segs.length, 5, 'still five segments in the R60 reading order')
+  for (const s of segs) {
+    assert.match(s.body, /^\s*<span class="tb-cap" data-i18n="[A-Za-z]+"><\/span>\s*<span class="tb-row">[\s\S]+<\/span>\s*$/,
+      `${s.cls}: caption on top, exactly one .tb-row control row below — nothing stands outside the two rows`)
+  }
+  // the row is pure display furniture: it holds ids WITHOUT owning structure (R60
+  // inSeg checks are body-includes — they pass through the wrapper unchanged)
+  assert.ok(!/<span class="tb-row"[^>]*id=/.test(html) && (html.match(/class="tb-row"/g) || []).length === 5,
+    'five .tb-row wrappers, none of them carries an id (ids move INSIDE wrappers, never get renamed or duplicated)')
+  assert.match(css, /\.tb-cap \{[^}]*align-self:\s*flex-start/, 'R67: the caption hugs the left edge (上款), it is not a stretched band')
+  assert.doesNotMatch(css, /\.tb-cap \{[^}]*opacity/, 'R67: the caption stopped dimming THROUGH opacity — it carries the AA-gated steel color outright (pair table in the R62 gate)')
+})
+
+test('V2.11 R68 pill-family guard: ONE shared capsule for .pill + the byte-frozen #edge-kinds labels, ONE off vocabulary (.38 + grayscale + strike), 真实跨包线 joins on the neutral edgeLine swatch', () => {
+  const html = readFileSync(join(WEB, 'index.html'), 'utf8')
+  const css = readFileSync(join(WEB, 'style.css'), 'utf8')
+  const src = readFileSync(join(WEB, 'app.js'), 'utf8')
+  // markup discipline: the four edge labels are BYTE-FROZEN by the R61 swatch pin —
+  // the unified look reaches them through a shared SELECTOR LIST, not new attributes.
+  for (const kind of ['dep', 'mount', 'peer', 'peer-optional']) {
+    assert.ok(html.includes(`<label data-swatch="${kind}"><input type="checkbox" data-kind="${kind}" checked>`),
+      `${kind}: label/checkbox bytes untouched (type=checkbox + data-kind + data-swatch survive)`)
+  }
+  assert.equal((html.match(/data-swatch="/g) || []).length, 4, 'still EXACTLY four swatch hooks (the neutral real-cross pill is not an edge kind)')
+  assert.match(html, /<label class="pill pill-neutral"><input id="show-real-cross" type="checkbox"><span data-i18n="realCrossLabel">/,
+    'R68: #show-real-cross left label.ctl for the pill family (input id + i18n span + label-wrapping-input click semantics all intact)')
+  // the ONE shared capsule — exact rule string = exact shared geometry
+  assert.match(css, /^\.pill, #edge-kinds label \{ position: relative; display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 8px; border: 1px solid #8885; border-radius: 999px; background: light-dark\(#fff, #171c22\); color: inherit; font-size: 11px; cursor: pointer; \}$/m,
+    'R68: one capsule definition serves zone chips (.pill), the four byte-frozen edge labels and the real-cross pill — border-box capsule chrome, zero new values')
+  assert.match(css, /\.chip \{[^}]*height: 24px/, 'zone chips ride the 24px switch height too (chips ARE .chip.pill now)')
+  // the ONE off vocabulary — dim + grey swatch + strike, the SHIPPED chip treatment, everywhere
+  assert.match(css, /#edge-kinds label:has\(> input:not\(:checked\)\), \.pill-neutral:has\(> input:not\(:checked\)\) \{ opacity: \.38; text-decoration: line-through; \}/,
+    'R68: OFF pills speak the chip dialect — the shipped .38 dim + strike (existing opacity family, no new alpha)')
+  assert.match(css, /\.chip\.off \{ opacity: \.38; \}/, '…and the chip-off anchor rule stays byte-identical (the vocabulary was the chip\u2019s all along)')
+  // the OFF swatch greys through the SAME filter knob the chip dots already use
+  // (the dot/swatch colors are inline palette constants — CSS may only desaturate)
+  assert.match(css, /#edge-kinds label:has\(> input:not\(:checked\)\)::before, \.pill-neutral:has\(> input:not\(:checked\)\)::before \{ filter: grayscale\(1\); \}/,
+    'R68: OFF greys the swatch with filter — the shipped .chip.off .dot knob, not a new grey')
+  assert.match(css, /\.chip\.off \.dot \{ filter: grayscale\(1\); \}/, '…the chip-side anchor rule stays byte-identical')
+  // one swatch GEOMETRY across the family: 9px round dots everywhere (was a 10×3 bar)
+  assert.match(css, /#edge-kinds label::before \{ content: ""; flex: 0 0 9px; height: 9px; border-radius: 50%; \}/,
+    'R68: edge swatches took the chip-dot geometry — one swatch shape for every toggle')
+  assert.match(css, /\.chip \.dot \{ width: 9px; height: 9px; border-radius: 50%; \}/, '…chip dots unchanged; the geometry both sides now share')
+  // the neutral real-cross swatch == app.js OWN neutral edge constant (R61 equality idiom)
+  const elLine = /var edgeLine = dark \? '(#[0-9a-f]{6})' : '(#[0-9a-f]{6})'/.exec(src)
+  assert.ok(elLine, 'app.js still declares the edgeLine constant (the neutral edge color)')
+  const neutral = /\.pill-neutral::before \{ content: ""; flex: 0 0 9px; height: 9px; border-radius: 50%; background: light-dark\((#[0-9a-f]{6}), (#[0-9a-f]{6})\); \}/.exec(css)
+  assert.ok(neutral, 'R68: the real-cross pill ships its neutral swatch in the SAME 9px-dot geometry')
+  assert.equal(neutral[1].toLowerCase(), elLine[2].toLowerCase(), 'neutral swatch LIGHT == styleFor edgeLine light (zero new hues — the guard idiom the edge kinds already use)')
+  assert.equal(neutral[2].toLowerCase(), elLine[1].toLowerCase(), 'neutral swatch DARK == edgeLine dark')
+  // the JS half: zone chips hang the family; the text tails leave it (button semantics)
+  const chips = extractBalanced(src, 'function buildZoneChips() {')
+  assert.match(chips, /b\.className = 'chip pill'/, 'R68: zone chips hang the shared pill class (click/dblclick/EXCLUSION semantics + .off state untouched)')
+  assert.match(chips, /showAll\.className = 'chip chip-all'/, '全部显示 keeps its chip-adjacent identity but rides the BUTTON size (R69)…')
+  assert.match(chips, /hideAll\.className = 'chip chip-all'/, '…same for 全部隐藏 — actions, not switches')
+  assert.match(css, /header \.chip\.chip-all \{ height: 28px; min-width: 40px; padding-inline: 10px; \}/,
+    'R69: the text tails eat the action-button sizing (0-2-1 beats the 0-1-0 .chip capsule — later source too)')
+  assert.doesNotMatch(chips, /innerHTML|outerHTML|insertAdjacentHTML/, 'XSS discipline holds: the pill swap is createElement + className only (svg stays static in index.html)')
+})
+
+test('V2.11 R68 keyboard reachability: the pill checkboxes hide by the classic CLIP pattern (never display:none — Tab still lands), a focus-visible ring paints on the pill, and Space→change still drives the filter (wiring layer)', () => {
+  const html = readFileSync(join(WEB, 'index.html'), 'utf8')
+  const css = readFileSync(join(WEB, 'style.css'), 'utf8')
+  const src = readFileSync(join(WEB, 'app.js'), 'utf8')
+  assert.match(css, /^#edge-kinds label > input\[type=checkbox\], \.pill > input\[type=checkbox\] \{ position: absolute; width: 1px; height: 1px; margin: 0; padding: 0; overflow: hidden; clip: rect\(0 0 0 0\); border: 0; \}$/m,
+    'R68: visually-hidden via position:absolute + clip — the focusable hiding pattern; the checkbox STAYS in the tab order')
+  const hideRule = /^#edge-kinds label > input\[type=checkbox\].*$/m.exec(css)[0]
+  assert.doesNotMatch(hideRule, /display:\s*none|visibility:\s*hidden/, '…and nothing in that rule could remove the control from the keyboard (display/visibility would)')
+  const ekBody = /<span id="edge-kinds"[\s\S]*?<\/span>/.exec(html)[0]
+  assert.doesNotMatch(ekBody, /tabindex|disabled/, 'no tabindex=-1 / disabled anywhere in #edge-kinds — nothing opts the switches out of the keyboard')
+  assert.match(css, /#edge-kinds label:has\(> input:focus-visible\), \.pill:has\(> input:focus-visible\) \{ outline: 2px solid light-dark\(#4c7fb8, #6da3d8\); outline-offset: 1px; \}/,
+    'R68: the hidden checkbox keeps a VISIBLE ring — painted on the capsule via :has (peer-constant hue, already palette-legal)')
+  assert.match(src, /ch\.addEventListener\('change', syncEdgeKinds\)/, 'the Space-toggled checkbox fires change → syncEdgeKinds (the ONE edge-filter funnel)')
+  const sync = extractBalanced(src, 'function syncEdgeKinds() {')
+  assert.match(sync, /if \(ch\.checked\) kinds\.push\(ch\.getAttribute\('data-kind'\)\)/, 'sync reads .checked — keyboard Space flips checked, change does the rest')
+  assert.match(sync, /state\.view\.edgeKinds = edgeKindsFor\(kinds\)/, '…writes the edgeKinds view field (subset semantics pinned by the edgeKindsFor unit battery)')
+  assert.match(sync, /paint\(\)/, '…and repaints. The REAL-event half of this guard (fire change on the checkbox, watch the render set filter) runs in test/ctx-menu-wiring.test.mjs.')
+})
+
+test('V2.11 R69 sizing: one 28px action voice in the header, true 28×28 icon squares, MIN (never fixed) text-button widths — and switches a deliberate step smaller', () => {
+  const css = readFileSync(join(WEB, 'style.css'), 'utf8')
+  assert.match(css, /^header button, header select \{ height: 28px; \}$/m,
+    'R69: every header button and select is 28px tall (the * rule keeps border-box — focus rings ride OUTSIDE; the box never moves)')
+  assert.match(css, /^#lang-btn, #refresh, #focus-clear, #path-back \{ min-width: 40px; padding-inline: 10px; \}$/m,
+    'R69: text buttons share min-width 40 + 10px inline padding — height/radius/padding/weight uniform')
+  assert.doesNotMatch(css, /#lang-btn, #refresh[^}]*[^-]width:\s*\d+px/,
+    'THE DOCUMENTED TRADEOFF: min width only — a forced equal width would jitter EN↔重扫; width follows the copy (brief-sanctioned)')
+  assert.match(css, /#reset-view, #arrange-view \{ min-width: 0; width: 28px; height: 28px; padding: 0; font-size: 16px; color: inherit; display: inline-flex; align-items: center; justify-content: center; \}/,
+    'R69: icon buttons are true 28×28 squares (min-width 0 releases the text-button floor; svg is 1em = 16px)')
+  assert.match(css, /^\.pill, #edge-kinds label \{[^}]*height: 24px/m, 'R69: switches ride 24px — 开关≠动作: being a size SMALLER than actions is the point (deliberate, per the brief)')
+  assert.doesNotMatch(css, /input\[type=search\] \{[^}]*height/, 'the search input keeps its own size: R69 scopes to buttons+selects, verbatim')
 })

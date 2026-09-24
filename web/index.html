@@ -9,50 +9,66 @@
 <body>
   <header>
     <h1 data-i18n="title">dsh-pkg-atlas</h1>
-    <!-- V2.9b R60/R61 顶栏分区重排（v2.6 R47 四分区的信息架构不变，只重排+加段标题）：
-         行1 [聚焦段(条件出现,段首)] [视图: ⌂ ⌗ 组级|包级] [筛选: 类型▾ Profile▾ 边类型☑×5 真实跨包线☐]
-             [工具(右对齐): 搜索 EN 重扫] #meta；行2 [分区: chips 全排 + 全部显示/全部隐藏]。
-         每段左端一枚 10px 段标题（data-i18n cap*，zh/en 双语齐）；结构=纯 wrapper div + CSS，
-         零 JS 钩子改动（守卫：header id 多重集 == BASE 68b063a + 控件归属段断言）。
-         边类型 label 挂 data-swatch，::before 色块取应用层 styleFor 的边色常量（守卫钉相等）；
+    <!-- V2.9b R60/R61 → V2.11 R66-R69 顶栏精修（v2.6 R47 四分区的信息架构不变，只精修展示层）：
+         行1 [聚焦段(条件出现,段首)] [视图段: 复位钮 排布钮 组级|包级] [筛选段: 类型▾ Profile▾ 边类型×4 真实跨包线]
+             [工具段(右对齐): 搜索 EN 重扫] #meta；行2 [分区段: chips 全排 + 全部显示/全部隐藏]。
+         R67 堆叠段标题：每段纵向两行——钢蓝段标题(.tb-cap=面板 .ghead 同款 platform-steel，AA 在 R62 守卫里
+         按顶栏底色重算) + 控件行(.tb-row，纯 wrapper span，零 id)。R60 结构守卫不变：header id 多重集
+         == BASE 68b063a（id 只搬进 wrapper，零改名零删除）+ 控件归属段断言。
+         R66 图标：复位/排布两钮的文字符号内容换成两枚内联 lucide SVG（lucide:maximize / lucide:layout-grid，
+         离线内联，web/ 零图标服务引用——离线守卫）；1em currentColor，悬停中文走 data-i18n-title，
+         aria-hidden+title 承载语义；右键菜单「自动排布」保持文字行（菜单是文字界面，不混图标）。
+         R68 统一开关语系：.pill 胶囊 = 色块+文案；开=色块本色+全亮，关=色块灰度+文案 .38+删除线（全在既有族）。
+         边类型四个 label 被 R61 色块守卫钉字节(data-kind/data-swatch/checkbox)——视觉统一经共享选择器组
+         (.pill, #edge-kinds label) 达成，HTML 零改动；色块↔styleFor 边色守卫(data-swatch::before)保形续钉。
+         「显示真实跨包边线」(#show-real-cross) 并入 pill 族（中性色块=styleFor edgeLine 常量）。
+         R69 尺寸：动作钮/下拉统一 28px(border-box，焦点环画在外侧不出格)，文字钮统一 min-width+内边距——
+         宽度仍随文案（强制等宽会让中英切换抖动，brief 明写取舍）；开关(pill/chips) 24px：开关≠动作，小一号即语义。
          无聚焦时 :has 把聚焦段整体收起不占位；.tb-div 段间分隔线保留。 -->
     <div class="tb-seg tb-div tb-focus">
       <span class="tb-cap" data-i18n="capFocus"></span>
-      <span id="focus-ctl" hidden><button id="path-back" hidden></button><span data-i18n="focusLabel">聚焦深度</span><select id="focus-depth"><option value="0" data-i18n="focusUnlimited" selected>不限</option><option value="1">1</option><option value="2">2</option><option value="3">3</option></select><button id="focus-clear" data-i18n="focusOff">退出依赖图</button></span>
+      <span class="tb-row"><span id="focus-ctl" hidden><button id="path-back" hidden></button><span data-i18n="focusLabel">聚焦深度</span><select id="focus-depth"><option value="0" data-i18n="focusUnlimited" selected>不限</option><option value="1">1</option><option value="2">2</option><option value="3">3</option></select><button id="focus-clear" data-i18n="focusOff">退出依赖图</button></span></span>
     </div>
     <div class="tb-seg tb-div tb-view">
       <span class="tb-cap" data-i18n="capView"></span>
-      <button id="reset-view" data-i18n-title="menuResetView">⌂</button>
-      <!-- V2.9a R59: ⌗ 自动排布 — drop every drag override and glide back to the
-           model's band layout. Same command surface as the canvas right-click. -->
-      <button id="arrange-view" data-i18n-title="arrange">⌗</button>
-      <span id="lod-ctl" data-i18n-title="lodLabel">
-        <button data-seg="groups" data-i18n="lodGroups">组级</button>
-        <button data-seg="packages" data-i18n="lodPkgs">包级</button>
+      <span class="tb-row">
+        <button id="reset-view" data-i18n-title="menuResetView"><svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3m8 0h3a2 2 0 0 0 2-2v-3"/></svg></button>
+        <!-- V2.9a R59 → V2.11 R66: 排布钮 — drop every drag override and glide back to the
+             model's band layout. Same command surface as the canvas right-click; the icon
+             is lucide:layout-grid, inline + offline. -->
+        <button id="arrange-view" data-i18n-title="arrange"><svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><rect fill="currentColor" width="7" height="7" x="3" y="3" rx="1"/><rect fill="currentColor" width="7" height="7" x="14" y="3" rx="1"/><rect fill="currentColor" width="7" height="7" x="14" y="14" rx="1"/><rect fill="currentColor" width="7" height="7" x="3" y="14" rx="1"/></g></svg></button>
+        <span id="lod-ctl" data-i18n-title="lodLabel">
+          <button data-seg="groups" data-i18n="lodGroups">组级</button>
+          <button data-seg="packages" data-i18n="lodPkgs">包级</button>
+        </span>
       </span>
     </div>
     <div class="tb-seg tb-div tb-filter">
       <span class="tb-cap" data-i18n="capFilter"></span>
-      <label class="ctl"><span data-i18n="scopeLabel">类型</span><select id="scope-filter"></select></label>
-      <label class="ctl"><span data-i18n="profileLabel">Profile</span><select id="profile-filter"></select></label>
-      <span id="edge-kinds" class="chips" data-i18n-title="edgeKindsLabel">
-        <label data-swatch="dep"><input type="checkbox" data-kind="dep" checked>dep</label>
-        <label data-swatch="mount"><input type="checkbox" data-kind="mount" checked>mount</label>
-        <label data-swatch="peer"><input type="checkbox" data-kind="peer" checked>peer</label>
-        <label data-swatch="peer-optional"><input type="checkbox" data-kind="peer-optional" checked>peer-opt</label>
+      <span class="tb-row">
+        <label class="ctl"><span data-i18n="scopeLabel">类型</span><select id="scope-filter"></select></label>
+        <label class="ctl"><span data-i18n="profileLabel">Profile</span><select id="profile-filter"></select></label>
+        <span id="edge-kinds" class="chips" data-i18n-title="edgeKindsLabel">
+          <label data-swatch="dep"><input type="checkbox" data-kind="dep" checked>dep</label>
+          <label data-swatch="mount"><input type="checkbox" data-kind="mount" checked>mount</label>
+          <label data-swatch="peer"><input type="checkbox" data-kind="peer" checked>peer</label>
+          <label data-swatch="peer-optional"><input type="checkbox" data-kind="peer-optional" checked>peer-opt</label>
+        </span>
+        <label class="pill pill-neutral"><input id="show-real-cross" type="checkbox"><span data-i18n="realCrossLabel">真实跨包线</span></label>
       </span>
-      <label class="ctl"><input id="show-real-cross" type="checkbox"><span data-i18n="realCrossLabel">真实跨包线</span></label>
     </div>
     <div class="tb-seg tb-div tb-tools">
       <span class="tb-cap" data-i18n="capTools"></span>
-      <input id="search" type="search" data-i18n-ph="search" autocomplete="off">
-      <button id="lang-btn" data-i18n="langSwitch">EN</button>
-      <button id="refresh" data-i18n="refresh"></button>
+      <span class="tb-row">
+        <input id="search" type="search" data-i18n-ph="search" autocomplete="off">
+        <button id="lang-btn" data-i18n="langSwitch">EN</button>
+        <button id="refresh" data-i18n="refresh"></button>
+      </span>
     </div>
     <span id="meta"></span>
     <div class="tb-seg tb-zones">
       <span class="tb-cap" data-i18n="capZones"></span>
-      <span id="zone-chips" class="chips"></span>
+      <span class="tb-row"><span id="zone-chips" class="chips"></span></span>
     </div>
   </header>
   <div id="progress-bar" hidden>

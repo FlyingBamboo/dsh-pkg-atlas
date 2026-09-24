@@ -1444,6 +1444,39 @@ test('V210b 7: zone hits answer BOTH paths — DOM events routed through the con
   await sleep(350)
 })
 
+test('V2.11 R68 keyboard-wired pills: space→change on an edge-kind checkbox filters through syncEdgeKinds, and the real-cross pill still toggles showRealCross', async () => {
+  // Keyboard doctrine: Tab lands on the (clip-hidden, still focusable — the CSS
+  // shape is pinned in render-smoke) checkbox, SPACE flips .checked and the browser
+  // fires 'change'. This is the wiring-layer proof that path is live: change is
+  // EXACTLY what Space activation produces, and it is what the handlers bind.
+  // The filter is observable at the PACKAGES tier (R43: the groups-tier base view
+  // ships no edges at all) — take it, count visible dep edges, restore everything.
+  const tierBefore = S().view.granularity
+  if (tierBefore !== 'packages') { fire(doc.getElementById('seg-pkgs'), 'click'); await sleep(120) }
+  const depShown = () => S().cy.edges('.e-dep').length - S().cy.edges('.e-dep.ek-off').length
+  const depN = depShown()
+  assert.ok(depN > 0, 'the package tier ships real dep edges to hide (' + depN + ')')
+  const dep = doc.getElementById('ek-dep')
+  assert.ok(dep && dep.checked === true, 'the harness ships every edge-kind checkbox checked (all-checked baseline)')
+  dep.checked = false
+  fire(dep, 'change')
+  assert.equal(S().view.edgeKinds.has('dep'), false, 'dep dropped out of the view set (subset Set, not null)')
+  assert.equal(depShown(), 0, 'no visible dep edges remain — the model drops them at build (and the focus view would tag ek-off; both land on this count)')
+  assert.ok(S().cy.edges('.e-peer').length > 0, 'the peer kind survives — this is a filter, not a wipe')
+  dep.checked = true
+  fire(dep, 'change')
+  assert.equal(S().view.edgeKinds, null, 'all-checked again → null (the all-pass sentinel — the pill toggles BOTH ways)')
+  assert.equal(depShown(), depN, '…and every dep edge is back on the canvas')
+  const cross = doc.getElementById('show-real-cross')
+  cross.checked = true
+  fire(cross, 'change')
+  assert.equal(S().view.showRealCross, true, 'the real-cross pill writes showRealCross through the same keyboard-reachable change wiring…')
+  cross.checked = false
+  fire(cross, 'change')
+  assert.equal(S().view.showRealCross, false, '…and un-writes it')
+  if (tierBefore !== 'packages') { fire(doc.getElementById('seg-groups'), 'click'); await sleep(120) }
+})
+
 test('C1 hygiene: no unhandled rejections, boot warnings clean', () => {
   console.warn = w0
   assert.deepEqual(REJECTIONS, [], 'no unhandled rejections')

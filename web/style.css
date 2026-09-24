@@ -5,32 +5,60 @@ header { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding
 header h1 { font-size: 15px; margin: 0; }
 header label { white-space: nowrap; }
 header label.ctl { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; }
-/* V2.6 R47 → V2.9b R60: 顶栏分段（纯展示层）——段 = inline-flex 容器，.tb-div
-   段间 1px 分隔线 + 呼吸间距，header 的 flex-wrap 让窄屏整体折行。JS 钩子零改动。 */
-.tb-seg { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+/* V2.6 R47 → V2.9b R60 → V2.11 R67: 顶栏分段（纯展示层）——段 = 纵向两行的
+   inline-flex 列（钢蓝段标题行 + 控件行 .tb-row），.tb-div 段间 1px 分隔线 +
+   呼吸间距，header 的 flex-wrap 让窄屏整体折行。JS 钩子零改动。 */
+.tb-seg { display: inline-flex; flex-direction: column; align-items: stretch; gap: 3px; }
+.tb-row { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .tb-seg.tb-div { border-left: 1px solid #8884; padding-left: 14px; }
 /* V2.9b R60/R61 顶栏段标题 + 信息型文字（色彩=类型，沿用面板词汇；零新增色值——
-   守卫把 V2.8 色板扫描扩到本段）。R60：段标题=上款小字；.tb-tools 右对齐（auto
+   守卫把 V2.8 色板扫描扩到本段）。R67：段标题=堆叠控件之上的钢蓝小字（10px/600/
+   字距 .12em），色取面板小节钢蓝族 light-dark(#4f6b8a,#8fa9c9)=platform line，
+   与 #details .jump.ghead 同族（守卫钉两对相等）；不再是 .55 透明度款——AA 改由
+   R62 守卫在解析出的顶栏双底上重算（全表见该守卫输出）。.tb-tools 右对齐（auto
    margin）；.tb-zones flex-basis:100% ⇒ 分区段独占第二行；无聚焦 ⇒ 聚焦段（含
    标题与分隔线）整体收起，不占位——:has 是 2023+ 基线，不支持时最坏多一根细线。
    R61：控件标签=11px 次级灰蓝（opacity .62 —— 与 #details .ver 同族"TREATMENT"，
-   是继承墨的不透明度，不是新色）；⌂⌗ 14px 主色（主色=继承墨）；chip 名 12px、
-   排除态点灰用 filter（点色是 app.js 内联的面板常量，CSS 只能灰度化它）；
-   边类型行首色块 = styleFor 画该边种的同款色（守卫钉 CSS↔JS 双主题相等）。 */
-.tb-cap { font-size: 10px; font-weight: 600; letter-spacing: .08em; opacity: .55; }
+   是继承墨的不透明度，不是新色）；chip 名 12px、排除态点灰用 filter（点色是
+   app.js 内联的面板常量，CSS 只能灰度化它）；边类型行首色块 = styleFor 画该边种
+   的同款色（守卫钉 CSS↔JS 双主题相等）。V2.11：图标钮 28×28（R69）、色块统一 9px
+   圆点、开关语系见下方 R68 块。 */
+.tb-cap { font-size: 10px; font-weight: 600; letter-spacing: .12em; color: light-dark(#4f6b8a, #8fa9c9); align-self: flex-start; }
 .tb-tools { margin-left: auto; }
 .tb-zones { flex-basis: 100%; }
-.tb-seg:has(> #focus-ctl[hidden]) { display: none; }
-#reset-view, #arrange-view { font-size: 14px; color: inherit; }
-header label.ctl > span, #focus-ctl > span, #edge-kinds label { font-size: 11px; opacity: .62; }
+.tb-seg:has(#focus-ctl[hidden]) { display: none; }
+#reset-view, #arrange-view { min-width: 0; width: 28px; height: 28px; padding: 0; font-size: 16px; color: inherit; display: inline-flex; align-items: center; justify-content: center; }
+header label.ctl > span, #focus-ctl > span { font-size: 11px; opacity: .62; }
 .chip .n { font-size: 12px; }
 .chip.off .dot { filter: grayscale(1); }
 #edge-kinds label { display: inline-flex; align-items: center; gap: 4px; }
-#edge-kinds label::before { content: ""; flex: 0 0 10px; height: 3px; border-radius: 1px; }
+#edge-kinds label::before { content: ""; flex: 0 0 9px; height: 9px; border-radius: 50%; }
 #edge-kinds label[data-swatch="dep"]::before { background: light-dark(#9aa7b4, #44505e); }
 #edge-kinds label[data-swatch="mount"]::before { background: light-dark(#3f9d6d, #57b98a); }
 #edge-kinds label[data-swatch="peer"]::before { background: light-dark(#4c7fb8, #6da3d8); }
 #edge-kinds label[data-swatch="peer-optional"]::before { background: light-dark(#9dc1e8, #3f5a74); }
+/* V2.11 R68 统一开关语系（展示层，零新色相——胶囊底/边=既有 chrome 族，中性色块
+   =styleFor edgeLine 常量，焦点环=peer 常量，全部被本段色板扫描覆盖）：
+   开 = 色块本色 + 文案全亮；关 = 色块灰度 + 文案 .38 + 删除线——三个值全是区 chip
+   出厂就有的族值，区 chip 反过来换挂 .pill 类，两族合成一种开关语言。边类型四个
+   label 的 HTML 被 R61 守卫钉字节（data-kind/data-swatch/checkbox）——统一视觉走
+   共享选择器组（.pill, #edge-kinds label），不动 markup；关态由 :has(> input:not
+   (:checked)) 驱动（与 R60 聚焦收起同一 2023+ 基线，不支持时最坏=状态不灰，不丢
+   功能）。原生 checkbox 用经典 clip 隐藏：仍可聚焦、Tab 可达、Space 照旧经 change
+   驱动过滤（键盘可达性双守卫钉住：CSS 形态 + 真实事件 wiring）。 */
+.pill, #edge-kinds label { position: relative; display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 8px; border: 1px solid #8885; border-radius: 999px; background: light-dark(#fff, #171c22); color: inherit; font-size: 11px; cursor: pointer; }
+#edge-kinds label > input[type=checkbox], .pill > input[type=checkbox] { position: absolute; width: 1px; height: 1px; margin: 0; padding: 0; overflow: hidden; clip: rect(0 0 0 0); border: 0; }
+#edge-kinds label:has(> input:not(:checked)), .pill-neutral:has(> input:not(:checked)) { opacity: .38; text-decoration: line-through; }
+#edge-kinds label:has(> input:not(:checked))::before, .pill-neutral:has(> input:not(:checked))::before { filter: grayscale(1); }
+#edge-kinds label:has(> input:focus-visible), .pill:has(> input:focus-visible) { outline: 2px solid light-dark(#4c7fb8, #6da3d8); outline-offset: 1px; }
+.pill-neutral::before { content: ""; flex: 0 0 9px; height: 9px; border-radius: 50%; background: light-dark(#9aa7b4, #44505e); }
+/* V2.11 R69 尺寸统一（仅顶栏）：动作钮/下拉一律 28px（* 规则已 border-box——焦点环
+   画在框外，盒子不动）；文字钮统一 min-width:40 + padding-inline:10——宽度仍随文案，
+   强制等宽会让 EN↔重扫 切换抖动（brief 明写取舍：统一的是高度/圆角/边距/视觉重量）；
+   图标钮 28×28 方阵见上；pill/chips 高 24px 见共享胶囊：开关≠动作，小一号是语义。 */
+header button, header select { height: 28px; }
+#lang-btn, #refresh, #focus-clear, #path-back { min-width: 40px; padding-inline: 10px; }
+header .chip.chip-all { height: 28px; min-width: 40px; padding-inline: 10px; }
 input[type=search] { width: 220px; padding: 4px 8px; }
 button { padding: 3px 10px; }
 select { font-size: 11px; }
@@ -97,11 +125,13 @@ main { display: flex; flex: 1; min-height: 0; position: relative; }
 header .chips { display: inline-flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 #zone-chips:empty { display: none; }
 /* zone chips: chip ⇔ zone EXCLUDED from view.filterCats (see app.js mapping) */
-.chip { display: inline-flex; align-items: center; gap: 4px; border: 1px solid #8885; border-radius: 999px; padding: 1px 8px; background: light-dark(#fff, #171c22); cursor: pointer; font-size: 11px; color: inherit; }
+.chip { display: inline-flex; align-items: center; gap: 4px; border: 1px solid #8885; border-radius: 999px; padding: 1px 8px; height: 24px; background: light-dark(#fff, #171c22); cursor: pointer; font-size: 11px; color: inherit; }
 .chip .dot { width: 9px; height: 9px; border-radius: 50%; }
 .chip.off { opacity: .38; }
 .chip.off .n { text-decoration: line-through; }
-/* R61: the edge-kind voice (11px/.62) and its 行首色块 ship in the V2.9b header block above. */
+/* R61 (V2.11 R68: the edge-kind label voice LEFT the .62 secondary rule for the pill family —
+   ON = full-voice capsule text, OFF = .38 + strike + grey dot; the 行首色块 still ships the
+   app.js edge colors as data-swatch::before, now in the shared 9px-dot geometry). */
 /* V2.3 granularity segment (组级 | 包级 — two states, the auto tier is gone) and
    the active-segment mark. The shell/selector names survive from V22b (#lod-ctl,
    .on) so the control keeps one identity across the change. */

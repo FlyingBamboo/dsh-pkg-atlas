@@ -2881,7 +2881,7 @@
     if (!state.graph) return
     var cats = allCatIds()
     cats.forEach(function (id) {
-      var b = document.createElement('button'); b.className = 'chip'
+      var b = document.createElement('button'); b.className = 'chip pill'
       var dot = document.createElement('span'); dot.className = 'dot'
       var z = (ZONE_COLORS[state.theme] || {})[id] || (ZONE_COLORS[state.theme === 'dark' ? 'light' : 'dark'] || {})[id] || { line: '#8a94a0' }
       dot.style.backgroundColor = z.line // constant palette — never user data

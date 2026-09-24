@@ -4647,7 +4647,7 @@ test('V2.6 R46 nav audit: the tap is the ONE nav-free selection door; menu/rows/
     'focusForId package branch: no focus and no nav ⇒ null (the R46 gate)')
   // README interaction prose moved with the door (left-click semantics + entry list)
   const readme = readFileSync(join(WEB, '..', 'README.md'), 'utf8')
-  assert.match(readme, /冷态下单击（左键）任何节点 = 纯选中/, 'README: cold left-click is plain selection for BOTH kinds')
+  assert.match(readme, /冷态下左键单击任何节点只做选中和详情/, 'README: cold left-click is plain selection for BOTH kinds (V2.13 re-worded, contract unchanged)')
   assert.match(readme, /依赖图/, 'README keeps the V2.7 renamed vocabulary (依赖图)')
 })
 
@@ -5906,9 +5906,12 @@ test('V2.9b R62 CSS: the tinted region card at 8px geometry, the card rhythm, th
   // RE-CENTRING DEFECT itself). Full decoupling killed the defect, so the pin
   // moves to the replacement sentence: the dragged-group behavior line must
   // state the WYSIWYG identity, verbatim, in the drag paragraph.
-  assert.match(readme, /拖过的组卡切到包级不再被成员\s*\n?\s*重定心，未单独拖过的成员按「父渲染位＋模型内子相对槽偏移」跟随父框/,
+  // V2.13 humanizer pass re-worded that sentence; the pin re-pins the NEW
+  // wording — same contract: dragged group cards never re-centre on tier
+  // switch, undragged members ride the parent per the slot-offset rule.
+  assert.match(readme, /组卡拖过之后切到包级不再被成员\s*\n?\s*重定心；没单独拖过的成员按「父渲染位＋模型内子相对槽偏移」\s*\n?\s*跟随父框/,
     'R62+→V2.10b: the README drag paragraph states the no-re-centring + ride rule verbatim')
-  assert.match(readme, /拖子不再带动父/, 'V2.10b: the retired ancestor-follow side effect is stated in the README, too')
+  assert.match(readme, /拖子只动子级，父框留在原地/, 'V2.10b: the retired ancestor-follow side effect is stated in the README, too')
 })
 
 // =========================================================================

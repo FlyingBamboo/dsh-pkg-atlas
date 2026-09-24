@@ -9,7 +9,7 @@
     "node": ">=22.6"
   },
   "scripts": {
-    "test": "node --test test/**/*.test.mjs",
+    "test": "node --test \"test/**/*.test.mjs\"",
     "check": "node --check lib/index.js && node --check lib/http.js && node --check lib/scan.js && node --check lib/roles.js && node --check lib/mounts.js && node --check lib/semver.js && node --check lib/categories.js && node --check web/app.js && node --check web/graph-model.js"
   },
   "peerDependencies": {

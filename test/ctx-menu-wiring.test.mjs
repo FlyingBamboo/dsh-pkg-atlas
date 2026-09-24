@@ -824,9 +824,13 @@ test('v27-fix 1: the 还有 N cap row nests INSIDE its section .gmem wrapper', a
   // a clean red (found the hard way during this round).
   const mems = det._desc().filter((el) => el.className === 'gmem')
   assert.equal(mems.length, 1, 'kernel is exactly one section')
-  const caps = det._desc().filter((el) => el.className === 'kv' && el.children[1] && /还有/.test(el.children[1].text))
+  // V2.10c R65 MIGRATION (was: a .kv cap row with the count in children[1]):
+  // the tail is the shared EXPAND BUTTON now — same slot, same wrapper, the
+  // count composed through its .cnt span (elText reads it as one string).
+  const caps = det._desc().filter((el) => el.className === 'jump more')
   assert.equal(caps.length, 1, 'the section is capped exactly once')
-  assert.equal(caps[0].children[1].text, '还有 3', 'the tail names the hidden count (13-10)')
+  assert.equal(caps[0].tagName, 'BUTTON', 'the tail is a BUTTON — the hidden rows are reachable, not grey text (R65)')
+  assert.equal(elText(caps[0]), '还有 3', 'the tail still names the hidden count (13-10), read through its .cnt span')
   assert.equal(String(caps[0].parentNode.className), 'gmem', 'the cap row lives INSIDE the .gmem wrapper — the indent wraps the tail too (BASE leak: parent is the panel box, class ' + String(caps[0].parentNode.className) + ')')
   assert.equal(caps[0].parentNode === mems[0], true, 'and it is THE section wrapper, not a sibling section')
   assert.equal(mems[0].children.length, 11, 'wrapper = the 10 member rows + the cap tail as its last child')

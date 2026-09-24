@@ -269,6 +269,15 @@
     // applyGraph() for ids that no longer exist in the new graph; cleared ONLY
     // by ⌗ autoArrange (the explicit "put everything back").
     dragged: {},
+    // V2.10c R65: which capped details-panel sections the user EXPANDED (the
+    // 「还有 N」/「+N 更多」 tails are buttons now; the click records the key
+    // here and every re-render path renders that section uncut). Namespaced
+    // keys — 'z:cid|gid' (zone group sections), 'm:gid' (group member page),
+    // 'p:rootId|dir|tier' (path tiers), 'mo:id' (mount-out) — so the four
+    // sites can never collide. Expansion is panel-view state: it survives
+    // every re-render, selection change and ⌗ (the keys are data-bounded,
+    // so nothing prunes or clears the set).
+    sectionMore: new Set(),
   }
 
   // =======================================================================
@@ -389,8 +398,11 @@
    * GROUP_MEMBER_CAP, `total` is the TRUE count and `capped` tells the renderer
    * to print the +N tail — a header that counted only the rows it painted would
    * under-report the container, which is the one thing a count must never do.
+   * V2.10c R65: `maxRows` is the OPTIONAL expansion override — the panel's
+   * expand-tail button re-derives the same sorted list past the cap (Infinity
+   * = all). Omitted/junk keeps the shipped GROUP_MEMBER_CAP behavior verbatim.
    */
-  function buildGroupMembers(sel, graph) {
+  function buildGroupMembers(sel, graph, maxRows) {
     var g = graph || {}
     var s = sel || {}
     var kind = String(s.kind == null ? '' : s.kind)
@@ -430,7 +442,8 @@
       })
     }
     rows.sort(function (a, b) { return cmp(key(a.name), key(b.name)) || cmp(key(a.version), key(b.version)) || cmp(a.id, b.id) })
-    var max = typeof GROUP_MEMBER_CAP === 'number' && GROUP_MEMBER_CAP > 0 ? GROUP_MEMBER_CAP : 200
+    var max = typeof maxRows === 'number' && maxRows > 0 ? maxRows
+      : (typeof GROUP_MEMBER_CAP === 'number' && GROUP_MEMBER_CAP > 0 ? GROUP_MEMBER_CAP : 200)
     return { total: rows.length, rows: rows.slice(0, max), capped: rows.length > max }
   }
 
@@ -2219,6 +2232,31 @@
     b.addEventListener('click', onClick)
     return b
   }
+  // V2.10c R65: every cap tail (「还有 N」/「+N 更多」) is an EXPAND button, not
+  // inert grey text — a cut list must not be a dead end. The tail renders as
+  // <button class="jump more">, reusing the .jump hover affordance and the
+  // .cnt amber-mono voice (zero new CSS, zero new colors); the label rides
+  // escText (dictionary text + a number, never data). Its click appends the
+  // REMAINING rows IN PLACE — painted by the SAME per-row renderer and the
+  // SAME order the visible rows rode (onExpand owns that) — then removes the
+  // tail. Zero navigation, zero focus change. The expansion is remembered
+  // under the caller's namespaced key in state.sectionMore, so any re-render
+  // of the panel keeps the section uncut. The R53/R54 header meta is
+  // deliberately NOT recomputed — it already describes the whole section.
+  function moreTail(box, key, label, onExpand) {
+    var b = document.createElement('button'); b.className = 'jump more'
+    var c = document.createElement('span'); c.className = 'cnt'; escText(c, label)
+    b.appendChild(c)
+    b.addEventListener('click', function () {
+      var m = state.sectionMore || (state.sectionMore = new Set())
+      if (m.has(key)) return
+      m.add(key)
+      onExpand()
+      box.removeChild(b) // the tail hung itself on `box` — it leaves the same way
+    })
+    box.appendChild(b)
+    return b
+  }
   // V2.7 R51: the level badge chip rides INSIDE the header h2 (first child).
   // Dictionary text through escText only — no new HTML surface.
   function lvlChip(h, label) {
@@ -2413,19 +2451,25 @@
     if (omit) scopeBadge(box, omit)
     var vd = versionDigest(res.rows)
     if (vd.version) headerVersion(box, vd.version)
-    res.rows.forEach(function (r) {
+    function paintRow(r) {
       var exc = vd.mode === 'majority' && String(r.version) !== vd.version
       memberRow(box, r, function () {
         var n = state.byId.get(String(r.id))
         if (n) revealNode(n)
       }, { omit: omit, ver: vd.mode === 'mixed' || (vd.mode === 'majority' && exc), exc: exc })
-    })
-    if (res.capped) {
-      // R56.3: the +N tail is a STRUCTURAL count — its value gets the .cnt
-      // channel (kvRow stays shared; the class is applied at this call site).
-      var tr = kvRow(box, '', t('moreLabel').replace('{n}', res.total - res.rows.length))
-      tr.children[1].className = 'cnt'
     }
+    // V2.10c R65: an expanded section renders ALL rows — the capped slice is a
+    // strict prefix (pinned), so this is the visible-then-hidden order, whole.
+    var key = 'm:' + String(sel.id)
+    if (state.sectionMore && state.sectionMore.has(key)) {
+      buildGroupMembers(sel, state.graph, Infinity).rows.forEach(paintRow)
+      return
+    }
+    res.rows.forEach(paintRow)
+    // R56.3: the count keeps its .cnt channel — moreTail wears it.
+    if (res.capped) moreTail(box, key, t('moreLabel').replace('{n}', res.total - res.rows.length), function () {
+      buildGroupMembers(sel, state.graph, Infinity).rows.slice(res.rows.length).forEach(paintRow)
+    })
   }
 
   // V2.7 R51: the ZONE details list BY GROUP. Alphabetical sections, each one:
@@ -2454,9 +2498,9 @@
     grow.children[1].className = 'cnt'
     var members = regionCard()
     box.appendChild(members)
-    zoneGroupSections(members, groups)
+    zoneGroupSections(members, groups, cid)
   }
-  function zoneGroupSections(box, groups) {
+  function zoneGroupSections(box, groups, cid) {
     var shown = 0
     var secs = []
     groups.forEach(function (gid) {
@@ -2465,6 +2509,8 @@
       secs.push({ gid: gid, res: res })
     })
     // R53: the omission is a PANEL decision over every row the panel shows.
+    // V2.10c: it stays anchored to the CAP slices even across an expansion —
+    // expanding never recomputes the panel's scope badge.
     var vis = []
     secs.forEach(function (s) { s.res.rows.slice(0, ZONE_GROUP_CAP).forEach(function (r) { vis.push(String(r.name)) }) })
     var omit = commonScopePrefix(vis)
@@ -2481,20 +2527,25 @@
       hb.addEventListener('click', function () { selectNode('g:' + s.gid) })
       box.appendChild(hb)
       var rows = document.createElement('div'); rows.className = 'gmem'
-      res.rows.slice(0, ZONE_GROUP_CAP).forEach(function (r) {
+      function paintRow(r) {
         var exc = vd.mode === 'majority' && String(r.version) !== vd.version
         memberRow(rows, r, function () {
           var n = state.byId.get(String(r.id))
           if (n) revealNode(n)
         }, { omit: omit, ver: vd.mode === 'mixed' || (vd.mode === 'majority' && exc), exc: exc })
-      })
-      // V2.7-fix d1: the 还有 N tail belongs to the SECTION — it rides inside
-      // the same .gmem indent wrapper as its member rows (BASE appended it to
-      // the panel box, so it rendered flush-left under the section).
-      // V2.8 R56.3: and its value takes the amber mono .cnt channel.
-      if (res.total > ZONE_GROUP_CAP) {
-        var tr = kvRow(rows, '', t('groupMoreLabel').replace('{n}', res.total - ZONE_GROUP_CAP))
-        tr.children[1].className = 'cnt'
+      }
+      // V2.7-fix d1: the tail belongs to the SECTION — it rides inside the same
+      // .gmem indent wrapper as its member rows. V2.8 R56.3 gave its count the
+      // amber-mono .cnt voice; V2.10c R65 turned the row into the shared
+      // EXPAND BUTTON (moreTail takes `rows`, never `box` — d1 geometry holds).
+      var key = 'z:' + String(cid) + '|' + String(s.gid)
+      if (state.sectionMore && state.sectionMore.has(key)) {
+        buildGroupMembers({ kind: 'group', id: s.gid }, state.graph, Infinity).rows.forEach(paintRow)
+      } else {
+        res.rows.slice(0, ZONE_GROUP_CAP).forEach(paintRow)
+        if (res.total > ZONE_GROUP_CAP) moreTail(rows, key, t('groupMoreLabel').replace('{n}', res.total - ZONE_GROUP_CAP), function () {
+          buildGroupMembers({ kind: 'group', id: s.gid }, state.graph, Infinity).rows.slice(ZONE_GROUP_CAP).forEach(paintRow)
+        })
       }
       box.appendChild(rows)
     })
@@ -2607,10 +2658,12 @@
     // deps/dependents counts — they carry everything those did (mounted-by is the
     // `mount` row of the up list) plus the whole transitive chain.
     var lists = buildPathLists(AtlasModel.pathSets(state.graph, n.id, null), state.graph, state.byId)
+    // V2.10c R65: the two lists carry a root+direction key namespace so their
+    // expand-tails never collide with each other or with any other cap site.
     var downCard = regionCard(); box.appendChild(downCard)
-    pathListSection(downCard, t('pathDownLabel'), lists.down)
+    pathListSection(downCard, t('pathDownLabel'), lists.down, 'p:' + n.id + '|d')
     var upCard = regionCard(); box.appendChild(upCard)
-    pathListSection(upCard, t('pathUpLabel'), lists.up)
+    pathListSection(upCard, t('pathUpLabel'), lists.up, 'p:' + n.id + '|u')
     // `mount` is not a DOWN path kind (R35: X→mount→Y means Y's path runs UP to
     // X), so what THIS node mounts is invisible to both lists. It is the app's
     // headline question (「dsh-base 到底把哪些包挂载进来」), so it keeps its own
@@ -2712,14 +2765,14 @@
   // V22b: the rows are TIERED by BFS layer — d1 (direct hits) ships open, every
   // deeper tier starts collapsed behind a 「d2 (N)」 header. The PATH_ROW_CAP now
   // applies PER TIER (was global): a long d1 can no longer hide all of d2.
-  function pathListSection(box, title, rows) {
+  function pathListSection(box, title, rows, keyBase) {
     if (!rows.length) { secTitle(box, title + ' · ' + t('pathNoneLabel')); return }
     var deepest = 0
     rows.forEach(function (r) { if (r.dist > deepest) deepest = r.dist })
     secTitle(box, title + ' · ' + t('pathCountLabel').replace('{n}', rows.length).replace('{d}', deepest))
-    groupRowsByDist(rows).forEach(function (tier, ix) { tierBlock(box, tier, ix === 0) })
+    groupRowsByDist(rows).forEach(function (tier, ix) { tierBlock(box, tier, ix === 0, keyBase) })
   }
-  function tierBlock(box, tier, open) {
+  function tierBlock(box, tier, open, keyBase) {
     var head = document.createElement('button'); head.className = 'tier'
     var holder = document.createElement('div'); holder.className = 'tier-body'
     holder.hidden = !open
@@ -2729,10 +2782,19 @@
     head.addEventListener('click', function () { holder.hidden = !holder.hidden; headLabel() })
     box.appendChild(head)
     box.appendChild(holder)
-    tier.rows.slice(0, PATH_ROW_CAP).forEach(function (r) {
-      pathRow(holder, r, function () { selectNode(r.id, true) })
-    })
-    if (tier.rows.length > PATH_ROW_CAP) kvRow(holder, '', t('moreLabel').replace('{n}', tier.rows.length - PATH_ROW_CAP))
+    function paintRow(r) { pathRow(holder, r, function () { selectNode(r.id, true) }) }
+    // V2.10c R65: the +N tail expands this tier IN PLACE (key: root+direction+
+    // tier, so down/up and every layer keep their own slot; R53/R54 note in
+    // moreTail applies — nothing above re-derives).
+    var key = String(keyBase) + '|' + tier.dist
+    if (state.sectionMore && state.sectionMore.has(key)) {
+      tier.rows.forEach(paintRow)
+    } else {
+      tier.rows.slice(0, PATH_ROW_CAP).forEach(paintRow)
+      if (tier.rows.length > PATH_ROW_CAP) moreTail(holder, key, t('moreLabel').replace('{n}', tier.rows.length - PATH_ROW_CAP), function () {
+        tier.rows.slice(PATH_ROW_CAP).forEach(paintRow)
+      })
+    }
   }
   // What this node MOUNTS (its bundle surface). R35's down kinds exclude `mount`
   // (correct for the highlight), so these packages are not path rows — they get
@@ -2759,10 +2821,17 @@
     if (!rows.length) return
     rows.sort(function (a, b) { return a.name < b.name ? -1 : a.name > b.name ? 1 : a.id < b.id ? -1 : 1 })
     secTitle(box, t('mountsLabel') + ' · ' + rows.length)
-    rows.slice(0, PATH_ROW_CAP).forEach(function (r) {
-      pathRow(box, r, function () { selectNode(r.id, true) })
-    })
-    if (rows.length > PATH_ROW_CAP) kvRow(box, '', t('moreLabel').replace('{n}', rows.length - PATH_ROW_CAP))
+    // V2.10c R65: the fourth cap site rides the same expand button ('mo:' key).
+    function paintRow(r) { pathRow(box, r, function () { selectNode(r.id, true) }) }
+    var key = 'mo:' + String(id)
+    if (state.sectionMore && state.sectionMore.has(key)) {
+      rows.forEach(paintRow)
+    } else {
+      rows.slice(0, PATH_ROW_CAP).forEach(paintRow)
+      if (rows.length > PATH_ROW_CAP) moreTail(box, key, t('moreLabel').replace('{n}', rows.length - PATH_ROW_CAP), function () {
+        rows.slice(PATH_ROW_CAP).forEach(paintRow)
+      })
+    }
   }
 
   // ---------- legend (V6 Step 6: 4 shapes + 5 edge kinds, collapsible) ----------

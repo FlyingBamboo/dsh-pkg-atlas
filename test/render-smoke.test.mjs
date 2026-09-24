@@ -781,7 +781,7 @@ function loadAppPure() {
     extractBalanced(src, 'function edgeKindsFor(checked) {') + '\n',
     extractBalanced(src, 'function catTitle(categories, catId, lang) {') + '\n',
     extractBalanced(src, 'function groupZoneOf(graph, gid) {') + '\n',
-    extractBalanced(src, 'function buildGroupMembers(sel, graph) {') + '\n',
+    extractBalanced(src, 'function buildGroupMembers(sel, graph, maxRows) {') + '\n',
     extractBalanced(src, 'function buildPeekCard(n, graph, byId, lang) {') + '\n',
     extractBalanced(src, 'function pushPathStack(stack, id, cap) {') + '\n',
     extractBalanced(src, 'function pathChainText(labels, sep) {') + '\n',
@@ -917,6 +917,10 @@ function loadDetailsDom() {
     'function El(tag) {\n',
     '  this.tag = tag; this.children = []; this.className = \x27\x27; this.text = \x27\x27; this.handlers = {}; this.hidden = false\n',
     '  this.appendChild = function (c) { this.children.push(c); return c }\n',
+    // V2.10c R65: the expand-tail button DETACHES itself after expanding (from
+    // the same box it was hung on — no parentNode back-ref, the trees under
+    // JSON.stringify sinks below stay acyclic).
+    '  this.removeChild = function (c) { var i = this.children.indexOf(c); if (i >= 0) this.children.splice(i, 1); return c }\n',
     '  this.addEventListener = function (k, fn) { this.handlers[k] = fn; CLICKS.push({ el: this, kind: k, fn: fn }) }\n',
     '}\n',
     'Object.defineProperty(El.prototype, \x27textContent\x27, {\n',
@@ -932,11 +936,12 @@ function loadDetailsDom() {
     extractBalanced(src, 'var EDGE_KINDS_ALL = [') + '\n',
     extractBalanced(src, 'function escText(el, s) {') + '\n',
     extractBalanced(src, 'function kvRow(box, key, value) {') + '\n',
+    extractBalanced(src, 'function moreTail(box, key, label, onExpand) {') + '\n',
     extractBalanced(src, 'function secTitle(box, text) {') + '\n',
     extractBalanced(src, 'function pathRow(box, row, onClick) {') + '\n',
     extractBalanced(src, 'function groupRowsByDist(rows) {') + '\n',
-    extractBalanced(src, 'function tierBlock(box, tier, open) {') + '\n',
-    extractBalanced(src, 'function pathListSection(box, title, rows) {') + '\n',
+    extractBalanced(src, 'function tierBlock(box, tier, open, keyBase) {') + '\n',
+    extractBalanced(src, 'function pathListSection(box, title, rows, keyBase) {') + '\n',
     extractBalanced(src, 'function mountOutSection(box, id) {') + '\n',
     extractBalanced(src, 'function renderPeek(card, p) {') + '\n',
     extractBalanced(src, 'function buildRelatedGroups(sets, graph, groupsMeta, tier) {') + '\n',
@@ -1418,8 +1423,11 @@ test('V21 details DOM: path rows are built with textContent only, click re-roots
   assert.equal(bigBox.children[1].text, '▾ d1 (' + (dom.CAP + 1) + ')', 'the tier header counts every row it holds')
   const tierBody = bigBox.children[2]
   assert.equal(tierBody.children.length, dom.CAP + 1, 'per-tier cap: rows + the +N 更多 tail')
-  assert.equal(tierBody.children[tierBody.children.length - 1].children[1].text, '+1 MORE',
-    'the cap tail counts what it hid')
+  const tailB = tierBody.children[tierBody.children.length - 1]
+  assert.equal(tailB.tag, 'button', 'V2.10c R65: the cap tail is an EXPAND BUTTON on the shared .jump row class…')
+  assert.equal(tailB.className, 'jump more', '…with its own .more marker (no new CSS surface)')
+  assert.equal(tailB.children[0].className, 'cnt', '…and its count rides the amber-mono .cnt channel')
+  assert.equal(tailB.children[0].text, '+1 MORE', 'the cap tail counts what it hid')
 })
 
 
@@ -2291,6 +2299,27 @@ test('V2.3 buildGroupMembers: 200-row cap with an honest total (meta count is th
   assert.equal(r.capped, true, 'the renderer gets the truncation flag (and prints the +N tail)')
   assert.equal(r.rows[0].name, 'pkg-0000', 'the rows kept are the FIRST 200 in sort order')
   assert.equal(r.rows[GROUP_MEMBER_CAP - 1].name, 'pkg-0199')
+})
+
+test('V2.10c R65 buildGroupMembers maxRows: the expansion path takes every row past the cap; the default is untouched', () => {
+  const { buildGroupMembers, GROUP_MEMBER_CAP } = loadAppPure()
+  const nodes = []
+  for (let i = 0; i < GROUP_MEMBER_CAP + 7; i++) {
+    nodes.push({ id: 'p' + i + '@1', kind: 'package', name: 'pkg-' + String(i).padStart(4, '0'), version: '1.0.0', group: 'big' })
+  }
+  const g = { nodes, edges: [] }
+  const capped = buildGroupMembers({ kind: 'group', id: 'big' }, g)
+  const all = buildGroupMembers({ kind: 'group', id: 'big' }, g, Infinity)
+  assert.equal(all.total, GROUP_MEMBER_CAP + 7, 'total is the same TRUE count — maxRows moves only the slice')
+  assert.equal(all.rows.length, GROUP_MEMBER_CAP + 7, 'maxRows=Infinity: the FULL sorted list')
+  assert.equal(all.capped, false, 'an uncut list honestly reports no cut')
+  assert.deepEqual(all.rows.slice(0, GROUP_MEMBER_CAP), capped.rows,
+    'the capped slice is a strict PREFIX of the full list — so the tail click APPENDS, the order never moves')
+  const five = buildGroupMembers({ kind: 'group', id: 'big' }, g, 5)
+  assert.equal(five.rows.length, 5, 'a finite maxRows slices')
+  assert.equal(five.capped, true, '…and honestly reports the cut')
+  assert.equal(buildGroupMembers({ kind: 'group', id: 'big' }, g, 0).rows.length, GROUP_MEMBER_CAP,
+    'junk maxRows (0) falls back to the shipped GROUP_MEMBER_CAP — never an empty list')
 })
 
 test('V2.3 buildGroupMembers: names/versions are attacker data and arrive VERBATIM', () => {
@@ -3248,6 +3277,8 @@ function loadMembersDom() {
     'function El(tag) {\n',
     '  this.tag = tag; this.children = []; this.className = \x27\x27; this.text = \x27\x27; this.handlers = {}; this.hidden = false; this.attrs = {}\n',
     '  this.appendChild = function (c) { this.children.push(c); return c }\n',
+    // V2.10c R65: the expand-tail button DETACHES itself after expanding.
+    '  this.removeChild = function (c) { var i = this.children.indexOf(c); if (i >= 0) this.children.splice(i, 1); return c }\n',
     '  this.addEventListener = function (k, fn) { this.handlers[k] = fn }\n',
     '  this.setAttribute = function (k, v) { this.attrs[k] = String(v) }\n',
     '  this.getAttribute = function (k) { return k in this.attrs ? this.attrs[k] : null }\n',
@@ -3268,15 +3299,16 @@ function loadMembersDom() {
     '}\n',
     'var state = {\n',
     '  graph: null, byId: new Map(), groupIds: new Set(), groupZone: new Map(), cy: cy, tableMode: false,\n',
-    '  focus: null, selected: null, pathStack: [], lang: \x27zh\x27,\n',
+    '  focus: null, selected: null, pathStack: [], lang: \x27zh\x27, sectionMore: new Set(),\n',
     '  view: { collapsedCats: new Set(), collapsedGroups: null, filterCats: new Set(), granularity: \x27groups\x27, focus: null },\n',
     '}\n',
     cap[0] + '\n',
     extractBalanced(src, 'function escText(el, s) {') + '\n',
     extractBalanced(src, 'function kvRow(box, key, value) {') + '\n',
+    extractBalanced(src, 'function moreTail(box, key, label, onExpand) {') + '\n',
     extractBalanced(src, 'function secTitle(box, text) {') + '\n',
     extractBalanced(src, 'function groupZoneOf(graph, gid) {') + '\n',
-    extractBalanced(src, 'function buildGroupMembers(sel, graph) {') + '\n',
+    extractBalanced(src, 'function buildGroupMembers(sel, graph, maxRows) {') + '\n',
     extractBalanced(src, 'function commonScopePrefix(names) {') + '\n',
     extractBalanced(src, 'function versionDigest(rows) {') + '\n',
     extractBalanced(src, 'function h2Of(box) {') + '\n',
@@ -3387,8 +3419,10 @@ test('V2.3 member list cap: 200 rows render, the +N tail reports what the header
   assert.equal(box.children[0].text, 'MEMBERS(205)', 'the header never under-reports a truncated list')
   assert.equal(box.children.filter((c) => c.className === 'jump').length, dom.CAP, 'exactly CAP rows')
   const tail = box.children[box.children.length - 1]
-  assert.equal(tail.className, 'kv', 'the tail is the shared +N 更多 kv row')
-  assert.equal(tail.children[1].text, '+5 MORE', 'the tail counts what it hid (205-200)')
+  assert.equal(tail.tag, 'button', 'V2.10c R65: the tail is the shared expand BUTTON (.jump affordance)…')
+  assert.equal(tail.className, 'jump more', '…with its own .more marker — the inert grey kvRow is dead')
+  assert.equal(tail.children[0].className, 'cnt', '…its count keeps the amber-mono .cnt channel (R56.3 voice)')
+  assert.equal(tail.children[0].text, '+5 MORE', 'the tail counts what it hid (205-200)')
 })
 
 test('V2.3 member row click REVEALS the package: ancestors open and state.focus roots on the row', () => {
@@ -5205,7 +5239,13 @@ test('V2.7 R51 source guards: level classes on the details container, chip in th
   assert.doesNotMatch(zd, /selectNode\([^\n]*true\)/, 'the group-header door carries NO nav flag (cold select, in-focus walk)')
   assert.match(zd, /var rows = document\.createElement\('div'\); rows\.className = 'gmem'/, 'member rows sit in an indented .gmem wrapper')
   assert.match(zd, /res\.rows\.slice\(0, ZONE_GROUP_CAP\)/, 'members capped per section')
-  assert.match(zd, /kvRow\(rows, '', t\('groupMoreLabel'\)\.replace\('\{n\}', res\.total - ZONE_GROUP_CAP\)\)[\s\S]{0,80}?box\.appendChild\(rows\)/, "还有 N tail counts exactly what the cap hid — and rides INSIDE the .gmem wrapper (V2.7-fix d1: kvRow takes rows, before the wrapper is hung)")
+  // V2.10c R65 MIGRATION (was: kvRow(rows, '', t('groupMoreLabel')…) — the inert
+  // grey tail): the tail is now the shared EXPAND BUTTON, still hung inside the
+  // section's .gmem wrapper (V2.7-fix d1 geometry, proven by moreTail taking
+  // rows, not box) and still counting exactly what the cap hid.
+  assert.match(zd, /moreTail\(rows, key, t\('groupMoreLabel'\)\.replace\('\{n\}', res\.total - ZONE_GROUP_CAP\)/,
+    '还有 N counts exactly what the cap hid — on the shared expand button, INSIDE the .gmem wrapper (V2.7-fix d1: moreTail takes rows, never box)')
+  assert.match(zd, /box\.appendChild\(rows\)/, 'the wrapper is hung after its rows and tail filled it')
   assert.match(zd, /if \(!res\.total\) return/, 'zero-member groups stay invisible')
 })
 
@@ -5251,7 +5291,7 @@ function loadZoneDetailsDom() {
   assert.ok(cap, 'app.js must still declare `var ZONE_GROUP_CAP = …`')
   const body = [
     'var LOG = []\n',
-    'var KEYS = { lvlZone: \x27区\x27, lvlGroup: \x27组\x27, lvlPkg: \x27包\x27, groupsLabel: \x27GROUPS\x27, memberPkgsLabel: \x27MEMBERS({n})\x27, groupMoreLabel: \x27MORE:{n}\x27, unsatLabel: \x27UNSAT\x27, brokenLabel: \x27BROKEN\x27 }\n',
+    'var KEYS = { lvlZone: \x27区\x27, lvlGroup: \x27组\x27, lvlPkg: \x27包\x27, groupsLabel: \x27GROUPS\x27, memberPkgsLabel: \x27MEMBERS({n})\x27, groupMoreLabel: \x27MORE:{n}\x27, moreLabel: \x27+{n} MORE\x27, unsatLabel: \x27UNSAT\x27, brokenLabel: \x27BROKEN\x27 }\n',
     'function t(k) { return Object.prototype.hasOwnProperty.call(KEYS, k) ? KEYS[k] : k }\n',
     'function selectNode(id, nav) { LOG.push(\x27select:\x27 + id + (nav ? \x27:nav\x27 : \x27:bare\x27)) }\n',
     'function revealNode(n) { LOG.push(\x27reveal:\x27 + n.id) }\n',
@@ -5260,6 +5300,8 @@ function loadZoneDetailsDom() {
     '  var self = this\n',
     '  this.appendChild = function (c) { c.parentNode = self; this.children.push(c); return c }\n',
     '  this.insertBefore = function (n, ref) { var i = this.children.indexOf(ref); if (i < 0) return this.appendChild(n); n.parentNode = self; this.children.splice(i, 0, n); return n }\n',
+    // V2.10c R65: the expand-tail button DETACHES itself after expanding.
+    '  this.removeChild = function (c) { var i = this.children.indexOf(c); if (i >= 0) this.children.splice(i, 1); c.parentNode = null; return c }\n',
     '  this.addEventListener = function (k, fn) { self.handlers[k] = fn }\n',
     '  this.setAttribute = function (k, v) { self.attrs[k] = String(v) }\n',
     '  this.getAttribute = function (k) { return k in self.attrs ? self.attrs[k] : null }\n',
@@ -5270,7 +5312,7 @@ function loadZoneDetailsDom() {
     '})\n',
     'var document = { createElement: function (tag) { return new El(tag) },\n',
     '  createTextNode: function (s) { return { tag: \x27#text\x27, text: String(s), children: [], className: \x27\x27 } } }\n',
-    'var state = { graph: null, byId: new Map(), groupIds: new Set(), groupZone: new Map(), lang: \x27zh\x27, selected: null, focus: null }\n',
+    'var state = { graph: null, byId: new Map(), groupIds: new Set(), groupZone: new Map(), lang: \x27zh\x27, selected: null, focus: null, sectionMore: new Set() }\n',
     cap[0] + '\n',
     extractBalanced(src, 'function escText(el, s) {') + '\n',
     extractBalanced(src, 'function catById(graph) {') + '\n',
@@ -5278,10 +5320,11 @@ function loadZoneDetailsDom() {
     extractBalanced(src, 'function head(box, text) {') + '\n',
     extractBalanced(src, 'function regionCard() {') + '\n',
     extractBalanced(src, 'function kvRow(box, key, value) {') + '\n',
+    extractBalanced(src, 'function moreTail(box, key, label, onExpand) {') + '\n',
     extractBalanced(src, 'function secTitle(box, text) {') + '\n',
     extractBalanced(src, 'function lvlChip(h, label) {') + '\n',
     extractBalanced(src, 'function groupZoneOf(graph, gid) {') + '\n',
-    extractBalanced(src, 'function buildGroupMembers(sel, graph) {') + '\n',
+    extractBalanced(src, 'function buildGroupMembers(sel, graph, maxRows) {') + '\n',
     extractBalanced(src, 'function commonScopePrefix(names) {') + '\n',
     extractBalanced(src, 'function versionDigest(rows) {') + '\n',
     extractBalanced(src, 'function h2Of(box) {') + '\n',
@@ -5291,7 +5334,7 @@ function loadZoneDetailsDom() {
     extractBalanced(src, 'function memberRow(box, row, onClick, opts) {') + '\n',
     extractBalanced(src, 'function memberSection(box, sel) {') + '\n',
     extractBalanced(src, 'function detailsZone(box, cid) {') + '\n',
-    extractBalanced(src, 'function zoneGroupSections(box, groups) {') + '\n',
+    extractBalanced(src, 'function zoneGroupSections(box, groups, cid) {') + '\n',
     extractBalanced(src, 'function detailsGroup(box, gid) {') + '\n',
     'return { state: state, LOG: LOG, El: El, CAP: ZONE_GROUP_CAP, detailsZone: detailsZone, detailsGroup: detailsGroup }',
   ].join('')
@@ -5340,10 +5383,12 @@ test('V2.7 R51 zone details list BY GROUP through the real builders: chip, alpha
   const gmems = flatKids(box).filter((c) => c.className === 'gmem')
   assert.deepEqual(gmems.map((g) => g.children.length), [2, dom.CAP + 1, 1], 'each section lists AT MOST CAP member rows inside its wrapper…')
   assert.ok(gmems[1].children.slice(0, dom.CAP).every((c) => c.className === 'jump'), '…the first CAP children of the capped section are member rows…')
-  const more = gmems.reduce((acc, g) => acc.concat(g.children.filter((c) => c.className === 'kv' && c.children[1].text === 'MORE:3')), [])
+  const more = gmems.reduce((acc, g) => acc.concat(g.children.filter((c) => c.className === 'jump more')), [])
   assert.equal(more.length, 1, 'the cut beta section tails with 还有 3 (13-10, exactly what the cap hid)…')
+  assert.equal(more[0].tag, 'button', 'V2.10c R65: the tail is the shared expand BUTTON…')
+  assert.equal(allText(more[0]), 'MORE:3', '…still reading 还有 N (t(groupMoreLabel))…')
   assert.equal(gmems[1].children[dom.CAP] === more[0], true, '…INSIDE its .gmem wrapper as the last child (V2.7-fix d1 — the indent wraps the tail too)…')
-  assert.equal(box.children.filter((c) => c.className === 'kv' && c.children[1].text === 'MORE:3').length, 0, '…and NOT loose under the panel box (BASE leak pin)')
+  assert.equal(box.children.filter((c) => c.className === 'jump more').length, 0, '…and NOT loose under the panel box (BASE leak pin)')
   // the header door: the REAL click → selectNode('g:'+gid) with NO nav flag
   heads[1].handlers.click()
   assert.deepEqual(dom.LOG, ['select:g:beta:bare'], 'the group header opens the group WITHOUT nav (cold = select, in-focus = walk)')
@@ -5837,4 +5882,188 @@ test('V2.9b R62 CSS: the tinted region card at 8px geometry, the card rhythm, th
   assert.match(readme, /拖过的组卡切到包级不再被成员\s*\n?\s*重定心，未单独拖过的成员按「父渲染位＋模型内子相对槽偏移」跟随父框/,
     'R62+→V2.10b: the README drag paragraph states the no-re-centring + ride rule verbatim')
   assert.match(readme, /拖子不再带动父/, 'V2.10b: the retired ancestor-follow side effect is stated in the README, too')
+})
+
+// =========================================================================
+// Task V2.10c — R65: the cap tails are EXPAND BUTTONS. All four capped panel
+// surfaces (zone group sections · group member page · path tiers · mount-out)
+// used to end in inert grey text — a dead end for every hidden row. One shared
+// mechanism now: <button class="jump more"> whose REAL registered click
+// appends the remaining rows IN PLACE (same row renderer, same order) through
+// the REAL fake-DOM element the render produced, and whose namespaced key in
+// state.sectionMore keeps the section uncut across every panel re-render.
+// Doctrine unchanged: scalar asserts (tags/classes/counts/text), never trees.
+// =========================================================================
+
+test('V2.10c R65 zone section: 还有 N tail is a button; its click appends the hidden rows IN PLACE; the expansion survives re-render', () => {
+  const dom = loadZoneDetailsDom()
+  const graph = zoneDetailsGraph()
+  dom.state.graph = graph
+  dom.state.byId = new Map(graph.nodes.map((n) => [n.id, n]))
+  dom.state.groupIds = new Set(['alpha', 'beta', 'empty', 'zeta'])
+  dom.state.groupZone = new Map([['alpha', 'tools'], ['beta', 'tools'], ['empty', 'tools'], ['zeta', 'tools']])
+  const betaNames = graph.nodes.filter((n) => n.group === 'beta').map((n) => n.name)
+  const gmemOf = (b, i) => flatKids(b).filter((c) => c.className === 'gmem')[i]
+  const box = new dom.El('div')
+  dom.detailsZone(box, 'tools')
+  const beta = gmemOf(box, 1)
+  const tail = beta.children[beta.children.length - 1]
+  assert.equal(tail.tag, 'button', 'the tail is a BUTTON, not grey text')
+  assert.equal(tail.className, 'jump more', 'it rides the shared .jump row class + the .more marker (no new CSS surface)')
+  assert.equal(tail.children.map((c) => c.className).join(','), 'cnt', 'its label rides the amber-mono .cnt channel')
+  assert.equal(allText(tail), 'MORE:3', 'the label still counts exactly what the cap hid (t(groupMoreLabel))')
+  const logBefore = dom.LOG.length
+  tail.handlers.click() // the REAL handler on the REAL rendered tail element
+  assert.equal(beta.children.filter((c) => c.className === 'jump').length, 13, 'one click appends every hidden member…')
+  assert.equal(beta.children.filter((c) => c.className === 'jump more').length, 0, '…and the tail removes itself')
+  assert.deepEqual(beta.children.filter((c) => c.className === 'jump').map((c) => c.children[0].text), betaNames.slice().sort(),
+    'the visible set now EQUALS the full member set — same rows, same sorted order, appended in place')
+  assert.equal(dom.LOG.length, logBefore, 'expansion is panel-local: ZERO navigation, ZERO reveal')
+  tail.handlers.click() // double-click safety on the spent handler
+  assert.equal(beta.children.filter((c) => c.className === 'jump').length, 13, 'a second click of the spent tail adds nothing (idempotent)')
+  const box2 = new dom.El('div')
+  dom.detailsZone(box2, 'tools')
+  const beta2 = gmemOf(box2, 1)
+  assert.equal(beta2.children.filter((c) => c.className === 'jump').length, 13, 'the next panel re-render keeps the expansion (no re-slice)…')
+  assert.equal(beta2.children.filter((c) => c.className === 'jump more').length, 0, '…and the tail never re-appears')
+  assert.equal(gmemOf(box2, 0).children.length, 2, 'a section UNDER the cap is untouched: alpha still just its 2 rows…')
+  assert.equal(gmemOf(box2, 0).children.filter((c) => c.className === 'jump more').length, 0, '…and never grew a tail')
+})
+
+test('V2.10c R65 member page: the +N 更多 tail expands all 205 rows in place and stays expanded across re-renders', () => {
+  const nodes = []
+  for (let i = 0; i < 205; i++) {
+    nodes.push({ id: 'p' + i + '@1', kind: 'package', name: 'pkg-' + String(i).padStart(4, '0'), version: '1.0.0', group: 'big', category: 'kernel', scope: 'official' })
+  }
+  const dom = loadMembersDom()
+  const graph = { groups: [], nodes, edges: [] }
+  dom.state.graph = graph
+  dom.state.byId = byIdMap(graph)
+  const box = new dom.El('div')
+  dom.memberSection(box, { kind: 'group', id: 'big' })
+  const rows = () => box.children.filter((c) => c.className === 'jump')
+  assert.equal(rows().length, dom.CAP, 'capped render: exactly 200 rows')
+  const tail = box.children[box.children.length - 1]
+  assert.equal(tail.tag, 'button', 'the tail is the shared expand BUTTON…')
+  assert.equal(tail.className, 'jump more', '…(.jump affordance + .more marker)…')
+  assert.equal(tail.children[0].text, '+5 MORE', '…t(moreLabel) counting 205-200 in the .cnt channel')
+  const logBefore = dom.LOG.length
+  tail.handlers.click()
+  assert.equal(rows().length, 205, 'the hidden 5 rows appear IN PLACE…')
+  assert.equal(rows()[204].children[0].text, 'pkg-0204', '…appended in the shared sort (the LAST member lands last)')
+  assert.equal(box.children.filter((c) => c.className === 'jump more').length, 0, 'the tail removed itself')
+  assert.equal(dom.LOG.length, logBefore, 'zero navigation from expanding')
+  assert.equal(box.children[0].text, 'MEMBERS(205)', 'R54/R65: the header never recomputed — it already described the whole group')
+  const box2 = new dom.El('div')
+  dom.memberSection(box2, { kind: 'group', id: 'big' })
+  assert.equal(box2.children.filter((c) => c.className === 'jump').length, 205, 're-render: still uncut (state.sectionMore)…')
+  assert.equal(box2.children.filter((c) => c.className === 'jump more').length, 0, '…no tail, no re-slice')
+  const fx = membersGraph()
+  const small = membersDom(fx)
+  const box3 = new dom.El('div')
+  small.memberSection(box3, { kind: 'group', id: 'bundle' })
+  assert.equal(box3.children.filter((c) => c.className === 'jump more').length, 0, 'a section under the cap renders NO tail')
+})
+
+test('V2.10c R65 path tier + mount-out caps: both tails are buttons, both expand in place, p: and mo: never collide', () => {
+  const { pathSets, buildPathLists } = loadAppPure()
+  const dom = loadDetailsDom()
+  const wide = { nodes: [{ id: 'r', name: 'r', version: '1' }], edges: [] }
+  for (let i = 0; i < dom.CAP + 1; i++) {
+    wide.nodes.push({ id: 'm' + i, name: 'm' + i, version: '1' })
+    wide.edges.push({ from: 'r', to: 'm' + i, kind: 'dep' })
+    wide.nodes.push({ id: 'mm' + i, name: 'mm' + i, version: '1' })
+    wide.edges.push({ from: 'r', to: 'mm' + i, kind: 'mount' })
+  }
+  dom.state.graph = wide
+  dom.state.byId = byIdMap(wide)
+  const lists = buildPathLists(pathSets(wide, 'r', null), wide, dom.state.byId)
+  const box = new dom.El('div')
+  dom.pathListSection(box, 'DOWN', lists.down, 'p:r|d')
+  const body = box.children[2]
+  assert.equal(body.children.length, dom.CAP + 1, 'the per-tier cap holds: 60 rows + the tail')
+  const ptail = body.children[body.children.length - 1]
+  assert.equal(ptail.tag, 'button', 'the tier tail is an expand button…')
+  assert.equal(ptail.children[0].text, '+1 MORE', '…t(moreLabel) in the .cnt channel')
+  const mbox = new dom.El('div')
+  dom.mountOutSection(mbox, 'r')
+  const mtail = mbox.children[mbox.children.length - 1]
+  assert.equal(mtail.className, 'jump more', '…and the mount-out tail too (4th site, same mechanism)')
+  const selBefore = dom.SELECTED.length
+  mtail.handlers.click()
+  assert.equal(mbox.children.filter((c) => c.className === 'jump').length, dom.CAP + 1, 'mount click: all 61 rows in place…')
+  assert.equal(mbox.children.filter((c) => c.className === 'jump more').length, 0, '…tail gone')
+  assert.equal(body.children[body.children.length - 1].className, 'jump more',
+    'the PATH tier tail is STILL there — the mo: expansion never touches the p: key (no collision)')
+  ptail.handlers.click()
+  assert.equal(body.children.filter((c) => c.className === 'jump').length, dom.CAP + 1, 'path tier click: all 61 rows in place')
+  assert.equal(body.children.filter((c) => c.className === 'jump more').length, 0, '…tail gone')
+  assert.equal(dom.SELECTED.length, selBefore, 'expanding selects NOTHING (rows keep their own nav; the tail has none)')
+  const box2 = new dom.El('div')
+  dom.pathListSection(box2, 'DOWN', lists.down, 'p:r|d')
+  assert.equal(box2.children[2].children.filter((c) => c.className === 'jump').length, dom.CAP + 1, 're-render keeps the tier expanded…')
+  assert.equal(box2.children[2].children.filter((c) => c.className === 'jump more').length, 0, '…no tail')
+  const mbox2 = new dom.El('div')
+  dom.mountOutSection(mbox2, 'r')
+  assert.equal(mbox2.children.filter((c) => c.className === 'jump').length, dom.CAP + 1, 'same for mount-out…')
+  assert.equal(mbox2.children.filter((c) => c.className === 'jump more').length, 0, '…no tail')
+})
+
+test('V2.10c R65 key namespaces: expanding the zone section of a group leaves the SAME group member page capped (z: vs m: never collide)', () => {
+  const dom = loadZoneDetailsDom()
+  const nodes = []
+  for (let i = 0; i < 205; i++) {
+    nodes.push({ id: 'p' + String(i).padStart(4, '0') + '@1', kind: 'package', name: 'pkg-' + String(i).padStart(4, '0'), version: '1.0.0', group: 'big', category: 'tools', scope: 'official' })
+  }
+  const graph = {
+    categories: [{ id: 'tools', zh: '工具', en: 'Tools' }],
+    groups: [{ id: 'big', kind: 'official', category: 'tools' }],
+    nodes, edges: [],
+  }
+  dom.state.graph = graph
+  dom.state.byId = new Map(nodes.map((n) => [n.id, n]))
+  dom.state.groupIds = new Set(['big'])
+  dom.state.groupZone = new Map([['big', 'tools']])
+  const box = new dom.El('div')
+  dom.detailsZone(box, 'tools')
+  const gmem = flatKids(box).filter((c) => c.className === 'gmem')[0]
+  assert.equal(gmem.children.filter((c) => c.className === 'jump').length, dom.CAP, 'the zone section caps at ZONE_GROUP_CAP=10…')
+  const tail = gmem.children[gmem.children.length - 1]
+  assert.equal(allText(tail), 'MORE:195', '…naming exactly what it hid (205-10)')
+  tail.handlers.click()
+  assert.equal(gmem.children.filter((c) => c.className === 'jump').length, 205, 'the z:tools|big expansion took the FULL list (past even the 200-row data cap)')
+  assert.equal(gmem.children.filter((c) => c.className === 'jump more').length, 0, 'zone tail gone')
+  const gbox = new dom.El('div')
+  dom.detailsGroup(gbox, 'big')
+  const gcard = gbox.children.filter((c) => c.className === 'card')[0]
+  assert.equal(gcard.children.filter((c) => c.className === 'jump').length, 200,
+    'the GROUP PAGE for the same gid rides a different key (m:big): still capped at 200 — z: and m: never collide')
+  const mtail = gcard.children[gcard.children.length - 1]
+  assert.equal(mtail.className, 'jump more', '…its tail present, untouched by the zone expansion…')
+  assert.equal(allText(mtail), '+5 MORE', '…counting its own cut')
+  mtail.handlers.click()
+  assert.equal(gcard.children.filter((c) => c.className === 'jump').length, 205, 'the m:big key expands independently')
+  assert.equal(gcard.children.filter((c) => c.className === 'jump more').length, 0, '…tail gone')
+})
+
+test('V2.10c R65 static guards: state.sectionMore ships, the four key namespaces are collision-proof, nothing clears them, one shared tail renderer', () => {
+  const src = readFileSync(join(WEB, 'app.js'), 'utf8')
+  assert.match(src, /sectionMore: new Set\(\)/, 'the expansion set is part of state')
+  assert.doesNotMatch(src, /sectionMore[^\n]*\.clear\(\)/, '⌗, selection changes and re-renders NEVER clear it (the keys are data-bounded)')
+  const mt = extractBalanced(src, 'function moreTail(box, key, label, onExpand) {')
+  assert.match(mt, /b\.className = 'jump more'/, 'one shared tail renderer: the button class pair')
+  assert.match(mt, /var c = document\.createElement\('span'\); c\.className = 'cnt'; escText\(c, label\)/,
+    'the label leaves through escText only (dictionary text + a number) — no HTML sink, and it reuses the .cnt channel')
+  assert.match(mt, /state\.sectionMore/, 'the click records into the persistent set')
+  assert.match(mt, /box\.removeChild\(b\)/, 'and the tail removes itself from the very container it was hung on')
+  assert.match(src, /'z:' \+ String\(cid\) \+ '\|' \+ String\(s\.gid\)/, 'zone key: z:cid|gid')
+  assert.match(src, /'m:' \+ String\(sel\.id\)/, 'member key: m:gid')
+  assert.match(src, /String\(keyBase\) \+ '\|' \+ tier\.dist/, 'tier key: keyBase|tier — one slot per tier')
+  assert.match(src, /'p:' \+ n\.id \+ '\|d'/, 'the down list namespaces by root AND direction…')
+  assert.match(src, /'p:' \+ n\.id \+ '\|u'/, '…so d1-down and d1-up can never share a key')
+  assert.match(src, /'mo:' \+ String\(id\)/, 'mount key: mo:id — its own prefix')
+  assert.equal((src.match(/moreTail\(/g) || []).length, 5, 'exactly ONE definition + FOUR call sites — R65-WIDEN covers all four caps, no fifth tail, no bypass')
+  assert.doesNotMatch(src, /kvRow\((box|rows|holder), '', /, 'the inert grey kvRow tails are DEAD at all four sites')
+  assert.equal((src.match(/t\('groupMoreLabel'\)/g) || []).length, 1, 'the zone tail still rides t(groupMoreLabel) — ZERO new i18n keys…')
+  assert.equal((src.match(/t\('moreLabel'\)/g) || []).length, 3, '…and the other three tails still ride t(moreLabel)')
 })

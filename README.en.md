@@ -8,6 +8,9 @@ current DSH_HOME depend on and mount each other. The first screen shows scan pro
 The graph groups packages into functional zones, renders each group as a compound
 card, and lays the packages out in a grid inside it. There are no runtime dependencies,
 all data comes from this machine, the page is read-only, and it works offline.
+It is designed around DSH's fast release pace: no runtime dependencies, nothing from
+host internals, so an upgrade, if it breaks anything at all, breaks the scan layer most
+often (see "Low coupling").
 
 Page URL (after installing and restarting): `http://127.0.0.1:3080/dsh-pkg-atlas/`
 

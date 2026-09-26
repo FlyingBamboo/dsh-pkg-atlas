@@ -42,12 +42,12 @@ Restart DSH, then open `http://127.0.0.1:3080/dsh-pkg-atlas/`.
   on groups. What you see then: zones, group cards, and opened packages inside them.
 - In a cold state (no focus yet), a plain left click on any node only selects it and
   shows its details. Packages and groups behave the same here.
-- Double-click depends on the tier. On groups, double-clicking a group card expands
-  or collapses it, and double-clicking a zone title folds the whole zone. On packages,
-  both double-clicks are deliberate no-ops.
+- Double-click depends on the tier. At the groups tier, double-clicking a group card expands
+  or collapses it, and double-clicking a zone title folds the whole zone. At the packages
+  tier, both double-clicks are deliberate no-ops.
 - Right-click any target and you get that target's own command list. On the blank
   canvas: reset view / exit focus / auto-arrange.
-- Search takes a package name or a Chinese description. Click the enter-key entry to
+- Search takes a package name or a Chinese description. Click the item marked Enter to
   jump to it; its ancestors open automatically.
 - Two buttons in the header: reset view fits the current render set back into the
   viewport, and auto-arrange drops every manual drag position.
@@ -142,10 +142,10 @@ Restart DSH, then open `http://127.0.0.1:3080/dsh-pkg-atlas/`.
   record their own absolute position. Dragging a child moves only the child; the
   parent frame stays where it is.
 - What you see stays where you left it, on every tier. A group card you dragged is no
-  longer re-centred by its members when you switch to the packages tier, and a member
+  longer re-centered by its members when you switch to the packages tier, and a member
   you never dragged follows its parent by "parent render position + the child's
   relative slot offset inside the model".
-- When you want the model to have its feel back: press auto-arrange in the header (or
+- To hand the layout back to the model: press auto-arrange in the header (or
   the same-named row in the blank-canvas menu, greyed when nothing was dragged). It
   clears the override, everything drops back onto the zone-band grid, and one fit
   sweeps across the restored layout.

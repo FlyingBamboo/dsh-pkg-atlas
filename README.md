@@ -125,7 +125,7 @@ DSH 迭代快，挂在内部 API 上的插件会跟着一次次坏。所以这�
   optional，路由注册被宿主拒绝时也只记日志、不抛。
 - 无构建步骤：浏览器代码是普通 script，仓库里是什么就跑什么。
 
-后果是：DSH 升级如果还能弄坏这个插件，坏点一定在「输入格式变了」，修复只发生在扫描层；
+后果是：DSH 升级如果还能弄坏这个插件，坏点多半在「输入格式变了」，修复发生在扫描层；
 页面与渲染不受宿主变更影响。
 
 ## 安全模型
@@ -134,7 +134,7 @@ DSH 迭代快，挂在内部 API 上的插件会跟着一次次坏。所以这�
 - `/api/readme` 的 `id` 仅用于在扫描快照中查节点，文件路径取自扫描结果内部字段（`_dir`，
   对外 JSON 一律剔除 `_` 前缀字段），用户输入永不参与路径拼接；恶意 id 在正则卫生层即 400。
 - 响应不回显内部错误文本（500 固定 `{error:'internal-error'}`，真错误只进宿主 logger）；
-  所有响应带 `X-Content-Type-Options: nosniff`；页面 CSP 为 `default-src 'self'`
+  页面与 API/资产响应带 `X-Content-Type-Options: nosniff`；页面 CSP 为 `default-src 'self'`
   （style 另放行 `'unsafe-inline'`）。
 - 图数据中的路径一律相对化为 `$DSH_HOME/...`，不泄露绝对路径。
 - 页面挂在宿主 web 端口上，自身没有鉴权：若启用 DSH 远程访问（tailscale/配对等），本页面
@@ -161,7 +161,7 @@ DSH 迭代快，挂在内部 API 上的插件会跟着一次次坏。所以这�
     npm test          # node:test，fixture 全部合成，不读真实 ~/.dsh
     npm run check     # node --check 全部 lib + web 脚本
 
-隔离真机验证流程、浏览器人工清单、布局教义与维护者向的已知边界见 docs/DEVELOPMENT.md。
+隔离真机验证流程、浏览器人工清单、布局说明与维护者向的已知边界见 docs/DEVELOPMENT.md。
 
 ## 许可
 
